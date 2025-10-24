@@ -1,0 +1,1395 @@
+/****************************************************
+ * Donor Matcher v3 + Local Runner Adapter
+ * Safe to include without renaming your existing menu glue
+ * Exposes:
+ *   donor_createTrainingPairs
+ *   donor_trainMatcher
+ *   donor_assignDonorIds
+ *   donor_addUncertainPairs
+ *   donor_createTrainingPairs_debug
+ *   donor_createTrainingPairs_lite
+ *   dl_prepareLocalJobAndShowCommand_
+ *   dl_showProgressSidebar
+ *   doGet
+ *   doPost
+ ****************************************************/
+
+/** =========================
+ * Donor Matcher v3 config
+ * ========================= */
+const DONOR_CFG = {
+  krefSheet: 'KREF_Exports',
+  fecSheet: 'FEC_Exports',
+  trainingSheet: 'Training',
+  idColumnName: 'DonorID',
+  sampleTrainingPairs: 20,
+  initialSamplePairs: 20,
+  uncertainBatchSize: 10,
+  uncertaintyBand: 0.15,
+  predictThreshold: 0.7,
+  maxPairsPerBlock: 4000,
+  maxTotalPairs: 200000,
+  learningRate: 0.1,
+  maxTrainIterations: 400
+};
+
+/** =========================
+ * Training sheet header
+ * ========================= */
+const DONOR_TRAINING_HEADER = [
+  'Label',
+  'sheet_a','row_a','first_a','last_a','addr_a','city_a','state_a','zip_a','employer_a','occupation_a',
+  'sheet_b','row_b','first_b','last_b','addr_b','city_b','state_b','zip_b','employer_b','occupation_b',
+  'feat_name','feat_first','feat_firstinit','feat_lastsame',
+  'feat_addr','feat_citysame','feat_statesame','feat_zip5','feat_zip3','feat_house','feat_addrstrong',
+  'feat_employer','feat_occupation','feat_firstpairprob'
+];
+
+/** =========================
+ * Step 1: Create Training Pairs
+ * ========================= */
+function donor_createTrainingPairs() {
+  const rows = donor_loadAllRows_();
+  const blocks = donor_buildBlocks_(rows);
+  const pairs = donor_generatePairsFromBlocks_(blocks);
+  const sampled = donor_sampleArray_(pairs, DONOR_CFG.sampleTrainingPairs);
+  donor_writeTrainingSheet_(sampled);
+  SpreadsheetApp.getActive().toast('Training sheet ready. Label 1 or 0, then run Train matcher.', 'Donor Matcher', 8);
+}
+
+/** =========================
+ * Step 2: Train Matcher
+ * ========================= */
+function donor_trainMatcher() {
+  const sh = donor_getOrCreateSheet_(DONOR_CFG.trainingSheet);
+  const vals = sh.getDataRange().getValues();
+  if (vals.length < 2) {
+    SpreadsheetApp.getUi().alert('No training data found. Run Create training pairs.');
+    return;
+  }
+  const h = vals[0].map(s => String(s || '').trim());
+  function idx(name) {
+    const i = h.indexOf(name);
+    if (i === -1) throw new Error('Missing column: ' + name);
+    return i;
+  }
+  const featureCols = [
+    'feat_name','feat_first','feat_firstinit','feat_lastsame',
+    'feat_addr','feat_citysame','feat_statesame','feat_zip5','feat_zip3','feat_house','feat_addrstrong',
+    'feat_employer','feat_occupation','feat_firstpairprob'
+  ];
+  const I = featureCols.map(idx);
+  const iLabel = idx('Label');
+
+  const X = [];
+  const y = [];
+  for (let r = 1; r < vals.length; r++) {
+    const row = vals[r];
+    const label = Number(row[iLabel]);
+    if (label !== 0 && label !== 1) continue;
+    const feat = [];
+    for (let k = 0; k < I.length; k++) feat.push(Number(row[I[k]] || 0));
+    X.push(feat);
+    y.push(label);
+  }
+  if (!X.length) {
+    SpreadsheetApp.getUi().alert('No labeled rows. Set Label to 1 or 0.');
+    return;
+  }
+  const w = donor_fitLogReg_(X, y, DONOR_CFG.learningRate, DONOR_CFG.maxTrainIterations);
+  PropertiesService.getDocumentProperties().setProperty('donor_model_weights', JSON.stringify(w));
+  donor_buildAndStoreFirstNamePairTable_();
+  SpreadsheetApp.getUi().alert('Training complete. Weights and first name table saved.');
+}
+
+/** =========================
+ * Step 3: Assign Donor IDs
+ * ========================= */
+function donor_assignDonorIds() {
+  const wRaw = PropertiesService.getDocumentProperties().getProperty('donor_model_weights');
+  if (!wRaw) {
+    SpreadsheetApp.getUi().alert('No trained model found. Run Train matcher first.');
+    return;
+  }
+  const w = JSON.parse(wRaw);
+  const rows = donor_loadAllRows_();
+  const blocks = donor_buildBlocks_(rows);
+  const pairs = donor_generatePairsFromBlocks_(blocks);
+  const uf = donor_newUnionFind_(rows.length);
+  let kept = 0;
+  for (let i = 0; i < pairs.length; i++) {
+    const f = pairs[i].features;
+    const x = [
+      f.nameSim, f.firstSim, f.firstInitEq, f.lastSame,
+      f.addrSim, f.citySame, f.stateSame, f.zip5Same, f.zip3Same, f.houseMatch, f.addrStrong,
+      f.empSim, f.occSim, f.firstPairProb
+    ];
+    const prob = donor_predictLogReg_(x, w);
+    if (prob >= DONOR_CFG.predictThreshold) {
+      donor_union_(uf, pairs[i].aIdx, pairs[i].bIdx);
+      kept++;
+    }
+  }
+  const comps = donor_components_(uf);
+  const idMap = new Map();
+  let nextId = 1;
+  for (let c = 0; c < comps.length; c++) {
+    const comp = comps[c];
+    for (let j = 0; j < comp.length; j++) idMap.set(comp[j], nextId);
+    nextId++;
+  }
+  donor_writeIdsToSheets_(rows, idMap);
+  SpreadsheetApp.getActive().toast('Assigned DonorIDs. Matches kept: ' + kept, 'Donor Matcher', 8);
+}
+
+/** =========================
+ * Step 4: Iterative labeling helper
+ * ========================= */
+function donor_addUncertainPairs() {
+  const weightsRaw = PropertiesService.getDocumentProperties().getProperty('donor_model_weights');
+  const rows = donor_loadAllRows_();
+  const blocks = donor_buildBlocks_(rows);
+  const pairs = donor_generatePairsFromBlocks_(blocks);
+
+  if (!weightsRaw) {
+    const seed = donor_sampleArray_(pairs, DONOR_CFG.initialSamplePairs);
+    donor_appendPairsToTraining_(seed);
+    SpreadsheetApp.getUi().alert('Added ' + seed.length + ' seed pairs. Label them, train, then run again.');
+    return;
+  }
+  const w = JSON.parse(weightsRaw);
+  const seen = donor_getSeenPairKeys_();
+  const band = DONOR_CFG.uncertaintyBand;
+  const lower = 0.5 - band;
+  const upper = 0.5 + band;
+  const candidates = [];
+  for (let i = 0; i < pairs.length; i++) {
+    const p = pairs[i];
+    const key = donor_pairKey_(p.a, p.b);
+    if (seen.has(key)) continue;
+    const f = p.features;
+    const x = [
+      f.nameSim, f.firstSim, f.firstInitEq, f.lastSame,
+      f.addrSim, f.citySame, f.stateSame, f.zip5Same, f.zip3Same, f.houseMatch, f.addrStrong,
+      f.empSim, f.occSim, f.firstPairProb
+    ];
+    const prob = donor_predictLogReg_(x, w);
+    if (prob >= lower && prob <= upper) {
+      candidates.push({ pair: p, uncertainty: Math.abs(prob - 0.5) });
+    }
+  }
+  candidates.sort((a, b) => a.uncertainty - b.uncertainty);
+  const take = Math.min(DONOR_CFG.uncertainBatchSize, candidates.length);
+  const toAppend = [];
+  for (let j = 0; j < take; j++) toAppend.push(candidates[j].pair);
+  if (!toAppend.length) {
+    SpreadsheetApp.getUi().alert('No uncertain pairs in current band. Increase uncertaintyBand or add data.');
+    return;
+  }
+  donor_appendPairsToTraining_(toAppend);
+  SpreadsheetApp.getUi().alert('Added ' + toAppend.length + ' uncertain pairs. Label them and retrain.');
+}
+
+/** =========================
+ * Data loading
+ * ========================= */
+function donor_loadAllRows_() {
+  const kref = donor_readSheetAsObjects_(DONOR_CFG.krefSheet);
+  const fec = donor_readSheetAsObjects_(DONOR_CFG.fecSheet);
+
+  function mapRow(r, i, origin) {
+    const first = String(r.DonorFirst || '').trim();
+    const last = String(r.DonorLast || '').trim();
+    const addr1 = String(r.Address1 || '').trim();
+    const city = String(r.City || '').trim();
+    const state = String(r.State || '').trim();
+    const zip = donor_normalizeZip_(r.Zip);
+    const employer = String(r.Employer || '').trim();
+    const occupation = String(r.Occupation || '').trim();
+    const fullName = (first + ' ' + last).trim();
+    const house = donor_extractHouseNumber_(addr1);
+    return { origin, rowIndex: i, first, last, addr1, city, state, zip, employer, occupation, fullName, house, globalIdx: -1 };
+  }
+
+  const all = [];
+  for (let i = 0; i < kref.rows.length; i++) all.push(mapRow(kref.rows[i], i, 'K'));
+  for (let j = 0; j < fec.rows.length; j++) all.push(mapRow(fec.rows[j], j, 'F'));
+  for (let k = 0; k < all.length; k++) all[k].globalIdx = k;
+  return all;
+}
+
+/** =========================
+ * Blocking keys
+ * ========================= */
+function donor_blockingKeys_(r) {
+  const keys = [];
+  const last = String(r.last || '').toUpperCase();
+  const lastSound = donor_soundex_(last);
+  const first = String(r.first || '').toUpperCase();
+  const firstInit = first ? first[0] : '';
+  const zip = r.zip || '';
+  const house = r.house || '';
+  const city = String(r.city || '').toUpperCase().replace(/\s+/g, ' ').trim();
+  const state = String(r.state || '').toUpperCase().trim();
+  const employerTok = donor_employerToken_(r.employer);
+
+  if (zip && lastSound) keys.push('ZL:' + zip + ':' + lastSound);
+  if (house && lastSound) keys.push('HL:' + house + ':' + lastSound);
+  if (lastSound) keys.push('L:' + lastSound);
+  if (firstInit && lastSound) keys.push('FL:' + firstInit + ':' + lastSound);
+  if (city && state && lastSound) keys.push('CSL:' + city + ':' + state + ':' + lastSound);
+  if (employerTok && lastSound) keys.push('EL:' + employerTok + ':' + lastSound);
+  return keys;
+}
+
+function donor_employerToken_(s) {
+  let t = String(s || '').toUpperCase();
+  if (!t) return '';
+  t = t.replace(/[^A-Z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+  t = t.replace(/\b(THE|INC|LLC|LTD|CO|COMPANY|CORP|CORPORATION|UNIVERSITY|UNIV|SCHOOL|HOSPITAL|DEPT|DEPARTMENT|STATE|CITY|COUNTY)\b/g, '').trim();
+  if (!t) return '';
+  const parts = t.split(' ');
+  const take = [];
+  for (let i = 0; i < parts.length && take.length < 2; i++) {
+    if (parts[i].length >= 3) take.push(parts[i]);
+  }
+  return take.join('_');
+}
+
+/** =========================
+ * Pair generation with caps
+ * ========================= */
+function donor_generatePairsFromBlocks_(blocks) {
+  const pairs = [];
+  let total = 0;
+  const seen = new Set();
+  const it = blocks.entries();
+  while (true) {
+    const step = it.next();
+    if (step.done) break;
+    const blockRows = step.value[1];
+    if (!blockRows || blockRows.length < 2) continue;
+    const n = blockRows.length;
+    if (n * n > DONOR_CFG.maxPairsPerBlock) continue;
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const a = blockRows[i];
+        const b = blockRows[j];
+        const ka = a.globalIdx < b.globalIdx ? a.globalIdx + '|' + b.globalIdx : b.globalIdx + '|' + a.globalIdx;
+        if (seen.has(ka)) continue;
+        seen.add(ka);
+        const feat = donor_makeFeatures_(a, b);
+        pairs.push({ a, b, aIdx: a.globalIdx, bIdx: b.globalIdx, features: feat });
+        total++;
+        if (total > DONOR_CFG.maxTotalPairs) return pairs;
+      }
+    }
+  }
+  return pairs;
+}
+
+/** =========================
+ * Feature builder
+ * ========================= */
+function donor_makeFeatures_(a, b) {
+  const fullNameSim = donor_jaroWinkler_(a.fullName, b.fullName);
+  const firstSim = donor_jaroWinkler_(a.first, b.first);
+  const firstInitEq = (a.first && b.first && a.first[0].toUpperCase() === b.first[0].toUpperCase()) ? 1 : 0;
+  const lastSame = (a.last && b.last && a.last.toUpperCase() === b.last.toUpperCase()) ? 1 : 0;
+  const addrSim = donor_jaroWinkler_(a.addr1, b.addr1);
+  const citySame = (a.city && b.city && a.city.toUpperCase() === b.city.toUpperCase()) ? 1 : 0;
+  const stateSame = (a.state && b.state && a.state.toUpperCase() === b.state.toUpperCase()) ? 1 : 0;
+  const zip5Same = (a.zip && b.zip && a.zip === b.zip) ? 1 : 0;
+  const zip3Same = (a.zip && b.zip && a.zip.slice(0,3) === b.zip.slice(0,3)) ? 1 : 0;
+  const houseMatch = (a.house && b.house && a.house === b.house) ? 1 : 0;
+  const addrStrong = (houseMatch && zip5Same) ? 1 : 0;
+  const empSim = donor_jaroWinkler_(a.employer || '', b.employer || '');
+  const occSim = donor_jaroWinkler_(a.occupation || '', b.occupation || '');
+  const firstPairProb = donor_lookupFirstNamePairProb_(a.first, b.first);
+  return {
+    nameSim: donor_round4_(fullNameSim),
+    firstSim: donor_round4_(firstSim),
+    firstInitEq: firstInitEq,
+    lastSame: lastSame,
+    addrSim: donor_round4_(addrSim),
+    citySame: citySame,
+    stateSame: stateSame,
+    zip5Same: zip5Same,
+    zip3Same: zip3Same,
+    houseMatch: houseMatch,
+    addrStrong: addrStrong,
+    empSim: donor_round4_(empSim),
+    occSim: donor_round4_(occSim),
+    firstPairProb: donor_round4_(firstPairProb)
+  };
+}
+
+/** =========================
+ * Training writers
+ * ========================= */
+function donor_writeTrainingSheet_(pairs) {
+  const sh = donor_getOrCreateSheet_(DONOR_CFG.trainingSheet);
+  sh.clear();
+  sh.getRange(1, 1, 1, DONOR_TRAINING_HEADER.length).setValues([DONOR_TRAINING_HEADER]);
+  const data = [];
+  for (let i = 0; i < pairs.length; i++) {
+    const p = pairs[i], f = p.features;
+    data.push([
+      '',
+      p.a.origin, p.a.rowIndex + 2, p.a.first, p.a.last, p.a.addr1, p.a.city, p.a.state, p.a.zip, p.a.employer, p.a.occupation,
+      p.b.origin, p.b.rowIndex + 2, p.b.first, p.b.last, p.b.addr1, p.b.city, p.b.state, p.b.zip, p.b.employer, p.b.occupation,
+      f.nameSim, f.firstSim, f.firstInitEq, f.lastSame,
+      f.addrSim, f.citySame, f.stateSame, f.zip5Same, f.zip3Same, f.houseMatch, f.addrStrong,
+      f.empSim, f.occSim, f.firstPairProb
+    ]);
+  }
+  if (data.length) sh.getRange(2, 1, data.length, DONOR_TRAINING_HEADER.length).setValues(data);
+  sh.setFrozenRows(1);
+}
+function donor_appendPairsToTraining_(pairs) {
+  const sh = donor_getOrCreateSheet_(DONOR_CFG.trainingSheet);
+  let lastRow = sh.getLastRow();
+  if (lastRow === 0) {
+    sh.getRange(1, 1, 1, DONOR_TRAINING_HEADER.length).setValues([DONOR_TRAINING_HEADER]);
+    sh.setFrozenRows(1);
+    lastRow = 1;
+  }
+  const data = [];
+  for (let i = 0; i < pairs.length; i++) {
+    const p = pairs[i], f = p.features;
+    data.push([
+      '',
+      p.a.origin, p.a.rowIndex + 2, p.a.first, p.a.last, p.a.addr1, p.a.city, p.a.state, p.a.zip, p.a.employer, p.a.occupation,
+      p.b.origin, p.b.rowIndex + 2, p.b.first, p.b.last, p.b.addr1, p.b.city, p.b.state, p.b.zip, p.b.employer, p.b.occupation,
+      f.nameSim, f.firstSim, f.firstInitEq, f.lastSame,
+      f.addrSim, f.citySame, f.stateSame, f.zip5Same, f.zip3Same, f.houseMatch, f.addrStrong,
+      f.empSim, f.occSim, f.firstPairProb
+    ]);
+  }
+  if (data.length) sh.getRange(lastRow + 1, 1, data.length, DONOR_TRAINING_HEADER.length).setValues(data);
+}
+
+/** =========================
+ * First name pair prior
+ * ========================= */
+function donor_buildAndStoreFirstNamePairTable_() {
+  const sh = donor_getOrCreateSheet_(DONOR_CFG.trainingSheet);
+  const vals = sh.getDataRange().getValues();
+  if (vals.length < 2) {
+    PropertiesService.getDocumentProperties().deleteProperty('donor_first_pair_table');
+    return;
+  }
+  const h = vals[0].map(s => String(s || '').trim());
+  const iLabel = h.indexOf('Label');
+  const iFirstA = h.indexOf('first_a');
+  const iFirstB = h.indexOf('first_b');
+  if (iLabel === -1 || iFirstA === -1 || iFirstB === -1) return;
+
+  const counts = {};
+  function firstOf(name) {
+    const s = String(name || '').trim().toUpperCase();
+    if (!s) return '';
+    return s.split(/\s+/)[0];
+  }
+  for (let i = 1; i < vals.length; i++) {
+    const row = vals[i];
+    const la = Number(row[iLabel]);
+    if (la !== 0 && la !== 1) continue;
+    const fa = firstOf(row[iFirstA]);
+    const fb = firstOf(row[iFirstB]);
+    if (!fa || !fb) continue;
+    const key = fa < fb ? fa + '|' + fb : fb + '|' + fa;
+    if (!counts[key]) counts[key] = {pos:0, neg:0};
+    if (la === 1) counts[key].pos++; else counts[key].neg++;
+  }
+  const table = {};
+  for (const k in counts) {
+    const c = counts[k];
+    const prob = (c.pos + 1) / (c.pos + c.neg + 2);
+    table[k] = prob;
+  }
+  PropertiesService.getDocumentProperties().setProperty('donor_first_pair_table', JSON.stringify(table));
+}
+function donor_lookupFirstNamePairProb_(fa, fb) {
+  const s = PropertiesService.getDocumentProperties().getProperty('donor_first_pair_table');
+  if (!s) return 0.5;
+  const table = JSON.parse(s);
+  const A = String(fa || '').trim().toUpperCase().split(/\s+/)[0] || '';
+  const B = String(fb || '').trim().toUpperCase().split(/\s+/)[0] || '';
+  if (!A || !B) return 0.5;
+  const key = A < B ? A + '|' + B : B + '|' + A;
+  return table[key] != null ? Number(table[key]) : 0.5;
+}
+
+/** =========================
+ * Write DonorIDs to sheets
+ * ========================= */
+function donor_writeIdsToSheets_(rows, idMap) {
+  const ss = SpreadsheetApp.getActive();
+  const groupedK = [];
+  const groupedF = [];
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    if (r.origin === 'K') groupedK.push(r); else if (r.origin === 'F') groupedF.push(r);
+  }
+  function writeOne(sheetName, list) {
+    const sh = ss.getSheetByName(sheetName);
+    if (!sh) return;
+    const header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+    let idCol = header.indexOf(DONOR_CFG.idColumnName) + 1;
+    if (idCol === 0) {
+      idCol = header.length + 1;
+      sh.getRange(1, idCol).setValue(DONOR_CFG.idColumnName);
+    }
+    const out = [];
+    for (let i = 0; i < list.length; i++) out.push([idMap.get(list[i].globalIdx) || '']);
+    if (out.length) sh.getRange(2, idCol, out.length, 1).setValues(out);
+  }
+  writeOne(DONOR_CFG.krefSheet, groupedK);
+  writeOne(DONOR_CFG.fecSheet, groupedF);
+}
+
+/** =========================
+ * Utilities
+ * ========================= */
+function donor_readSheetAsObjects_(name) {
+  const sh = SpreadsheetApp.getActive().getSheetByName(name);
+  if (!sh) return { header: [], rows: [] };
+  const vals = sh.getDataRange().getValues();
+  if (vals.length < 2) return { header: vals[0] || [], rows: [] };
+  const header = vals[0].map(s => String(s || '').trim());
+  const rows = [];
+  for (let i = 1; i < vals.length; i++) {
+    const row = vals[i];
+    const obj = {};
+    for (let j = 0; j < header.length; j++) obj[header[j]] = row[j];
+    rows.push(obj);
+  }
+  return { header, rows };
+}
+function donor_getOrCreateSheet_(name) {
+  const ss = SpreadsheetApp.getActive();
+  return ss.getSheetByName(name) || ss.insertSheet(name);
+}
+function donor_normalizeZip_(s) {
+  const digits = String(s || '').replace(/\D+/g, '');
+  if (digits.length >= 5) return digits.slice(0, 5);
+  if (digits.length > 0) return digits.padStart(5, '0');
+  return '';
+}
+function donor_extractHouseNumber_(addr) {
+  const m = String(addr || '').match(/\b(\d{1,6})\b/);
+  return m ? m[1] : '';
+}
+function donor_round4_(x) {
+  return Math.round(Number(x || 0) * 10000) / 10000;
+}
+function donor_soundex_(s) {
+  s = String(s || '').toUpperCase().replace(/[^A-Z]/g, '');
+  if (!s) return '';
+  const f = s[0];
+  const map = {B:1,F:1,P:1,V:1,C:2,G:2,J:2,K:2,Q:2,S:2,X:2,Z:2,D:3,T:3,L:4,M:5,N:5,R:6};
+  let out = f;
+  let prev = map[f] || 0;
+  for (let i = 1; i < s.length && out.length < 4; i++) {
+    const c = s[i];
+    const code = map[c] || 0;
+    if (code !== 0 && code !== prev) out += String(code);
+    prev = code;
+  }
+  return (out + '000').slice(0, 4);
+}
+function donor_jaroWinkler_(s1, s2) {
+  s1 = String(s1 || '').toUpperCase();
+  s2 = String(s2 || '').toUpperCase();
+  if (!s1 && !s2) return 1;
+  if (!s1 || !s2) return 0;
+  const mDist = Math.max(0, Math.floor(Math.max(s1.length, s2.length) / 2) - 1);
+  const s1M = new Array(s1.length).fill(false);
+  const s2M = new Array(s2.length).fill(false);
+  let matches = 0;
+  for (let i = 0; i < s1.length; i++) {
+    const start = Math.max(0, i - mDist);
+    const end = Math.min(i + mDist + 1, s2.length);
+    for (let j = start; j < end; j++) {
+      if (s2M[j] || s1[i] !== s2[j]) continue;
+      s1M[i] = true;
+      s2M[j] = true;
+      matches++;
+      break;
+    }
+  }
+  if (!matches) return 0;
+  let t = 0;
+  let k = 0;
+  for (let i = 0; i < s1.length; i++) {
+    if (!s1M[i]) continue;
+    while (!s2M[k]) k++;
+    if (s1[i] !== s2[k]) t++;
+    k++;
+  }
+  t = t / 2;
+  const j = (matches / s1.length + matches / s2.length + (matches - t) / matches) / 3;
+  let l = 0;
+  while (l < 4 && s1[l] && s2[l] && s1[l] === s2[l]) l++;
+  return j + l * 0.1 * (1 - j);
+}
+
+/** =========================
+ * Logistic regression and clustering
+ * ========================= */
+function donor_fitLogReg_(X, y, lr, iters) {
+  const n = X.length;
+  const d = X[0].length;
+  const w = new Array(d + 1).fill(0);
+  function sigmoid(z) { return 1 / (1 + Math.exp(-z)); }
+  for (let it = 0; it < iters; it++) {
+    const grad = new Array(d + 1).fill(0);
+    for (let i = 0; i < n; i++) {
+      let z = w[d];
+      const xi = X[i];
+      for (let j = 0; j < d; j++) z += w[j] * xi[j];
+      const p = sigmoid(z);
+      const err = p - y[i];
+      for (let j2 = 0; j2 < d; j2++) grad[j2] += err * xi[j2];
+      grad[d] += err;
+    }
+    for (let g = 0; g < d + 1; g++) w[g] -= lr * grad[g] / n;
+  }
+  return w;
+}
+function donor_predictLogReg_(x, w) {
+  const d = x.length;
+  let z = w[d];
+  for (let j = 0; j < d; j++) z += w[j] * x[j];
+  return 1 / (1 + Math.exp(-z));
+}
+function donor_newUnionFind_(size) {
+  const parent = [];
+  const rank = [];
+  for (let i = 0; i < size; i++) { parent[i] = i; rank[i] = 0; }
+  return { parent, rank };
+}
+function donor_find_(uf, x) {
+  if (uf.parent[x] !== x) uf.parent[x] = donor_find_(uf, uf.parent[x]);
+  return uf.parent[x];
+}
+function donor_union_(uf, a, b) {
+  let pa = donor_find_(uf, a);
+  let pb = donor_find_(uf, b);
+  if (pa === pb) return;
+  if (uf.rank[pa] < uf.rank[pb]) { const tmp = pa; pa = pb; pb = tmp; }
+  uf.parent[pb] = pa;
+  if (uf.rank[pa] === uf.rank[pb]) uf.rank[pa]++;
+}
+function donor_components_(uf) {
+  const groups = new Map();
+  for (let i = 0; i < uf.parent.length; i++) {
+    const p = donor_find_(uf, i);
+    if (!groups.has(p)) groups.set(p, []);
+    groups.get(p).push(i);
+  }
+  return Array.from(groups.values());
+}
+
+/** =========================
+ * Sampling and keys
+ * ========================= */
+function donor_sampleArray_(arr, n) {
+  n = Math.max(0, Math.floor(n || 0));
+  const res = [];
+  const L = Array.isArray(arr) ? arr.length : 0;
+  if (n === 0 || L === 0) return res;
+  for (let i = 0; i < L; i++) {
+    if (i < n) {
+      res.push(arr[i]);
+    } else {
+      const j = Math.floor(Math.random() * (i + 1));
+      if (j < n) res[j] = arr[i];
+    }
+  }
+  return res;
+}
+function donor_pairKey_(a, b) {
+  const ka = a.origin + ':' + (a.rowIndex + 2);
+  const kb = b.origin + ':' + (b.rowIndex + 2);
+  return (ka < kb) ? (ka + '|' + kb) : (kb + '|' + ka);
+}
+function donor_getSeenPairKeys_() {
+  const sh = donor_getOrCreateSheet_(DONOR_CFG.trainingSheet);
+  const vals = sh.getDataRange().getValues();
+  if (vals.length < 2) return new Set();
+  const h = vals[0].map(s => String(s || '').trim());
+  const iSheetA = h.indexOf('sheet_a');
+  const iRowA = h.indexOf('row_a');
+  const iSheetB = h.indexOf('sheet_b');
+  const iRowB = h.indexOf('row_b');
+  if (iSheetA === -1 || iRowA === -1 || iSheetB === -1 || iRowB === -1) return new Set();
+  const set = new Set();
+  for (let i = 1; i < vals.length; i++) {
+    const row = vals[i];
+    const ka = String(row[iSheetA] || '') + ':' + String(row[iRowA] || '');
+    const kb = String(row[iSheetB] || '') + ':' + String(row[iRowB] || '');
+    if (!ka || !kb) continue;
+    const key = (ka < kb) ? (ka + '|' + kb) : (kb + '|' + ka);
+    set.add(key);
+  }
+  return set;
+}
+
+/** =========================================================
+ * Local runner adapter
+ * ========================================================= */
+const DL_CFG = {
+  krefSheet: DONOR_CFG.krefSheet,
+  fecSheet: DONOR_CFG.fecSheet,
+  sampleTrainingPairs: DONOR_CFG.sampleTrainingPairs,
+  uncertainBatchSize: DONOR_CFG.uncertainBatchSize,
+  uncertaintyBand: DONOR_CFG.uncertaintyBand,
+  maxPairsPerBlock: DONOR_CFG.maxPairsPerBlock,
+  maxTotalPairs: DONOR_CFG.maxTotalPairs,
+  tokenMinutes: 30
+};
+
+/** Prepare job and show Terminal command */
+function dl_prepareLocalJobAndShowCommand_() {
+  dl_resetProgress_();
+  dl_setProgress_('Preparing job', 0, 1, 'Creating Drive bundle');
+
+  const webAppUrl = dl_getExecUrlFromOptions_();
+  if (!webAppUrl) {
+    SpreadsheetApp.getUi().alert(
+      'Put your Web App URL ending with /exec in Options!I2.\nExample:\nhttps://script.google.com/macros/s/AKfycb.../exec'
+    );
+    return;
+  }
+
+  const kref = dl_exportSheetAsCsv_(DL_CFG.krefSheet);
+  const fec  = dl_exportSheetAsCsv_(DL_CFG.fecSheet);
+  if (!kref.file || !fec.file) {
+    SpreadsheetApp.getUi().alert(
+      'Missing input sheets or no rows. Confirm sheets exist: ' + DL_CFG.krefSheet + ' and ' + DL_CFG.fecSheet
+    );
+    return;
+  }
+
+  const token = dl_makeToken_();
+  const until = Date.now() + DL_CFG.tokenMinutes * 60 * 1000;
+  const job = {
+    jobId: 'job_' + Utilities.getUuid().replace(/-/g, '').slice(0, 12),
+    cfg: {
+      sampleTrainingPairs: DL_CFG.sampleTrainingPairs,
+      uncertainBatchSize: DL_CFG.uncertainBatchSize,
+      uncertaintyBand: DL_CFG.uncertaintyBand,
+      maxPairsPerBlock: DL_CFG.maxPairsPerBlock,
+      maxTotalPairs: DL_CFG.maxTotalPairs,
+      predictThreshold: DONOR_CFG.predictThreshold
+    },
+    krefUrl: webAppUrl + '?csv=kref&token=' + encodeURIComponent(token),
+    fecUrl:  webAppUrl + '?csv=fec&token=' + encodeURIComponent(token),
+    modelUrl: webAppUrl + '?model=1',
+    resultUrl: webAppUrl + '?result=1&token=' + encodeURIComponent(token)
+  };
+
+  const props = PropertiesService.getDocumentProperties();
+  props.setProperty('dl_token', token);
+  props.setProperty('dl_token_until', String(until));
+  props.setProperty('dl_job_json', JSON.stringify(job));
+  props.setProperty('dl_kref_fileId', kref.file.getId());
+  props.setProperty('dl_fec_fileId',  fec.file.getId());
+  props.setProperty('dl_staging_folderId', kref.folder.getId());
+
+  const cmd =
+    "curl -sSL '" + webAppUrl + "?runner=1' | " +
+    "python3 - --bundle '" + webAppUrl + "?job=1&token=" + token + "' " +
+    "--result '" + webAppUrl + "?result=1&token=" + token + "'";
+
+  dl_setProgress_('Waiting', 0, 0, 'Copy the command into Terminal');
+
+  const html = HtmlService.createHtmlOutput(
+    '<div style="font-family:system-ui,Arial;padding:12px;max-width:720px">' +
+      '<div style="margin:6px 0">Token expires in about ' + DL_CFG.tokenMinutes + ' minutes</div>' +
+      '<div style="margin:6px 0">Copy this command into your Mac Terminal:</div>' +
+      '<textarea id="cmd" style="width:100%;height:140px" readonly>' +
+        dl_htmlEscape_(cmd) +
+      '</textarea>' +
+      '<div style="margin-top:8px">' +
+        '<button onclick="navigator.clipboard.writeText(document.getElementById(\'cmd\').value)">Copy to clipboard</button>' +
+      '</div>' +
+      '<div style="margin-top:8px;color:#666;font-size:12px">Keep this sheet open. Progress will appear in the sidebar.</div>' +
+    '</div>'
+  ).setWidth(740).setHeight(280);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Run locally');
+}
+
+/** Progress sidebar */
+function dl_showProgressSidebar() {
+  const html = HtmlService.createHtmlOutput(
+    '<div style="font-family:system-ui,Arial;padding:12px;max-width:360px">' +
+      '<h3 style="margin:0 0 8px 0;font-weight:600">Local run progress</h3>' +
+      '<div id="p">No updates yet.</div>' +
+      '<script>' +
+      '  function fmt(p){ if(!p) return "No updates yet."; ' +
+      '    return "Phase: " + (p.phase||"") + "<br>Done: " + (p.done||0) + " of " + (p.total||0) + "<br>Note: " + (p.note||"") + "<br><small>"+new Date(p.ts).toLocaleString()+"</small>"; }' +
+      '  function poll(){ google.script.run.withSuccessHandler(function(s){ ' +
+      '      try{var p=s?JSON.parse(s):null; document.getElementById("p").innerHTML = fmt(p);}catch(e){document.getElementById("p").textContent="Parse error";}' +
+      '    }).dl_getProgressPayload_(); }' +
+      '  setInterval(poll, 1500); poll();' +
+      '</script>' +
+    '</div>'
+  ).setTitle('Local run progress');
+  SpreadsheetApp.getUi().showSidebar(html);
+}
+function dl_getProgressPayload_() {
+  return PropertiesService.getDocumentProperties().getProperty('dl_progress') || '';
+}
+
+/** Web app endpoints */
+
+function doGet(e) {
+  const p = e.parameter || {};
+
+  // Python runner payload
+  if (p.runner == '1') {
+    const py = [
+      '#!/usr/bin/env python3',
+      'import sys, json, csv, io, urllib.request, argparse, time, math, random, re',
+      '',
+      '# ----------------------------',
+      '# HTTP helpers',
+      'def http_get(url):',
+      '    with urllib.request.urlopen(url) as r:',
+      '        return r.read()',
+      '',
+      'def http_post(url, obj):',
+      '    data = json.dumps(obj).encode("utf-8")',
+      '    req = urllib.request.Request(url, data=data, headers={"Content-Type":"application/json"})',
+      '    with urllib.request.urlopen(req) as r:',
+      '        return r.read().decode("utf-8")',
+      '',
+      'def parse_csv(text):',
+      '    f = io.StringIO(text)',
+      '    rdr = csv.reader(f)',
+      '    rows = list(rdr)',
+      '    if not rows: return [], []',
+      '    header = rows[0]',
+      '    return header, rows[1:]',
+      '',
+      '# ----------------------------',
+      '# Similarity and model',
+      'def jaro_winkler(a,b):',
+      '    a = (a or "").upper(); b = (b or "").upper()',
+      '    if not a and not b: return 1.0',
+      '    if not a or not b: return 0.0',
+      '    m_dist = max(0, max(len(a), len(b))//2 - 1)',
+      '    a_m = [False]*len(a); b_m = [False]*len(b)',
+      '    matches = 0',
+      '    for i in range(len(a)):',
+      '        start = max(0, i - m_dist); end = min(i + m_dist + 1, len(b))',
+      '        for j in range(start, end):',
+      '            if b_m[j] or a[i] != b[j]:',
+      '                continue',
+      '            a_m[i] = True; b_m[j] = True; matches += 1; break',
+      '    if matches == 0: return 0.0',
+      '    t = 0; k = 0',
+      '    for i in range(len(a)):',
+      '        if not a_m[i]:',
+      '            continue',
+      '        while not b_m[k]:',
+      '            k += 1',
+      '        if a[i] != b[k]:',
+      '            t += 1',
+      '        k += 1',
+      '    t = t / 2.0',
+      '    j = (matches/len(a) + matches/len(b) + (matches - t)/matches) / 3.0',
+      '    l = 0',
+      '    while l < 4 and l < len(a) and l < len(b) and a[l] == b[l]:',
+      '        l += 1',
+      '    return j + l*0.1*(1.0 - j)',
+      '',
+      'def sigmoid(z):',
+      '    return 1.0/(1.0+math.exp(-z))',
+      '',
+      'def predict(x, w):',
+      '    z = w[-1]',
+      '    for i in range(len(x)):',
+      '        z += w[i]*x[i]',
+      '    return sigmoid(z)',
+      '',
+      'def sgd_update(w, x, y, lr=0.1):',
+      '    p = predict(x, w)',
+      '    err = p - y',
+      '    for i in range(len(x)):',
+      '        w[i] -= lr*err*x[i]',
+      '    w[-1] -= lr*err',
+      '    return w',
+      '',
+      '# ----------------------------',
+      '# Features',
+      'def features(a, b):',
+      '    # [0] name full, [1] last, [2] address, [3] employer, [4] occupation, [5] bias',
+      '    f0 = jaro_winkler((a.get("DonorFirst","")+" "+a.get("DonorLast","")).strip(), (b.get("DonorFirst","")+" "+b.get("DonorLast","")).strip())',
+      '    f1 = jaro_winkler(a.get("DonorLast",""), b.get("DonorLast",""))',
+      '    f2 = jaro_winkler(a.get("Address1",""), b.get("Address1",""))',
+      '    f3 = jaro_winkler(a.get("Employer",""), b.get("Employer",""))',
+      '    f4 = jaro_winkler(a.get("Occupation",""), b.get("Occupation",""))',
+      '    return [f0, f1, f2, f3, f4, 1.0]',
+      '',
+      '# ----------------------------',
+      '# TTY input that works even when stdin is piped',
+      'def read_tty(prompt=""):',
+      '    try:',
+      '        if sys.stdin and hasattr(sys.stdin, "isatty") and sys.stdin.isatty():',
+      '            return input(prompt)',
+      '        with open("/dev/tty") as tty:',
+      '            if prompt:',
+      '                print(prompt, end="", flush=True)',
+      '            return tty.readline().rstrip("\\n")',
+      '    except Exception:',
+      '        return ""',
+      '',
+      'def show_pair_and_get_label(i, total, a, b, x, p):',
+      '    print(f"[{i}/{total}]")',
+      '    def fmt(o):',
+      '        nm = (o.get("DonorFirst","")+" "+o.get("DonorLast","")).strip()',
+      '        ad = ", ".join([s for s in [o.get("Address1",""), o.get("City",""), o.get("State","")] if s])',
+      '        em = " | ".join([s for s in [o.get("Employer",""), o.get("Occupation","")] if s])',
+      '        return nm+"\\n"+ad+"\\n"+em',
+      '    print("A:"); print(fmt(a))',
+      '    print("B:"); print(fmt(b))',
+      '    print(f"feat nameSim={x[0]:.3f} addrSim={x[2]:.3f} empSim={x[3]:.3f} occSim={x[4]:.3f}  model_p={p:.3f}")',
+      '    while True:',
+      '        s = read_tty("Label this pair (1 match, 0 not a match): ").strip()',
+      '        if s in ("0","1"):',
+      '            return int(s)',
+      '        print("Please enter 1 or 0.")',
+      '',
+      '# ----------------------------',
+      '# Stable keys and candidate generators',
+      'def stable_pair_key(a_obj, b_obj):',
+      '    a = (str(a_obj.get("_origin","C")), int(a_obj.get("_rownum", 0)))',
+      '    b = (str(b_obj.get("_origin","C")), int(b_obj.get("_rownum", 0)))',
+      '    return (a, b) if a <= b else (b, a)',
+      '',
+      'def cold_start_candidates(window_rows, want, seen_pairs):',
+      '    # Address-forward scoring. Skip exact name+address dupes and already-seen pairs.',
+      '    cands = []; L = len(window_rows)',
+      '    if L < 2: return []',
+      '    limit = min(L, 2500)',
+      '    for i in range(limit):',
+      '        a = window_rows[i]',
+      '        for j in range(i+1, limit):',
+      '            b = window_rows[j]',
+      '            k = stable_pair_key(a, b)',
+      '            if k in seen_pairs:',
+      '                continue',
+      '            fullA = (a.get("DonorFirst","")+" "+a.get("DonorLast","")).strip().upper()',
+      '            fullB = (b.get("DonorFirst","")+" "+b.get("DonorLast","")).strip().upper()',
+      '            addrA = (a.get("Address1","") or "").strip().upper()',
+      '            addrB = (b.get("Address1","") or "").strip().upper()',
+      '            if fullA == fullB and addrA and addrA == addrB:',
+      '                continue',
+      '            x = features(a,b)',
+      '            score = 0.60*x[2] + 0.25*x[0] + 0.15*x[3]',
+      '            if score >= 0.75 or x[2] >= 0.80:',
+      '                cands.append((score, a, b, x))',
+      '            if len(cands) >= want*80:',
+      '                break',
+      '        if len(cands) >= want*80:',
+      '            break',
+      '    cands.sort(key=lambda t: -t[0])',
+      '    chosen = []; used = set()',
+      '    for _, a, b, x in cands:',
+      '        # one-use per row in a batch',
+      '        ra = (a.get("_origin","C"), a.get("_rownum",0))',
+      '        rb = (b.get("_origin","C"), b.get("_rownum",0))',
+      '        if ra in used or rb in used:',
+      '            continue',
+      '        chosen.append((a, b, x))',
+      '        used.add(ra); used.add(rb)',
+      '        if len(chosen) >= want:',
+      '            break',
+      '    return chosen',
+      '',
+      'def uncertain_candidates(window_rows, want, seen_pairs, w):',
+      '    # Pairs closest to 0.5 under current model, skipping seen ones.',
+      '    picks = []; L = len(window_rows)',
+      '    if L < 2: return []',
+      '    limit = min(L, 3500)',
+      '    sampled = 0',
+      '    step = max(1, limit // 900)',
+      '    for i in range(0, limit, step):',
+      '        a = window_rows[i]',
+      '        for j in range(i+1, limit, step):',
+      '            b = window_rows[j]',
+      '            k = stable_pair_key(a, b)',
+      '            if k in seen_pairs:',
+      '                continue',
+      '            x = features(a, b)',
+      '            z = w[-1]',
+      '            for t in range(0,5):',
+      '                z += w[t]*x[t]',
+      '            p = 1.0/(1.0+math.exp(-z))',
+      '            u = abs(p - 0.5)',
+      '            picks.append((u, p, a, b, x, p))',
+      '            sampled += 1',
+      '            if sampled >= want*400:',
+      '                break',
+      '        if sampled >= want*400:',
+      '            break',
+      '    # sort by lowest uncertainty, then prefer a bit higher p as tie-break',
+      '    picks.sort(key=lambda t: (t[0], -t[1]))',
+      '    chosen = []; used_rows = set()',
+      '    for _, __, a, b, x, p in picks:',
+      '        ra = (a.get("_origin","C"), a.get("_rownum",0))',
+      '        rb = (b.get("_origin","C"), b.get("_rownum",0))',
+      '        if ra in used_rows or rb in used_rows:',
+      '            continue',
+      '        chosen.append((a, b, x, p))',
+      '        used_rows.add(ra); used_rows.add(rb)',
+      '        if len(chosen) >= want:',
+      '            break',
+      '    return chosen',
+      '',
+      '# ----------------------------',
+      '# CLI args and data',
+      'ap = argparse.ArgumentParser()',
+      'ap.add_argument("--bundle", required=True)',
+      'ap.add_argument("--result", required=True)',
+      'args = ap.parse_args()',
+      '',
+      'job = json.loads(http_get(args.bundle).decode("utf-8"))',
+      'hdrK, rowsK = parse_csv(http_get(job["krefUrl"]).decode("utf-8"))',
+      'hdrF, rowsF = parse_csv(http_get(job["fecUrl"]).decode("utf-8"))',
+      '',
+      'def row_as_obj(header, row):',
+      '    m = dict(zip(header, row))',
+      '    return {',
+      '        "DonorFirst": (m.get("DonorFirst","") or "").strip(),',
+      '        "DonorLast":  (m.get("DonorLast","") or "").strip(),',
+      '        "Address1":   (m.get("Address1","") or "").strip(),',
+      '        "City":       (m.get("City","") or "").strip(),',
+      '        "State":      (m.get("State","") or "").strip(),',
+      '        "Zip":        (m.get("Zip","") or "").strip(),',
+      '        "Employer":   (m.get("Employer","") or "").strip(),',
+      '        "Occupation": (m.get("Occupation","") or "").strip()',
+      '    }',
+      '',
+      'K_rows = [row_as_obj(hdrK, r) for r in rowsK]',
+      'F_rows = [row_as_obj(hdrF, r) for r in rowsF]',
+      'COMBINED = []',
+      'for i, r in enumerate(K_rows, start=2):',
+      '    o = dict(r); o["_origin"] = "K"; o["_rownum"] = i; COMBINED.append(o)',
+      'for j, r in enumerate(F_rows, start=2):',
+      '    o = dict(r); o["_origin"] = "F"; o["_rownum"] = j; COMBINED.append(o)',
+      'print(f"Loaded {len(COMBINED)} donors total")',
+      '',
+      '# Session storage',
+      'training_rows = []',
+      'seen_pairs = set()',
+      'w = [0.0]*6  # 5 features + bias',
+      '',
+      '# ----------------------------',
+      '# Rounds',
+      'def run_round(limit_rows, round_num):',
+      '    total = min(limit_rows, len(COMBINED))',
+      '    if total < 2:',
+      '        return False',
+      '    win = COMBINED[:total]',
+      '    if round_num == 1:',
+      '        ask = 10',
+      '        batch = cold_start_candidates(win, ask, seen_pairs)',
+      '    else:',
+      '        ask = 5',
+      '        batch = uncertain_candidates(win, ask, seen_pairs, w)',
+      '    if not batch:',
+      '        print("No candidates found this round.")',
+      '        return True',
+      '    for i, item in enumerate(batch, start=1):',
+      '        if round_num == 1:',
+      '            a, b, x = item; p = 0.5',
+      '        else:',
+      '            a, b, x, p = item',
+      '        y = show_pair_and_get_label(i, len(batch), a, b, x, p)',
+      '        training_rows.append({',
+      '          "a":{"origin":a.get("_origin","C"), "row":a.get("_rownum",0), "first":a.get("DonorFirst",""), "last":a.get("DonorLast",""), "addr":a.get("Address1",""), "city":a.get("City",""), "state":a.get("State",""), "zip":a.get("Zip",""), "employer":a.get("Employer",""), "occupation":a.get("Occupation","")},',
+      '          "b":{"origin":b.get("_origin","C"), "row":b.get("_rownum",0), "first":b.get("DonorFirst",""), "last":b.get("DonorLast",""), "addr":b.get("Address1",""), "city":b.get("City",""), "state":b.get("State",""), "zip":b.get("Zip",""), "employer":b.get("Employer",""), "occupation":b.get("Occupation","")},',
+      '          "features":{"nameSim":x[0], "lastSim":x[1], "addrSim":x[2], "empSim":x[3], "occSim":x[4]},',
+      '          "label": int(y)',
+      '        })',
+      '        w[:] = sgd_update(w, x, int(y), lr=0.1)',
+      '        seen_pairs.add(stable_pair_key(a, b))',
+      '    print(f"Round {round_num} complete. Labeled {len(batch)}. Total labels: {len(training_rows)}")',
+      '    return True',
+      '',
+      'limit = 1000',
+      'round_num = 1',
+      'while True:',
+      '    if not run_round(limit, round_num):',
+      '        break',
+      '    if limit >= len(COMBINED):',
+      '        print("Reached end of dataset.")',
+      '        break',
+      '    ans = read_tty("Continue to next round? y to continue, anything else to finish: ").strip().lower()',
+      '    if ans != "y":',
+      '        break',
+      '    limit = min(len(COMBINED), limit + 1000)',
+      '    round_num += 1',
+      '',
+      '# Final post back to Apps Script once per session',
+      'payload = {',
+      '  "progress": {"phase":"Final","done":len(training_rows),"total":len(training_rows),"note":"final post"},',
+      '  "training_rows": training_rows,',
+      '  "model_weights": w',
+      '}',
+      'http_post(job["resultUrl"], payload)',
+      'print("All training complete and results posted.")'
+    ].join('\n');
+
+    return ContentService.createTextOutput(py).setMimeType(ContentService.MimeType.TEXT);
+  }
+
+  // Job bundle for the runner
+  if (p.job == '1') {
+    const chk = dl_validateToken_(p.token);
+    if (!chk.ok) return ContentService.createTextOutput(chk.msg).setMimeType(ContentService.MimeType.TEXT);
+    const job = PropertiesService.getDocumentProperties().getProperty('dl_job_json') || '{}';
+    return ContentService.createTextOutput(job).setMimeType(ContentService.MimeType.JSON);
+  }
+
+  // CSV endpoints for runner input
+  if (p.csv == 'kref' || p.csv == 'fec') {
+    const chk = dl_validateToken_(p.token);
+    if (!chk.ok) return ContentService.createTextOutput(chk.msg).setMimeType(ContentService.MimeType.TEXT);
+    const props = PropertiesService.getDocumentProperties();
+    const fileId = p.csv === 'kref' ? props.getProperty('dl_kref_fileId') : props.getProperty('dl_fec_fileId');
+    if (!fileId) return ContentService.createTextOutput('No CSV file id').setMimeType(ContentService.MimeType.TEXT);
+    const file = DriveApp.getFileById(fileId);
+    const out = ContentService.createTextOutput(file.getBlob().getDataAsString());
+    out.setMimeType(ContentService.MimeType.CSV);
+    return out;
+  }
+
+  // Model endpoint for runner to fetch current weights/prior if any
+  if (p.model == '1') {
+    const props = PropertiesService.getDocumentProperties();
+    const w = props.getProperty('donor_model_weights');
+    const fp = props.getProperty('donor_first_pair_table');
+    const body = {
+      weights: w ? JSON.parse(w) : null,
+      first_pair_table: fp ? JSON.parse(fp) : {}
+    };
+    return ContentService.createTextOutput(JSON.stringify(body)).setMimeType(ContentService.MimeType.JSON);
+  }
+
+  return ContentService.createTextOutput('Invalid query').setMimeType(ContentService.MimeType.TEXT);
+}
+
+
+function doPost(e) {
+  const p = e.parameter || {};
+  const chk = dl_validateToken_(p.token);
+  if (!chk.ok) {
+    return ContentService.createTextOutput(JSON.stringify({ ok: false, error: chk.msg })).setMimeType(ContentService.MimeType.JSON);
+  }
+
+  let body = {};
+  try {
+    body = e.postData && e.postData.contents ? JSON.parse(e.postData.contents) : {};
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({ ok: false, error: 'Invalid JSON' })).setMimeType(ContentService.MimeType.JSON);
+  }
+
+  if (body.progress) {
+    dl_setProgress_(String(body.progress.phase || ''), Number(body.progress.done || 0), Number(body.progress.total || 0), String(body.progress.note || ''));
+  }
+
+  if (Array.isArray(body.training_rows) && body.training_rows.length) {
+    donor_applyResult_trainingRows_(body.training_rows);
+  }
+
+  if (Array.isArray(body.model_weights) && body.model_weights.length) {
+    donor_applyResult_modelWeights_(body.model_weights);
+  }
+
+  if (body.id_map && typeof body.id_map === 'object') {
+    donor_applyResult_assignedIds_(body.id_map);
+  }
+
+  return ContentService.createTextOutput(JSON.stringify({ ok: true })).setMimeType(ContentService.MimeType.JSON);
+}
+
+/** Apply helpers for POST payloads */
+function donor_applyResult_trainingRows_(rows) {
+  const sh = donor_getOrCreateSheet_(DONOR_CFG.trainingSheet);
+  let lastRow = sh.getLastRow();
+  if (lastRow === 0) {
+    sh.getRange(1, 1, 1, DONOR_TRAINING_HEADER.length).setValues([DONOR_TRAINING_HEADER]);
+    sh.setFrozenRows(1);
+    lastRow = 1;
+  }
+  const data = [];
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const a = r.a || {};
+    const b = r.b || {};
+    const f = r.features || {};
+    const label = (r.label === 0 || r.label === 1) ? r.label : '';
+    data.push([
+      label,
+      String(a.origin || ''), Number(a.row || 2), String(a.first || ''), String(a.last || ''), String(a.addr || ''), String(a.city || ''), String(a.state || ''), String(a.zip || ''), String(a.employer || ''), String(a.occupation || ''),
+      String(b.origin || ''), Number(b.row || 2), String(b.first || ''), String(b.last || ''), String(b.addr || ''), String(b.city || ''), String(b.state || ''), String(b.zip || ''), String(b.employer || ''), String(b.occupation || ''),
+      Number(f.nameSim||0), Number(f.firstSim||0), Number(f.firstInitEq||0), Number(f.lastSame||0),
+      Number(f.addrSim||0), Number(f.citySame||0), Number(f.stateSame||0), Number(f.zip5Same||0), Number(f.zip3Same||0), Number(f.houseMatch||0), Number(f.addrStrong||0),
+      Number(f.empSim||0), Number(f.occSim||0), Number(f.firstPairProb||0)
+    ]);
+  }
+  if (data.length) sh.getRange(lastRow + 1, 1, data.length, DONOR_TRAINING_HEADER.length).setValues(data);
+}
+
+function donor_applyResult_modelWeights_(weights) {
+  PropertiesService.getDocumentProperties()
+    .setProperty('donor_model_weights', JSON.stringify(weights));
+}
+
+function donor_applyResult_assignedIds_(idMapObj) {
+  const ss = SpreadsheetApp.getActive();
+  function writeTo(sheetName, originTag) {
+    const sh = ss.getSheetByName(sheetName);
+    if (!sh) return;
+    const header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+    let idCol = header.indexOf(DONOR_CFG.idColumnName) + 1;
+    if (idCol === 0) {
+      idCol = header.length + 1;
+      sh.getRange(1, idCol).setValue(DONOR_CFG.idColumnName);
+    }
+    const last = sh.getLastRow();
+    const out = new Array(Math.max(0, last - 1)).fill(['']);
+    Object.keys(idMapObj).forEach(k => {
+      const parts = String(k).split(':');
+      if (parts.length !== 2) return;
+      if (parts[0] !== originTag) return;
+      const row = Number(parts[1] || 0);
+      const id = idMapObj[k];
+      if (row >= 2 && row <= last) out[row - 2] = [id];
+    });
+    if (out.length) sh.getRange(2, idCol, out.length, 1).setValues(out);
+  }
+  writeTo(DONOR_CFG.krefSheet, 'K');
+  writeTo(DONOR_CFG.fecSheet, 'F');
+}
+
+/** Token and helpers */
+function dl_validateToken_(token) {
+  const props = PropertiesService.getDocumentProperties();
+  const t = props.getProperty('dl_token');
+  const until = Number(props.getProperty('dl_token_until') || '0');
+  if (!token || !t || token !== t) return {ok:false, msg:'Invalid or missing token'};
+  if (Date.now() > until) return {ok:false, msg:'Token expired'};
+  return {ok:true};
+}
+function dl_getExecUrlFromOptions_() {
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName('Options');
+  if (!sh) return null;
+  const val = String(sh.getRange('I2').getValue() || '').trim();
+  if (!val) return null;
+  return dl_normalizeWebAppUrl_(val);
+}
+function dl_normalizeWebAppUrl_(rawUrl) {
+  if (!rawUrl) return '';
+  return String(rawUrl).replace(/\/a\/[^/]+\/macros\//, '/macros/');
+}
+function dl_htmlEscape_(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+}
+function dl_setProgress_(phase, done, total, note) {
+  const props = PropertiesService.getDocumentProperties();
+  const payload = { phase, done, total, note, ts: Date.now() };
+  props.setProperty('dl_progress', JSON.stringify(payload));
+}
+function dl_resetProgress_() {
+  PropertiesService.getDocumentProperties().deleteProperty('dl_progress');
+}
+function dl_makeToken_() {
+  return Utilities.getUuid().replace(/-/g, '').slice(0, 40);
+}
+function dl_exportSheetAsCsv_(sheetName) {
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(sheetName);
+  if (!sh) return { file: null, folder: null };
+  const lastRow = sh.getLastRow();
+  const lastCol = sh.getLastColumn();
+  if (lastRow < 1 || lastCol < 1) return { file: null, folder: null };
+  const values = sh.getRange(1, 1, lastRow, lastCol).getDisplayValues();
+  const csv = dl_sheetToCsv_(values);
+  const folder = dl_getOrCreateStagingFolder_();
+  const blob = Utilities.newBlob(csv, 'text/csv', sheetName + '.csv');
+  const file = folder.createFile(blob);
+  return { file, folder };
+}
+function dl_sheetToCsv_(rows2d) {
+  function esc(v) {
+    const s = String(v == null ? '' : v);
+    if (/[",\r\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+    return s;
+  }
+  return rows2d.map(row => (row || []).map(esc).join(',')).join('\r\n');
+}
+function dl_getOrCreateStagingFolder_() {
+  const props = PropertiesService.getDocumentProperties();
+  const existingId = props.getProperty('dl_staging_folderId');
+  if (existingId) {
+    try { return DriveApp.getFolderById(existingId); } catch (e) {}
+  }
+  const parent = DriveApp.getFileById(SpreadsheetApp.getActive().getId()).getParents().hasNext()
+    ? DriveApp.getFileById(SpreadsheetApp.getActive().getId()).getParents().next()
+    : DriveApp.getRootFolder();
+  const folder = parent.createFolder('dl_staging_' + Utilities.getUuid().slice(0, 8));
+  props.setProperty('dl_staging_folderId', folder.getId());
+  return folder;
+}
+
+/** Optional quick logs */
+function dl_logExecUrlFromOptions_() {
+  const url = dl_getExecUrlFromOptions_();
+  console.log('Options!I2 /exec URL:', url || '(missing or invalid)');
+}
+function logCurrentWebAppUrl() {
+  const rawUrl = ScriptApp.getService().getUrl();
+  const webAppUrl = rawUrl ? rawUrl.replace(/\/a\/[^/]+\/macros\//, '/macros/') : null;
+  console.log('Service URL:', webAppUrl || '(no web app deployment found)');
+}
+
+/** Debug helpers preserved */
+function donor_createTrainingPairs_debug() {
+  const ui = SpreadsheetApp.getUi();
+  const t0 = Date.now();
+  SpreadsheetApp.getActive().toast('Debug: loading rows', 'Donor Matcher', 5);
+  const rows = donor_loadAllRows__debug_();
+  const t1 = Date.now();
+  if (!rows.length) {
+    ui.alert('No input rows found. Check sheet names and headers.');
+    return;
+  }
+  SpreadsheetApp.getActive().toast('Debug: building blocks', 'Donor Matcher', 5);
+  const dbg1 = donor_buildBlocks__debug_(rows);
+  const t2 = Date.now();
+  SpreadsheetApp.getActive().toast('Debug: generating pairs', 'Donor Matcher', 5);
+  const pairs = donor_generatePairsFromBlocks__debug_(dbg1.blocks, dbg1.bigBlocksSkipped);
+  const t3 = Date.now();
+  if (!pairs.length) {
+    ui.alert('Zero pairs after blocking or all blocks skipped by size.');
+    return;
+  }
+  SpreadsheetApp.getActive().toast('Debug: sampling and writing', 'Donor Matcher', 5);
+  const sampled = donor_sampleArray_(pairs, DONOR_CFG.sampleTrainingPairs);
+  donor_writeTrainingSheet_(sampled);
+  const t4 = Date.now();
+  const msg = 'Debug summary'
+    + '\n\nRows total: ' + rows.length
+    + '\nBlocks total: ' + dbg1.blockCount
+    + '\nBlocks with <2 rows: ' + dbg1.smallBlocks
+    + '\nBlocks skipped for size: ' + dbg1.bigBlocksSkipped
+    + '\nPairs produced: ' + pairs.length
+    + '\nPairs sampled to Training: ' + sampled.length
+    + '\n\nTiming (ms)'
+    + '\nLoad rows: ' + (t1 - t0)
+    + '\nBuild blocks: ' + (t2 - t1)
+    + '\nGenerate pairs: ' + (t3 - t2)
+    + '\nWrite sheet: ' + (t4 - t3)
+    + '\nTotal: ' + (t4 - t0);
+  Logger.log(msg);
+  SpreadsheetApp.getUi().alert(msg);
+  SpreadsheetApp.getActive().toast('Training sheet ready with ' + sampled.length + ' pairs', 'Donor Matcher', 8);
+}
+function donor_loadAllRows__debug_() {
+  const kref = donor_readSheetAsObjects_(DONOR_CFG.krefSheet);
+  const fec = donor_readSheetAsObjects_(DONOR_CFG.fecSheet);
+  function headerHas(h, name) { return h.indexOf(name) !== -1; }
+  const need = ['DonorFirst','DonorLast','Address1','City','State','Zip','Employer','Occupation'];
+  const missingK = need.filter(n => !headerHas(kref.header, n));
+  const missingF = need.filter(n => !headerHas(fec.header, n));
+  if (missingK.length && missingF.length) {
+    Logger.log('Both sheets missing expected headers. K missing: ' + missingK.join(', ') + ' | F missing: ' + missingF.join(', '));
+  } else {
+    if (missingK.length) Logger.log('K sheet missing: ' + missingK.join(', '));
+    if (missingF.length) Logger.log('F sheet missing: ' + missingF.join(', '));
+  }
+  function mapRow(r, i, origin) {
+    const first = String(r.DonorFirst || '').trim();
+    const last = String(r.DonorLast || '').trim();
+    const addr1 = String(r.Address1 || '').trim();
+    const city = String(r.City || '').trim();
+    const state = String(r.State || '').trim();
+    const zip = donor_normalizeZip_(r.Zip);
+    const employer = String(r.Employer || '').trim();
+    const occupation = String(r.Occupation || '').trim();
+    const fullName = (first + ' ' + last).trim();
+    const house = donor_extractHouseNumber_(addr1);
+    return { origin, rowIndex: i, first, last, addr1, city, state, zip, employer, occupation, fullName, house, globalIdx: -1 };
+  }
+  const all = [];
+  for (let i = 0; i < kref.rows.length; i++) all.push(mapRow(kref.rows[i], i, 'K'));
+  for (let j = 0; j < fec.rows.length; j++) all.push(mapRow(fec.rows[j], j, 'F'));
+  for (let k = 0; k < all.length; k++) all[k].globalIdx = k;
+  Logger.log('Loaded rows. K: ' + kref.rows.length + ' F: ' + fec.rows.length + ' total: ' + all.length);
+  return all;
+}
+function donor_buildBlocks__debug_(rows) {
+  const blocks = new Map();
+  let blockCount = 0;
+  let smallBlocks = 0;
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const keys = donor_blockingKeys_(r);
+    for (let j = 0; j < keys.length; j++) {
+      const key = keys[j];
+      if (!blocks.has(key)) { blocks.set(key, []); blockCount++; }
+      blocks.get(key).push(r);
+    }
+  }
+  const it = blocks.values();
+  while (true) {
+    const step = it.next();
+    if (step.done) break;
+    const arr = step.value;
+    if (!arr || arr.length < 2) smallBlocks++;
+  }
+  Logger.log('Blocks built. Total: ' + blockCount + ' small: ' + smallBlocks);
+  return { blocks, blockCount, smallBlocks, bigBlocksSkipped: 0 };
+}
+function donor_generatePairsFromBlocks__debug_(blocks, bigBlocksSkippedInitial) {
+  const pairs = [];
+  let total = 0;
+  const seen = new Set();
+  let bigBlocksSkipped = bigBlocksSkippedInitial || 0;
+  const it = blocks.entries();
+  while (true) {
+    const step = it.next();
+    if (step.done) break;
+    const blockRows = step.value[1];
+    if (!blockRows || blockRows.length < 2) continue;
+    const n = blockRows.length;
+    if (n * n > DONOR_CFG.maxPairsPerBlock) { bigBlocksSkipped++; continue; }
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const a = blockRows[i];
+        const b = blockRows[j];
+        const ka = a.globalIdx < b.globalIdx ? a.globalIdx + '|' + b.globalIdx : b.globalIdx + '|' + a.globalIdx;
+        if (seen.has(ka)) continue;
+        seen.add(ka);
+        const feat = donor_makeFeatures_(a, b);
+        pairs.push({ a, b, aIdx: a.globalIdx, bIdx: b.globalIdx, features: feat });
+        total++;
+        if (total > DONOR_CFG.maxTotalPairs) {
+          Logger.log('Hit maxTotalPairs cap at ' + DONOR_CFG.maxTotalPairs + '.');
+          return pairs;
+        }
+      }
+    }
+  }
+  Logger.log('Pairs generated: ' + pairs.length + ' | bigBlocksSkipped: ' + bigBlocksSkipped);
+  return pairs;
+}
+
