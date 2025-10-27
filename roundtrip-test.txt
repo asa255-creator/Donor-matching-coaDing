@@ -1086,6 +1086,14 @@ function doGet(e) {
       '            break',
       '        elif choice == "n":',
       '            print("Starting new training session...")',
+      '            # Clear any existing weights so we start fresh',
+      '            print("Clearing any previously saved model weights...")',
+      '            clear_url = job["modelUrl"].replace("model=1", "clear=1")',
+      '            try:',
+      '                http_get(clear_url)',
+      '                print("Old model cleared.")',
+      '            except:',
+      '                print("(No old model to clear)")',
       '            break',
       '        else:',
       '            print(\'Please enter "l" to load or "n" for new.\')',
@@ -1467,7 +1475,11 @@ function doGet(e) {
       '                ',
       '                # Debug: Show first 20 matches',
       '                if matches_found <= 20:',
-      '                    print(f"  Match {matches_found}: {a.get(\'_name\',\'\')} {a.get(\'_last\',\'\')} <-> {b.get(\'_name\',\'\')} {b.get(\'_last\',\'\')} (p={p:.3f})")',
+      '                    a_first = a.get("DonorFirst","")',
+      '                    a_last = a.get("DonorLast","")',
+      '                    b_first = b.get("DonorFirst","")',
+      '                    b_last = b.get("DonorLast","")',
+      '                    print(f"  Match {matches_found}: {a_first} {a_last} <-> {b_first} {b_last} (p={p:.3f})")',
       '',
       'print(f"Checked {pairs_checked} candidate pairs")',
       'print(f"Found {matches_found} matches above threshold {threshold}")',
@@ -1580,6 +1592,14 @@ function doGet(e) {
       first_pair_table: fp ? JSON.parse(fp) : {}
     };
     return ContentService.createTextOutput(JSON.stringify(body)).setMimeType(ContentService.MimeType.JSON);
+  }
+
+  // Clear model endpoint - delete saved weights
+  if (p.clear == '1') {
+    const props = PropertiesService.getDocumentProperties();
+    props.deleteProperty('donor_model_weights');
+    props.deleteProperty('donor_first_pair_table');
+    return ContentService.createTextOutput(JSON.stringify({ ok: true, message: 'Model cleared' })).setMimeType(ContentService.MimeType.JSON);
   }
 
   // Training data endpoint - fetch existing training rows
