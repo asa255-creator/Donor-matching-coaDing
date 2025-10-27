@@ -1771,12 +1771,11 @@ function donor_applyResult_assignedIds_(idMapObj) {
 }
 
 function donor_applyResult_donorAssignments_(assignments) {
-  PropertiesService.getDocumentProperties()
-    .setProperty('donor_final_assignments', JSON.stringify(assignments));
+  // Don't store in PropertiesService - it's too large!
+  // Instead, pass directly to build function
 
-  // Automatically build the final donor ID list
   Logger.log('Building donor ID list with ' + Object.keys(assignments).length + ' assignments');
-  const result = donor_buildDonorIdList();
+  const result = donor_buildDonorIdList(assignments);
 
   if (result.success) {
     Logger.log('Successfully built donor ID list: ' + result.message);
@@ -1787,19 +1786,22 @@ function donor_applyResult_donorAssignments_(assignments) {
   return result;
 }
 
-function donor_buildDonorIdList() {
+function donor_buildDonorIdList(assignments) {
   const ss = SpreadsheetApp.getActive();
 
   try {
-    // Load donor assignments
-    const assignmentsRaw = PropertiesService.getDocumentProperties()
-      .getProperty('donor_final_assignments');
+    // Use assignments parameter instead of loading from PropertiesService
+    if (!assignments) {
+      // Fallback: try to load from PropertiesService (for manual menu calls)
+      const assignmentsRaw = PropertiesService.getDocumentProperties()
+        .getProperty('donor_final_assignments');
 
-    if (!assignmentsRaw) {
-      throw new Error('No donor assignments found. Please run the training process first.');
+      if (!assignmentsRaw) {
+        throw new Error('No donor assignments found. Please run the training process first.');
+      }
+
+      assignments = JSON.parse(assignmentsRaw);
     }
-
-    const assignments = JSON.parse(assignmentsRaw);
 
     // Load KREF and FEC sheets with ALL columns
     const krefSheet = ss.getSheetByName(DONOR_CFG.krefSheet);
