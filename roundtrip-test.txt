@@ -1510,7 +1510,7 @@ function doGet(e) {
       'print("\\nPosting results to Google Sheets...")',
       'response_raw = http_post(job["resultUrl"], payload)',
       'try:',
-      '    response = json.loads(response_raw.decode("utf-8"))',
+      '    response = json.loads(response_raw)',
       '    ',
       '    if response.get("ok"):',
       '        print("All results posted successfully!")',
@@ -1529,8 +1529,16 @@ function doGet(e) {
       '        print(f"ERROR: Apps Script returned failure: {response.get(\'error\', \'unknown\')}")',
       '        if "merge_output" in response:',
       '            print(f"  Merge output error: {response[\'merge_output\'].get(\'error\', \'unknown\')}")',
+      'except json.JSONDecodeError:',
+      '    print("ERROR: Apps Script returned an error page instead of JSON.")',
+      '    print("This usually means there is a JavaScript error in the script.")',
+      '    # Try to extract error from HTML',
+      '    if "Error" in response_raw and "<" in response_raw:',
+      '        print("\\nReceived HTML error page. Check the Apps Script logs for details.")',
+      '        print("Go to: Extensions → Apps Script → Executions (clock icon)")',
+      '    print(f"\\nFirst 500 chars of response:\\n{response_raw[:500]}")',
       'except Exception as e:',
-      '    print(f"ERROR parsing response: {e}")',
+      '    print(f"ERROR: {e}")',
       '    print(f"Raw response: {response_raw[:500]}")'
     ].join('\n');
 
