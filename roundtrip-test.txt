@@ -1056,7 +1056,7 @@ function doGet(e) {
       '            print("Training stopped by user.")',
       '            break',
       '        else:',
-      '            print("Please enter \\'y\\' to continue or \\'n\\' to stop.")',
+      '            print(\'Please enter "y" to continue or "n" to stop.\')',
       '    if ans == "n":',
       '        break',
       '    round_num += 1',
