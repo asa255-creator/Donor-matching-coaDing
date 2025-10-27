@@ -1,0 +1,21 @@
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+
+  // KREF menu stays the same
+  ui.createMenu('KREF Tools')
+    .addItem('Fetch donor info from KREF', 'exportAllToSheet')
+    .addItem('Add downloaded FEC reports', 'addFecReportsFromComputer')
+    .addToUi();
+
+  // Donor Tools menu now includes your local functions plus the final donor ID list creator
+  ui.createMenu('Donor Tools')
+    .addItem('Run locally: prepare job and show Terminal command', 'dl_prepareLocalJobAndShowCommand_')
+    .addItem('Open progress sidebar', 'dl_showProgressSidebar')
+    .addToUi();
+    // onOpen
+SpreadsheetApp.getActive().toast(
+  'Donor Tools loaded from ' + (ScriptApp.getService().getUrl() || '(no web app)'),
+  'Info', 5
+);
+
+}
