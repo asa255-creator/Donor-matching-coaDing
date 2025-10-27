@@ -1809,123 +1809,123 @@ function donor_buildDonorIdList() {
       throw new Error('No data found in KREF or FEC sheets.');
     }
 
-  // Define output header
-  const outputHeader = [
-    'Recipient', 'DonorFirst', 'DonorLast', 'Address1', 'Address2',
-    'City', 'State', 'Zip', 'Amount', 'WeightedAmount', 'ReceiptDate',
-    'Occupation', 'Employer', 'DonationID', 'DonorID', 'Confidence'
-  ];
+    // Define output header
+    const outputHeader = [
+      'Recipient', 'DonorFirst', 'DonorLast', 'Address1', 'Address2',
+      'City', 'State', 'Zip', 'Amount', 'WeightedAmount', 'ReceiptDate',
+      'Occupation', 'Employer', 'DonationID', 'DonorID', 'Confidence'
+    ];
 
-  const outputRows = [outputHeader];
+    const outputRows = [outputHeader];
 
-  // Helper to find column index
-  function findCol(header, name) {
-    const idx = header.indexOf(name);
-    if (idx === -1) throw new Error('Column not found: ' + name);
-    return idx;
-  }
-
-  // Process KREF
-  if (krefData.length > 1) {
-    const krefHeader = krefData[0];
-    try {
-      const colFirst = findCol(krefHeader, 'DonorFirst');
-      const colLast = findCol(krefHeader, 'DonorLast');
-      const colAddr1 = findCol(krefHeader, 'Address1');
-      const colAddr2 = krefHeader.indexOf('Address2'); // Optional
-      const colCity = findCol(krefHeader, 'City');
-      const colState = findCol(krefHeader, 'State');
-      const colZip = findCol(krefHeader, 'Zip');
-      const colAmount = findCol(krefHeader, 'Amount');
-      const colWeightedAmount = findCol(krefHeader, 'WeightedAmount');
-      const colReceiptDate = findCol(krefHeader, 'ReceiptDate');
-      const colOccupation = findCol(krefHeader, 'Occupation');
-      const colEmployer = findCol(krefHeader, 'Employer');
-
-      for (let i = 1; i < krefData.length; i++) {
-        const row = krefData[i];
-        const key = 'K:' + (i + 1);
-        const assignment = assignments[key] || { donorId: '', confidence: '' };
-
-        outputRows.push([
-          'K',
-          row[colFirst] || '',
-          row[colLast] || '',
-          row[colAddr1] || '',
-          colAddr2 >= 0 ? (row[colAddr2] || '') : '',
-          row[colCity] || '',
-          row[colState] || '',
-          row[colZip] || '',
-          row[colAmount] || '',
-          row[colWeightedAmount] || '',
-          row[colReceiptDate] || '',
-          row[colOccupation] || '',
-          row[colEmployer] || '',
-          key,
-          assignment.donorId,
-          assignment.confidence
-        ]);
-      }
-    } catch (err) {
-      throw new Error('Error processing KREF: ' + err.message + '. Make sure Amount and WeightedAmount columns exist.');
+    // Helper to find column index
+    function findCol(header, name) {
+      const idx = header.indexOf(name);
+      if (idx === -1) throw new Error('Column not found: ' + name);
+      return idx;
     }
-  }
 
-  // Process FEC
-  if (fecData.length > 1) {
-    const fecHeader = fecData[0];
-    try {
-      const colFirst = findCol(fecHeader, 'DonorFirst');
-      const colLast = findCol(fecHeader, 'DonorLast');
-      const colAddr1 = findCol(fecHeader, 'Address1');
-      const colAddr2 = fecHeader.indexOf('Address2'); // Optional
-      const colCity = findCol(fecHeader, 'City');
-      const colState = findCol(fecHeader, 'State');
-      const colZip = findCol(fecHeader, 'Zip');
-      const colAmount = findCol(fecHeader, 'Amount');
-      const colWeightedAmount = findCol(fecHeader, 'WeightedAmount');
-      const colReceiptDate = findCol(fecHeader, 'ReceiptDate');
-      const colOccupation = findCol(fecHeader, 'Occupation');
-      const colEmployer = findCol(fecHeader, 'Employer');
+    // Process KREF
+    if (krefData.length > 1) {
+      const krefHeader = krefData[0];
+      try {
+        const colFirst = findCol(krefHeader, 'DonorFirst');
+        const colLast = findCol(krefHeader, 'DonorLast');
+        const colAddr1 = findCol(krefHeader, 'Address1');
+        const colAddr2 = krefHeader.indexOf('Address2'); // Optional
+        const colCity = findCol(krefHeader, 'City');
+        const colState = findCol(krefHeader, 'State');
+        const colZip = findCol(krefHeader, 'Zip');
+        const colAmount = findCol(krefHeader, 'Amount');
+        const colWeightedAmount = findCol(krefHeader, 'WeightedAmount');
+        const colReceiptDate = findCol(krefHeader, 'ReceiptDate');
+        const colOccupation = findCol(krefHeader, 'Occupation');
+        const colEmployer = findCol(krefHeader, 'Employer');
 
-      for (let i = 1; i < fecData.length; i++) {
-        const row = fecData[i];
-        const key = 'F:' + (i + 1);
-        const assignment = assignments[key] || { donorId: '', confidence: '' };
+        for (let i = 1; i < krefData.length; i++) {
+          const row = krefData[i];
+          const key = 'K:' + (i + 1);
+          const assignment = assignments[key] || { donorId: '', confidence: '' };
 
-        outputRows.push([
-          'F',
-          row[colFirst] || '',
-          row[colLast] || '',
-          row[colAddr1] || '',
-          colAddr2 >= 0 ? (row[colAddr2] || '') : '',
-          row[colCity] || '',
-          row[colState] || '',
-          row[colZip] || '',
-          row[colAmount] || '',
-          row[colWeightedAmount] || '',
-          row[colReceiptDate] || '',
-          row[colOccupation] || '',
-          row[colEmployer] || '',
-          key,
-          assignment.donorId,
-          assignment.confidence
-        ]);
+          outputRows.push([
+            'K',
+            row[colFirst] || '',
+            row[colLast] || '',
+            row[colAddr1] || '',
+            colAddr2 >= 0 ? (row[colAddr2] || '') : '',
+            row[colCity] || '',
+            row[colState] || '',
+            row[colZip] || '',
+            row[colAmount] || '',
+            row[colWeightedAmount] || '',
+            row[colReceiptDate] || '',
+            row[colOccupation] || '',
+            row[colEmployer] || '',
+            key,
+            assignment.donorId,
+            assignment.confidence
+          ]);
+        }
+      } catch (err) {
+        throw new Error('Error processing KREF: ' + err.message + '. Make sure Amount and WeightedAmount columns exist.');
       }
-    } catch (err) {
-      throw new Error('Error processing FEC: ' + err.message + '. Make sure Amount and WeightedAmount columns exist.');
     }
-  }
 
-  // Write to Merge output sheet
-  const mergeSheet = donor_getOrCreateSheet_('Merge output');
-  mergeSheet.clear();
+    // Process FEC
+    if (fecData.length > 1) {
+      const fecHeader = fecData[0];
+      try {
+        const colFirst = findCol(fecHeader, 'DonorFirst');
+        const colLast = findCol(fecHeader, 'DonorLast');
+        const colAddr1 = findCol(fecHeader, 'Address1');
+        const colAddr2 = fecHeader.indexOf('Address2'); // Optional
+        const colCity = findCol(fecHeader, 'City');
+        const colState = findCol(fecHeader, 'State');
+        const colZip = findCol(fecHeader, 'Zip');
+        const colAmount = findCol(fecHeader, 'Amount');
+        const colWeightedAmount = findCol(fecHeader, 'WeightedAmount');
+        const colReceiptDate = findCol(fecHeader, 'ReceiptDate');
+        const colOccupation = findCol(fecHeader, 'Occupation');
+        const colEmployer = findCol(fecHeader, 'Employer');
 
-  Logger.log('Writing ' + outputRows.length + ' rows (including header) to Merge output sheet');
-  Logger.log('Total assignments: ' + Object.keys(assignments).length);
+        for (let i = 1; i < fecData.length; i++) {
+          const row = fecData[i];
+          const key = 'F:' + (i + 1);
+          const assignment = assignments[key] || { donorId: '', confidence: '' };
 
-  mergeSheet.getRange(1, 1, outputRows.length, outputHeader.length).setValues(outputRows);
-  mergeSheet.setFrozenRows(1);
+          outputRows.push([
+            'F',
+            row[colFirst] || '',
+            row[colLast] || '',
+            row[colAddr1] || '',
+            colAddr2 >= 0 ? (row[colAddr2] || '') : '',
+            row[colCity] || '',
+            row[colState] || '',
+            row[colZip] || '',
+            row[colAmount] || '',
+            row[colWeightedAmount] || '',
+            row[colReceiptDate] || '',
+            row[colOccupation] || '',
+            row[colEmployer] || '',
+            key,
+            assignment.donorId,
+            assignment.confidence
+          ]);
+        }
+      } catch (err) {
+        throw new Error('Error processing FEC: ' + err.message + '. Make sure Amount and WeightedAmount columns exist.');
+      }
+    }
+
+    // Write to Merge output sheet
+    const mergeSheet = donor_getOrCreateSheet_('Merge output');
+    mergeSheet.clear();
+
+    Logger.log('Writing ' + outputRows.length + ' rows (including header) to Merge output sheet');
+    Logger.log('Total assignments: ' + Object.keys(assignments).length);
+
+    mergeSheet.getRange(1, 1, outputRows.length, outputHeader.length).setValues(outputRows);
+    mergeSheet.setFrozenRows(1);
 
     Logger.log('Merge output sheet populated successfully with ' + (outputRows.length - 1) + ' data rows');
     SpreadsheetApp.getActive().toast('Donor ID list built successfully! Check the "Merge output" sheet.', 'Success', 5);
