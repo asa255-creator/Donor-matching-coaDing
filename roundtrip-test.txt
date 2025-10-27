@@ -1502,7 +1502,7 @@ function doGet(e) {
       '}',
       'http_post(job["resultUrl"], payload)',
       'print("\\nAll results posted to Google Sheets!")',
-      'print("You can now run \\'Build Final Donor ID List\\' from the menu.")'
+      'print(\'You can now run "Build Final Donor ID List" from the menu.\')'
     ].join('\n');
 
     return ContentService.createTextOutput(py).setMimeType(ContentService.MimeType.TEXT);
