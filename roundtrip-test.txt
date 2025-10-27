@@ -1049,7 +1049,7 @@ function doGet(e) {
       'existing_data = json.loads(existing_model)',
       '',
       'if existing_data.get("weights"):',
-      '    print(f"Found existing model with {len(existing_data[\\'weights\\'])} weights")',
+      '    print(f"Found existing model with {len(existing_data[\\"weights\\"])} weights")',
       '    ',
       '    # Ask user: load or new',
       '    while True:',
