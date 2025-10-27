@@ -1652,6 +1652,8 @@ function doPost(e) {
   }
 
   if (body.donor_assignments && typeof body.donor_assignments === 'object') {
+    Logger.log('Received donor_assignments with ' + Object.keys(body.donor_assignments).length + ' entries');
+    Logger.log('First 5 keys: ' + Object.keys(body.donor_assignments).slice(0, 5).join(', '));
     donor_applyResult_donorAssignments_(body.donor_assignments);
   }
 
@@ -1723,7 +1725,14 @@ function donor_applyResult_donorAssignments_(assignments) {
     .setProperty('donor_final_assignments', JSON.stringify(assignments));
 
   // Automatically build the final donor ID list
-  donor_buildDonorIdList();
+  try {
+    donor_buildDonorIdList();
+    Logger.log('Successfully built donor ID list with ' + Object.keys(assignments).length + ' assignments');
+  } catch (err) {
+    Logger.log('ERROR building donor ID list: ' + err.message);
+    Logger.log('Stack: ' + err.stack);
+    throw err; // Re-throw so Python can see the error
+  }
 }
 
 function donor_buildDonorIdList() {
@@ -1734,8 +1743,7 @@ function donor_buildDonorIdList() {
     .getProperty('donor_final_assignments');
 
   if (!assignmentsRaw) {
-    SpreadsheetApp.getUi().alert('No donor assignments found. Please run the training process first.');
-    return;
+    throw new Error('No donor assignments found. Please run the training process first.');
   }
 
   const assignments = JSON.parse(assignmentsRaw);
@@ -1745,8 +1753,7 @@ function donor_buildDonorIdList() {
   const fecSheet = ss.getSheetByName(DONOR_CFG.fecSheet);
 
   if (!krefSheet || !fecSheet) {
-    SpreadsheetApp.getUi().alert('Missing KREF_Exports or FEC_Exports sheets.');
-    return;
+    throw new Error('Missing KREF_Exports or FEC_Exports sheets.');
   }
 
   // Read all data
@@ -1754,8 +1761,7 @@ function donor_buildDonorIdList() {
   const fecData = fecSheet.getDataRange().getValues();
 
   if (krefData.length < 2 && fecData.length < 2) {
-    SpreadsheetApp.getUi().alert('No data found in KREF or FEC sheets.');
-    return;
+    throw new Error('No data found in KREF or FEC sheets.');
   }
 
   // Define output header
@@ -1816,8 +1822,7 @@ function donor_buildDonorIdList() {
         ]);
       }
     } catch (err) {
-      SpreadsheetApp.getUi().alert('Error processing KREF: ' + err.message + '. Make sure Amount and WeightedAmount columns exist.');
-      return;
+      throw new Error('Error processing KREF: ' + err.message + '. Make sure Amount and WeightedAmount columns exist.');
     }
   }
 
@@ -1863,17 +1868,21 @@ function donor_buildDonorIdList() {
         ]);
       }
     } catch (err) {
-      SpreadsheetApp.getUi().alert('Error processing FEC: ' + err.message + '. Make sure Amount and WeightedAmount columns exist.');
-      return;
+      throw new Error('Error processing FEC: ' + err.message + '. Make sure Amount and WeightedAmount columns exist.');
     }
   }
 
   // Write to Merge output sheet
   const mergeSheet = donor_getOrCreateSheet_('Merge output');
   mergeSheet.clear();
+
+  Logger.log('Writing ' + outputRows.length + ' rows (including header) to Merge output sheet');
+  Logger.log('Total assignments: ' + Object.keys(assignments).length);
+
   mergeSheet.getRange(1, 1, outputRows.length, outputHeader.length).setValues(outputRows);
   mergeSheet.setFrozenRows(1);
 
+  Logger.log('Merge output sheet populated successfully with ' + (outputRows.length - 1) + ' data rows');
   SpreadsheetApp.getActive().toast('Donor ID list built successfully! Check the "Merge output" sheet.', 'Success', 5);
 }
 
