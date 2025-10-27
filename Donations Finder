@@ -1,0 +1,579 @@
+/** CONFIG **/
+const CANDIDATE_SHEET = 'Candidates';     // A: FirstName, B: LastName, C: Multiplier
+const ORG_SHEET       = 'Organizations';  // A: OrganizationName, B: Multiplier
+const OPTIONS_SHEET   = 'Options';        // A2:E2 values
+const OUTPUT_SHEET    = 'KREF_Exports';
+const USER_AGENT      = 'Mozilla/5.0 (Apps Script)';
+const EXPORT_BASE     = 'https://secure.kentucky.gov/kref/publicsearch/ExportContributors';
+
+// Output columns
+// A Recipient
+// B DonorFirst
+// C DonorLast
+// D Address1
+// E Address2
+// F City
+// G State
+// H Zip
+// I Amount
+// J WeightedAmount
+// K ReceiptDate
+// L Occupation
+// M Employer
+// N DonationID
+const OUTPUT_HEADER = [
+  'Recipient','DonorFirst','DonorLast','Address1','Address2','City','State','Zip',
+  'Amount','WeightedAmount','ReceiptDate','Occupation','Employer','DonationID'
+];
+
+const DEFAULTS = {
+  minAmount: 1,
+  maxAmount: 249,
+  minimalDate: '2018-07-01',
+  maximalDate: '',
+  contributionTypes: 'INDIVIDUAL'
+};
+
+/** MAIN **/
+function exportAllToSheet() {
+  const ss = SpreadsheetApp.getActive();
+
+  // Always start clean and write header
+  const out = resetOutputSheet_(ss, OUTPUT_SHEET);
+
+  const opts = readOptions_();
+  const candRows = readRows_(ss, CANDIDATE_SHEET, 2, 1, 3).filter(r => r[0] && r[1]); // [First, Last, Multiplier]
+  const orgRows  = readRows_(ss, ORG_SHEET, 2, 1, 2).filter(r => r[0]);               // [OrgName, Multiplier]
+
+  const total = candRows.length + orgRows.length;
+  if (!total) {
+    SpreadsheetApp.getUi().alert('No rows found in Candidates or Organizations.');
+    return;
+  }
+
+  let done = 0;
+  showProgress_(done, total, 'Starting');
+
+  // Candidates
+  for (const [first, last, multRaw] of candRows) {
+    const multiplier = toNumber_(multRaw, 1);
+    const url = buildExportUrl_({
+      ContributionSearchType: 'Candidate',
+      CandidateFirstName: first,
+      CandidateLastName: last,
+      MinAmount: opts.minAmount,
+      MaxAmount: opts.maxAmount,
+      MinimalDate: toKrefDate_(opts.minimalDate),
+      MaximalDate: opts.maximalDate ? toKrefDate_(opts.maximalDate) : '',
+      ContributionTypes: opts.contributionTypes
+    });
+    appendReducedCsv_(url, out, multiplier);
+    done++; showProgress_(done, total, `Candidate: ${first} ${last}`); Utilities.sleep(150);
+  }
+
+  // Organizations
+  for (const [orgName, multRaw] of orgRows) {
+    const multiplier = toNumber_(multRaw, 1);
+    const url = buildExportUrl_({
+      ContributionSearchType: 'Organization',
+      OrganizationName: orgName,
+      MinAmount: opts.minAmount,
+      MaxAmount: opts.maxAmount,
+      MinimalDate: toKrefDate_(opts.minimalDate),
+      MaximalDate: opts.maximalDate ? toKrefDate_(opts.maximalDate) : '',
+      ContributionTypes: opts.contributionTypes
+    });
+    appendReducedCsv_(url, out, multiplier);
+    done++; showProgress_(done, total, `Organization: ${orgName}`); Utilities.sleep(150);
+  }
+
+  SpreadsheetApp.getActive().toast('100% • Done', 'KREF export', 5);
+  SpreadsheetApp.getUi().alert('Done. Appended to KREF_Exports.');
+}
+
+/** CSV -> SELECTED COLUMNS ONLY, RECIPIENT FROM CSV **/
+function appendReducedCsv_(url, outSheet, multiplier) {
+  const csvText = httpGetText_(url);
+  if (!csvText) return;
+
+  const rows = Utilities.parseCsv(csvText, ',') || [];
+  if (!rows.length) return;
+
+  const header = rows[0].map(h => String(h || '').trim().toLowerCase());
+  const idx = {
+    recipFirst: findCol_(header, ['recipient first name','recipient firstname','candidate first name']),
+    recipLast:  findCol_(header, ['recipient last name','recipient lastname','candidate last name']),
+    toOrg:      findCol_(header, ['to organization']),
+    donorFirst: findCol_(header, ['contributor first name','contributor firstname','first name']),
+    donorLast:  findCol_(header, ['contributor last name','contributor lastname','last name']),
+    addr1:      findCol_(header, ['address 1','address1','address line 1']),
+    addr2:      findCol_(header, ['address 2','address2','address line 2']),
+    city:       findCol_(header, ['city']),
+    state:      findCol_(header, ['state']),
+    zip:        findCol_(header, ['zip','zip code','zipcode','postal code']),
+    amount:     findCol_(header, ['amount','contribution amount']),
+    receipt:    findCol_(header, ['receipt date','date received','transaction date']),
+    occupation: findCol_(header, ['occupation']),
+    employer:   findCol_(header, ['employer'])
+  };
+
+  const data = rows.slice(1);
+  if (!data.length) return;
+
+  // Read options here so we do not change the function signature
+  const optsForDecay = readOptions_();
+  const annualLoss = optsForDecay.percentLossPerYear; // 0..1
+
+  const mapped = [];
+  for (const r of data) {
+    if (!r || !r.length) continue;
+
+    const rf = capName_(safeGet_(r, idx.recipFirst));
+    const rl = capName_(safeGet_(r, idx.recipLast));
+    let recipient = (rf || rl) ? [rf, rl].filter(Boolean).join(' ') : '';
+    if (!recipient) {
+      const toOrg = safeGet_(r, idx.toOrg);
+      if (toOrg) recipient = toOrg.trim();
+    }
+
+    const donorFirst = capName_(safeGet_(r, idx.donorFirst));
+    const donorLast  = capName_(safeGet_(r, idx.donorLast));
+    const amountStr  = safeGet_(r, idx.amount);
+    const amountNum  = parseAmount_(amountStr);
+
+    const receiptStr = safeGet_(r, idx.receipt);
+    const decay      = computeAgeDecay_(receiptStr, annualLoss);
+
+    const m          = toNumber_(multiplier, 1);
+    const weighted   = Number.isFinite(amountNum) ? roundCents_(amountNum * m * decay) : '';
+
+    const occupation = safeGet_(r, idx.occupation);
+    const employer   = safeGet_(r, idx.employer);
+
+    if (!recipient && !donorFirst && !donorLast && !amountStr && !receiptStr) continue;
+
+    mapped.push([
+      recipient,                       // A Recipient
+      donorFirst,                      // B DonorFirst
+      donorLast,                       // C DonorLast
+      safeGet_(r, idx.addr1),          // D Address1
+      safeGet_(r, idx.addr2),          // E Address2
+      safeGet_(r, idx.city),           // F City
+      safeGet_(r, idx.state),          // G State
+      normalizeZip_(safeGet_(r, idx.zip)), // H Zip
+      amountStr,                       // I Amount
+      weighted,                        // J WeightedAmount
+      receiptStr,                      // K ReceiptDate
+      occupation,                      // L Occupation
+      employer,                        // M Employer
+      ''                               // N DonationID
+    ]);
+  }
+
+  if (!mapped.length) return;
+
+  const startRow = outSheet.getLastRow() + 1;
+  const numCols  = OUTPUT_HEADER.length;
+  outSheet.getRange(startRow, 1, mapped.length, numCols).setValues(mapped);
+
+  const donationIdCol = 14; // N
+  const nextIdStart = getNextDonationId_(outSheet, donationIdCol);
+  const idValues = Array.from({ length: mapped.length }, (_, i) => [nextIdStart + i]);
+  outSheet.getRange(startRow, donationIdCol, mapped.length, 1).setValues(idValues);
+}
+
+
+/** FEC LOCAL FILE UPLOAD (no Drive) **/
+function addFecReportsFromComputer() {
+  const html = HtmlService.createHtmlOutput(`
+<!DOCTYPE html>
+<html>
+  <body style="font-family:sans-serif;padding:12px;">
+    <h3>Add downloaded FEC reports</h3>
+    <p>Select one or more CSV files from your computer.</p>
+    <input type="file" id="files" accept=".csv" multiple />
+    <br><br>
+    <button id="upload">Add to FEC_Exports</button>
+    <script>
+      document.getElementById('upload').addEventListener('click', async () => {
+        const input = document.getElementById('files');
+        if (!input.files.length) { alert('No files selected'); return; }
+        const payload = [];
+        for (const f of input.files) {
+          const text = await f.text();
+          payload.push({ name: f.name, text });
+        }
+        google.script.run
+          .withFailureHandler(err => { alert('Error: ' + err); })
+          .withSuccessHandler(msg => { alert(msg); google.script.host.close(); })
+          .appendUploadedFecCsvBatch(payload);
+      });
+    </script>
+  </body>
+</html>
+  `).setWidth(420).setHeight(260);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Add FEC reports');
+}
+
+// Accepts [{name, text}] and appends mapped rows into FEC_Exports
+function appendUploadedFecCsvBatch(files) {
+  const ss = SpreadsheetApp.getActive();
+  const out = getOrCreateSheet_('FEC_Exports');
+  ensureHeaderExists_(out);
+
+  // Pull options and fed map once
+  const optsForDecay = readOptions_();
+  const annualLoss   = optsForDecay.percentLossPerYear; // 0..1
+  const fedMap       = getFedWeightsMap_();
+
+  let totalRows = 0;
+  let fileCount = 0;
+
+  files.forEach(file => {
+    try {
+      const rows = Utilities.parseCsv(String(file.text || ''), ',');
+      if (!rows || !rows.length) return;
+
+      const header = rows[0].map(h => String(h || '').trim().toLowerCase());
+      const idx = {
+        candidateName: findCol_(header, ['candidate_name']),
+        committeeName: findCol_(header, ['committee_name']),
+        donorFirst:    findCol_(header, ['contributor_first_name']),
+        donorLast:     findCol_(header, ['contributor_last_name']),
+        donorFull:     findCol_(header, ['contributor_name']),
+        addr1:         findCol_(header, ['contributor_street_1']),
+        addr2:         findCol_(header, ['contributor_street_2']),
+        city:          findCol_(header, ['contributor_city']),
+        state:         findCol_(header, ['contributor_state']),
+        zip:           findCol_(header, ['contributor_zip']),
+        amount:        findCol_(header, ['contribution_receipt_amount']),
+        receipt:       findCol_(header, ['contribution_receipt_date']),
+        occupation:    findCol_(header, ['contributor_occupation']),
+        employer:      findCol_(header, ['contributor_employer'])
+      };
+
+      const mapped = [];
+      for (let i = 1; i < rows.length; i++) {
+        const r = rows[i];
+
+        const recipient = safeGet_(r, idx.candidateName) || safeGet_(r, idx.committeeName);
+
+        let donorFirst = capName_(safeGet_(r, idx.donorFirst));
+        let donorLast  = capName_(safeGet_(r, idx.donorLast));
+        if ((!donorFirst || !donorLast) && idx.donorFull !== -1) {
+          const parts = String(safeGet_(r, idx.donorFull)).split(/\s+/).filter(Boolean);
+          if (!donorFirst && parts.length) donorFirst = capName_(parts[0]);
+          if (!donorLast && parts.length > 1) donorLast = capName_(parts.slice(1).join(' '));
+        }
+
+        const amountStr = safeGet_(r, idx.amount);
+        const amountNum = parseAmount_(amountStr);
+
+        const receiptStr = safeGet_(r, idx.receipt);
+        const decay      = computeAgeDecay_(receiptStr, annualLoss);
+
+        const fedWeight  = lookupFedWeight_(fedMap, recipient); // default 1 if missing
+        const weighted   = Number.isFinite(amountNum) ? roundCents_(amountNum * fedWeight * decay) : '';
+
+        if (!recipient && !donorFirst && !donorLast && !amountStr) continue;
+
+        mapped.push([
+          recipient,                           // Recipient
+          donorFirst,                          // DonorFirst
+          donorLast,                           // DonorLast
+          safeGet_(r, idx.addr1),              // Address1
+          safeGet_(r, idx.addr2),              // Address2
+          safeGet_(r, idx.city),               // City
+          safeGet_(r, idx.state),              // State
+          normalizeZip_(safeGet_(r, idx.zip)), // Zip
+          amountStr,                           // Amount
+          weighted,                            // WeightedAmount
+          receiptStr,                          // ReceiptDate
+          safeGet_(r, idx.occupation),         // Occupation
+          safeGet_(r, idx.employer),           // Employer
+          ''                                   // DonationID
+        ]);
+      }
+
+      if (mapped.length) {
+        const start = out.getLastRow() + 1;
+        out.getRange(start, 1, mapped.length, OUTPUT_HEADER.length).setValues(mapped);
+
+        const idCol = 14; // N
+        const nextId = getNextDonationId_(out, idCol);
+        const ids = Array.from({ length: mapped.length }, (_, i) => [nextId + i]);
+        out.getRange(start, idCol, mapped.length, 1).setValues(ids);
+
+        totalRows += mapped.length;
+      }
+      fileCount++;
+    } catch (e) {
+      throw new Error('Failed on file: ' + (file.name || '(unnamed)') + ' - ' + e.message);
+    }
+  });
+
+  return 'Added ' + totalRows + ' row(s) from ' + fileCount + ' file(s) into FEC_Exports';
+}
+
+
+/** Sheet setup **/
+function resetOutputSheet_(ss, name) {
+  const existing = ss.getSheetByName(name);
+  if (existing) ss.deleteSheet(existing);
+  const sh = ss.insertSheet(name);
+
+  const neededCols = OUTPUT_HEADER.length;
+  if (sh.getMaxColumns() < neededCols) {
+    sh.insertColumnsAfter(sh.getMaxColumns(), neededCols - sh.getMaxColumns());
+  } else if (sh.getMaxColumns() > neededCols) {
+    sh.deleteColumns(neededCols + 1, sh.getMaxColumns() - neededCols);
+  }
+
+  sh.getRange(1, 1, 1, neededCols).setValues([OUTPUT_HEADER]);
+
+  sh.getRange('A:N').setNumberFormat('@');
+  sh.getRange('I:I').setNumberFormat('0.00');
+  sh.getRange('J:J').setNumberFormat('0.00');
+  sh.getRange('K:K').setNumberFormat('m/d/yyyy');
+  sh.getRange('N:N').setNumberFormat('0');
+
+  sh.setFrozenRows(1);
+  return sh;
+}
+
+/** Helpers **/
+function readRows_(ss, name, startRow, startCol, numCols) {
+  const sh = ss.getSheetByName(name);
+  if (!sh) return [];
+  const n = Math.max(sh.getLastRow() - (startRow - 1), 0);
+  return n ? sh.getRange(startRow, startCol, n, numCols).getValues() : [];
+}
+
+function getNextDonationId_(sheet, colIndex) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return 1;
+  const vals = sheet.getRange(2, colIndex, lastRow - 1, 1).getValues().flat();
+  let maxId = 0;
+  for (const v of vals) {
+    const n = Number(v);
+    if (Number.isFinite(n) && n > maxId) maxId = n;
+  }
+  return maxId + 1;
+}
+
+function buildExportUrl_(params) {
+  const qs = Object.keys(params)
+    .filter(k => params[k] != null && params[k] !== '')
+    .map(k => encodeURIComponent(k) + '=' + encodeURIComponent(String(params[k])))
+    .join('&');
+  return `${EXPORT_BASE}?${qs}`;
+}
+
+function readOptions_() {
+  const sh = SpreadsheetApp.getActive().getSheetByName(OPTIONS_SHEET);
+  if (!sh) return {...DEFAULTS, percentLossPerYear: 0};
+
+  // Existing A2:E2
+  const row = sh.getRange(2, 1, 1, 5).getValues()[0] || [];
+  const [minAmt, maxAmt, minDate, maxDate, types] = row;
+
+  // New H2 for annual percent loss
+  let annualLossCell = '';
+  try {
+    annualLossCell = sh.getRange(2, 8).getValue(); // H2
+  } catch (e) {
+    annualLossCell = '';
+  }
+
+  const asInt = (v, d) => { const n = parseInt(v, 10); return Number.isFinite(n) ? n : d; };
+  const asStr = (v, d) => { const s = String(v || '').trim(); return s || d; };
+
+  const opts = {
+    minAmount: asInt(minAmt, DEFAULTS.minAmount),
+    maxAmount: asInt(maxAmt, DEFAULTS.maxAmount),
+    minimalDate: asStr(minDate, DEFAULTS.minimalDate),
+    maximalDate: String(maxDate || '').trim(),
+    contributionTypes: asStr(types, DEFAULTS.contributionTypes),
+    percentLossPerYear: normalizeAnnualLossRate_(annualLossCell) // 0..1
+  };
+
+  if (opts.maxAmount < opts.minAmount) { const t = opts.minAmount; opts.minAmount = opts.maxAmount; opts.maxAmount = t; }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(opts.minimalDate)) opts.minimalDate = DEFAULTS.minimalDate;
+  if (opts.maximalDate && !/^\d{4}-\d{2}-\d{2}$/.test(opts.maximalDate)) opts.maximalDate = '';
+  return opts;
+}
+
+function toKrefDate_(iso) {
+  if (!iso) return '';
+  const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return '';
+  const [, y, mm, dd] = m;
+  return `${mm}/${dd}/${y} 00:00:00`;
+}
+
+function httpGetText_(url) {
+  const res = UrlFetchApp.fetch(url, { method: 'get', headers: {'User-Agent': USER_AGENT}, muteHttpExceptions: true });
+  const code = res.getResponseCode();
+  if (code < 200 || code >= 300) throw new Error('HTTP ' + code + ' for ' + url);
+  return res.getContentText();
+}
+
+// exact match first, then contains match
+function findCol_(lowerHeader, names) {
+  for (const n of names) {
+    const i = lowerHeader.findIndex(h => h === n);
+    if (i !== -1) return i;
+  }
+  for (let i = 0; i < lowerHeader.length; i++) {
+    if (names.some(n => lowerHeader[i].includes(n))) return i;
+  }
+  return -1;
+}
+
+function safeGet_(row, idx) {
+  if (idx === -1) return '';
+  const v = row[idx];
+  return v == null ? '' : String(v).trim();
+}
+
+function capName_(s) {
+  const t = String(s || '').toLowerCase();
+  return t.replace(/(^|['\s-])([a-z])/g, (m, p1, p2) => p1 + p2.toUpperCase());
+}
+
+function parseAmount_(s) {
+  const n = Number(String(s || '').replace(/[^\d.-]/g, ''));
+  return Number.isFinite(n) ? n : NaN;
+}
+
+function toNumber_(v, fallback) {
+  if (v === null || v === undefined) return fallback;
+  const s = String(v).trim();
+  if (s === '') return fallback;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function roundCents_(n) {
+  return Math.round(n * 100) / 100;
+}
+
+function showProgress_(current, total, label) {
+  const pct = Math.floor((current / Math.max(total, 1)) * 100);
+  SpreadsheetApp.getActive().toast(`${pct}% • ${label}`, 'KREF export', 5);
+}
+
+// Keep only the first 5 digits. Preserve leading zeros by returning a string.
+function normalizeZip_(s) {
+  const digits = String(s || '').replace(/\D+/g, '');
+  if (digits.length >= 5) return digits.slice(0, 5);
+  if (digits.length > 0) return digits.padStart(5, '0');
+  return '';
+}
+// Create sheet if missing and return it
+function getOrCreateSheet_(name) {
+  const ss = SpreadsheetApp.getActive();
+  return ss.getSheetByName(name) || ss.insertSheet(name);
+}
+
+// Ensure header exists and matches OUTPUT_HEADER exactly
+function ensureHeaderExists_(sheet) {
+  const neededCols = OUTPUT_HEADER.length;
+
+  // Ensure the sheet has exactly neededCols columns
+  const maxCols = sheet.getMaxColumns();
+  if (maxCols < neededCols) {
+    sheet.insertColumnsAfter(maxCols, neededCols - maxCols);
+  } else if (maxCols > neededCols) {
+    sheet.deleteColumns(neededCols + 1, maxCols - neededCols);
+  }
+
+  // Write or refresh header row
+  sheet.getRange(1, 1, 1, neededCols).setValues([OUTPUT_HEADER]);
+
+  // Basic formats
+  sheet.getRange('A:N').setNumberFormat('@');
+  sheet.getRange('I:I').setNumberFormat('0.00');      // Amount
+  sheet.getRange('J:J').setNumberFormat('0.00');      // WeightedAmount
+  sheet.getRange('K:K').setNumberFormat('m/d/yyyy');  // ReceiptDate
+  sheet.getRange('N:N').setNumberFormat('0');         // DonationID
+  sheet.setFrozenRows(1);
+}
+// Parse a flexible date string like "m/d/yyyy", "yyyy-mm-dd", or with time
+function parseDateFlexible_(s) {
+  const raw = String(s || '').trim();
+  if (!raw) return null;
+
+  // Try explicit m/d/yyyy first
+  const md = raw.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})(?:.*)?$/);
+  if (md) {
+    const m = parseInt(md[1], 10);
+    const d = parseInt(md[2], 10);
+    let y = parseInt(md[3], 10);
+    if (y < 100) y += 2000;
+    const dt = new Date(y, m - 1, d);
+    return Number.isNaN(dt.getTime()) ? null : dt;
+  }
+
+  // Fallback to Date parser
+  const dt = new Date(raw);
+  return Number.isNaN(dt.getTime()) ? null : dt;
+}
+
+// Years between date and today, in fractional years
+function yearsSince_(dateObj) {
+  if (!(dateObj instanceof Date)) return 0;
+  const now = new Date();
+  const ms = now.getTime() - dateObj.getTime();
+  if (ms <= 0) return 0;
+  return ms / (365.25 * 24 * 60 * 60 * 1000);
+}
+
+// Convert a user percent to a 0..1 rate. Accepts "20" or "0.2"
+function normalizeAnnualLossRate_(v) {
+  let n = Number(String(v || '').trim());
+  if (!Number.isFinite(n) || n < 0) n = 0;
+  // If user enters 20, treat as 20%
+  if (n > 1) n = n / 100;
+  // Clamp to [0, 0.999] to avoid hitting zero for old gifts
+  if (n >= 0.999) n = 0.999;
+  return n;
+}
+
+// Compute time-decay factor given receipt date and annual loss rate
+function computeAgeDecay_(receiptStr, annualLossInput) {
+  const rate = normalizeAnnualLossRate_(annualLossInput); // 0..1
+  if (rate <= 0) return 1;
+  const d = parseDateFlexible_(receiptStr);
+  const yrs = yearsSince_(d);
+  // Decay as (1 - rate) ^ years
+  return Math.pow(1 - rate, yrs);
+}
+
+// Build a map from "FED Donations" sheet: { normalizedName -> weight }
+function getFedWeightsMap_() {
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName('FED Donations');
+  const map = Object.create(null);
+  if (!sh) return map;
+
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) return map;
+
+  // Read cols A and B, rows 2..last
+  const values = sh.getRange(2, 1, lastRow - 1, 2).getValues();
+  for (const [name, score] of values) {
+    const key = String(name || '').trim().toLowerCase();
+    if (!key) continue;
+    const num = Number(String(score || '').trim());
+    map[key] = Number.isFinite(num) && num > 0 ? num : 1;
+  }
+  return map;
+}
+
+// Case-insensitive lookup for a recipient name in the fed map
+function lookupFedWeight_(fedMap, recipient) {
+  const key = String(recipient || '').trim().toLowerCase();
+  if (!key) return 1;
+  return fedMap[key] || 1;
+}
