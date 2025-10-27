@@ -675,6 +675,12 @@ function dl_prepareLocalJobAndShowCommand_() {
 
   const token = dl_makeToken_();
   const until = Date.now() + DL_CFG.tokenMinutes * 60 * 1000;
+
+  // Read match threshold from Options!J2
+  const ss = SpreadsheetApp.getActive();
+  const optionsSheet = ss.getSheetByName('Options');
+  const threshold = optionsSheet ? Number(optionsSheet.getRange('J2').getValue() || 0.7) : 0.7;
+
   const job = {
     jobId: 'job_' + Utilities.getUuid().replace(/-/g, '').slice(0, 12),
     cfg: {
@@ -683,7 +689,7 @@ function dl_prepareLocalJobAndShowCommand_() {
       uncertaintyBand: DL_CFG.uncertaintyBand,
       maxPairsPerBlock: DL_CFG.maxPairsPerBlock,
       maxTotalPairs: DL_CFG.maxTotalPairs,
-      predictThreshold: DONOR_CFG.predictThreshold
+      predictThreshold: threshold
     },
     krefUrl: webAppUrl + '?csv=kref&token=' + encodeURIComponent(token),
     fecUrl:  webAppUrl + '?csv=fec&token=' + encodeURIComponent(token),
@@ -882,10 +888,10 @@ function doGet(e) {
       '    print("B:"); print(fmt(b))',
       '    print(f"feat nameSim={x[0]:.3f} addrSim={x[2]:.3f} empSim={x[3]:.3f} occSim={x[4]:.3f}  model_p={p:.3f}")',
       '    while True:',
-      '        s = read_tty("Label this pair (1 match, 0 not a match): ").strip()',
-      '        if s in ("0","1"):',
+      '        s = read_tty("Label this pair (1=match, 0=not match, 2=skip): ").strip()',
+      '        if s in ("0","1","2"):',
       '            return int(s)',
-      '        print("Please enter 1 or 0.")',
+      '        print("Please enter 1, 0, or 2.")',
       '',
       '# ----------------------------',
       '# Stable keys and candidate generators',
@@ -1019,10 +1025,11 @@ function doGet(e) {
       'K_rows = [row_as_obj(hdrK, r) for r in rowsK]',
       'F_rows = [row_as_obj(hdrF, r) for r in rowsF]',
       'COMBINED = []',
+      'global_idx = 0',
       'for i, r in enumerate(K_rows, start=2):',
-      '    o = dict(r); o["_origin"] = "K"; o["_rownum"] = i; COMBINED.append(o)',
+      '    o = dict(r); o["_origin"] = "K"; o["_rownum"] = i; o["_globalIdx"] = global_idx; COMBINED.append(o); global_idx += 1',
       'for j, r in enumerate(F_rows, start=2):',
-      '    o = dict(r); o["_origin"] = "F"; o["_rownum"] = j; COMBINED.append(o)',
+      '    o = dict(r); o["_origin"] = "F"; o["_rownum"] = j; o["_globalIdx"] = global_idx; COMBINED.append(o); global_idx += 1',
       'print(f"Loaded {len(COMBINED)} donors total")',
       '',
       '# Session storage',
@@ -1248,12 +1255,19 @@ function doGet(e) {
       '        print("No new candidate pairs found this round.")',
       '        return True',
       '    ',
+      '    labeled_count = 0',
       '    for i, item in enumerate(batch, start=1):',
       '        if round_num == 1:',
       '            a, b, x = item; p = 0.5',
       '        else:',
       '            a, b, x, p = item',
       '        y = show_pair_and_get_label(i, len(batch), a, b, x, p)',
+      '        ',
+      '        if y == 2:  # Skip',
+      '            print("  Skipped.")',
+      '            continue',
+      '        ',
+      '        # Only process if labeled (0 or 1)',
       '        training_rows.append({',
       '          "a":{"origin":a.get("_origin","C"), "row":a.get("_rownum",0), "first":a.get("DonorFirst",""), "last":a.get("DonorLast",""), "addr":a.get("Address1",""), "city":a.get("City",""), "state":a.get("State",""), "zip":a.get("Zip",""), "employer":a.get("Employer",""), "occupation":a.get("Occupation","")},',
       '          "b":{"origin":b.get("_origin","C"), "row":b.get("_rownum",0), "first":b.get("DonorFirst",""), "last":b.get("DonorLast",""), "addr":b.get("Address1",""), "city":b.get("City",""), "state":b.get("State",""), "zip":b.get("Zip",""), "employer":b.get("Employer",""), "occupation":b.get("Occupation","")},',
@@ -1267,6 +1281,7 @@ function doGet(e) {
       '        rb = (b.get("_origin","C"), b.get("_rownum",0))',
       '        donor_usage_count[ra] = donor_usage_count.get(ra, 0) + 1',
       '        donor_usage_count[rb] = donor_usage_count.get(rb, 0) + 1',
+      '        labeled_count += 1',
       '    ',
       '    print(f"Round {round_num} complete. Labeled {len(batch)} pairs. Total labels: {len(training_rows)}")',
       '    ',
@@ -1300,14 +1315,147 @@ function doGet(e) {
       '        break',
       '    round_num += 1',
       '',
-      '# Final post back to Apps Script once per session',
+      '# ----------------------------',
+      '# Final Matching Phase',
+      'print("\\n" + "="*60)',
+      'print("TRAINING COMPLETE")',
+      'print(f"Total labeled pairs: {len(training_rows)}")',
+      'print("="*60)',
+      'print("\\nStarting final matching on all donors...")',
+      '',
+      'threshold = job.get("cfg", {}).get("predictThreshold", 0.7)',
+      'print(f"Using match threshold: {threshold}")',
+      '',
+      '# Build blocks using adaptive blocking on ALL donors',
+      'print(f"\\nApplying adaptive blocking to {len(COMBINED)} donors...")',
+      'weight_analysis = analyze_weights(w, feature_names)',
+      'print(f"Top features: {[\', \'.join([f\'{name}={weight:.2f}\' for _, weight, name, _ in weight_analysis[:3]])]}")',
+      '',
+      '# Use Union-Find for clustering',
+      'parent = list(range(len(COMBINED)))',
+      'rank = [0] * len(COMBINED)',
+      'donor_confidence = {}  # Track confidence per donor',
+      '',
+      'def uf_find(x):',
+      '    if parent[x] != x:',
+      '        parent[x] = uf_find(parent[x])',
+      '    return parent[x]',
+      '',
+      'def uf_union(a, b):',
+      '    pa = uf_find(a)',
+      '    pb = uf_find(b)',
+      '    if pa == pb:',
+      '        return',
+      '    if rank[pa] < rank[pb]:',
+      '        pa, pb = pb, pa',
+      '    parent[pb] = pa',
+      '    if rank[pa] == rank[pb]:',
+      '        rank[pa] += 1',
+      '',
+      '# Use adaptive blocking to find candidate pairs',
+      'top_features = weight_analysis[:5]',
+      'all_blocks = {}',
+      '',
+      'for abs_w, w_val, feat_name, feat_idx in top_features:',
+      '    if abs_w < 0.1:',
+      '        continue',
+      '    blocks = {}',
+      '    for donor in COMBINED:',
+      '        if "*" in feat_name:',
+      '            key = generate_interaction_blocking_key(donor, feat_name)',
+      '        else:',
+      '            key = generate_blocking_key(donor, feat_name)',
+      '        if key:',
+      '            if key not in blocks:',
+      '                blocks[key] = []',
+      '            blocks[key].append(donor)',
+      '    for key, donors in blocks.items():',
+      '        if len(donors) >= 2 and len(donors) <= 200:',
+      '            block_id = f"{feat_name}:{key}"',
+      '            all_blocks[block_id] = donors',
+      '',
+      'print(f"Generated {len(all_blocks)} blocks for matching")',
+      '',
+      '# Find matching pairs',
+      'matches_found = 0',
+      'pairs_checked = 0',
+      'seen_final_pairs = set()',
+      '',
+      'for block_id, block_donors in all_blocks.items():',
+      '    for i in range(len(block_donors)):',
+      '        for j in range(i+1, len(block_donors)):',
+      '            a = block_donors[i]',
+      '            b = block_donors[j]',
+      '            ',
+      '            a_idx = a.get("_globalIdx", -1)',
+      '            b_idx = b.get("_globalIdx", -1)',
+      '            if a_idx == -1 or b_idx == -1:',
+      '                continue',
+      '            ',
+      '            pair_key = (min(a_idx, b_idx), max(a_idx, b_idx))',
+      '            if pair_key in seen_final_pairs:',
+      '                continue',
+      '            seen_final_pairs.add(pair_key)',
+      '            ',
+      '            x = features(a, b)',
+      '            z = w[-1]',
+      '            for t in range(len(x)):',
+      '                z += w[t] * x[t]',
+      '            p = 1.0 / (1.0 + math.exp(-z))',
+      '            pairs_checked += 1',
+      '            ',
+      '            if p >= threshold:',
+      '                uf_union(a_idx, b_idx)',
+      '                # Store confidence for both donors',
+      '                donor_confidence[a_idx] = max(donor_confidence.get(a_idx, 0), p)',
+      '                donor_confidence[b_idx] = max(donor_confidence.get(b_idx, 0), p)',
+      '                matches_found += 1',
+      '',
+      'print(f"Checked {pairs_checked} candidate pairs")',
+      'print(f"Found {matches_found} matches above threshold {threshold}")',
+      '',
+      '# Assign DonorIDs',
+      'components = {}',
+      'for i in range(len(COMBINED)):',
+      '    root = uf_find(i)',
+      '    if root not in components:',
+      '        components[root] = []',
+      '    components[root].append(i)',
+      '',
+      'donor_assignments = {}',
+      'next_id = 1',
+      '',
+      'for root, members in components.items():',
+      '    for member_idx in members:',
+      '        donor = COMBINED[member_idx]',
+      '        origin = donor.get("_origin", "C")',
+      '        rownum = donor.get("_rownum", 0)',
+      '        key = f"{origin}:{rownum}"',
+      '        ',
+      '        # Solo donors get confidence 1.0',
+      '        conf = donor_confidence.get(member_idx, 1.0) if len(members) > 1 else 1.0',
+      '        ',
+      '        donor_assignments[key] = {',
+      '            "donorId": next_id,',
+      '            "confidence": round(conf, 4)',
+      '        }',
+      '    next_id += 1',
+      '',
+      'print(f"\\nAssigned {next_id - 1} unique DonorIDs to {len(COMBINED)} donors")',
+      'unique_matched = sum(1 for members in components.values() if len(members) > 1)',
+      'print(f"Unique donors with matches: {unique_matched}")',
+      'print(f"Solo donors (no matches): {len(components) - unique_matched}")',
+      '',
+      '# Final post back to Apps Script',
       'payload = {',
-      '  "progress": {"phase":"Final","done":len(training_rows),"total":len(training_rows),"note":"final post"},',
+      '  "progress": {"phase":"Complete","done":len(COMBINED),"total":len(COMBINED),"note":"matching complete"},',
       '  "training_rows": training_rows,',
-      '  "model_weights": w',
+      '  "model_weights": w,',
+      '  "donor_assignments": donor_assignments',
       '}',
       'http_post(job["resultUrl"], payload)',
-      'print("All training complete and results posted.")'
+      'print("\\nAll results posted to Google Sheets!")',
+      'print("You can now run \\'Build Final Donor ID List\\' from the menu.")'
     ].join('\n');
 
     return ContentService.createTextOutput(py).setMimeType(ContentService.MimeType.TEXT);
@@ -1380,6 +1528,10 @@ function doPost(e) {
     donor_applyResult_assignedIds_(body.id_map);
   }
 
+  if (body.donor_assignments && typeof body.donor_assignments === 'object') {
+    donor_applyResult_donorAssignments_(body.donor_assignments);
+  }
+
   return ContentService.createTextOutput(JSON.stringify({ ok: true })).setMimeType(ContentService.MimeType.JSON);
 }
 
@@ -1441,6 +1593,162 @@ function donor_applyResult_assignedIds_(idMapObj) {
   }
   writeTo(DONOR_CFG.krefSheet, 'K');
   writeTo(DONOR_CFG.fecSheet, 'F');
+}
+
+function donor_applyResult_donorAssignments_(assignments) {
+  PropertiesService.getDocumentProperties()
+    .setProperty('donor_final_assignments', JSON.stringify(assignments));
+}
+
+function donor_buildDonorIdList() {
+  const ss = SpreadsheetApp.getActive();
+
+  // Load donor assignments
+  const assignmentsRaw = PropertiesService.getDocumentProperties()
+    .getProperty('donor_final_assignments');
+
+  if (!assignmentsRaw) {
+    SpreadsheetApp.getUi().alert('No donor assignments found. Please run the training process first.');
+    return;
+  }
+
+  const assignments = JSON.parse(assignmentsRaw);
+
+  // Load KREF and FEC sheets with ALL columns
+  const krefSheet = ss.getSheetByName(DONOR_CFG.krefSheet);
+  const fecSheet = ss.getSheetByName(DONOR_CFG.fecSheet);
+
+  if (!krefSheet || !fecSheet) {
+    SpreadsheetApp.getUi().alert('Missing KREF_Exports or FEC_Exports sheets.');
+    return;
+  }
+
+  // Read all data
+  const krefData = krefSheet.getDataRange().getValues();
+  const fecData = fecSheet.getDataRange().getValues();
+
+  if (krefData.length < 2 && fecData.length < 2) {
+    SpreadsheetApp.getUi().alert('No data found in KREF or FEC sheets.');
+    return;
+  }
+
+  // Define output header
+  const outputHeader = [
+    'Recipient', 'DonorFirst', 'DonorLast', 'Address1', 'Address2',
+    'City', 'State', 'Zip', 'Amount', 'WeightedAmount', 'ReceiptDate',
+    'Occupation', 'Employer', 'DonationID', 'DonorID', 'Confidence'
+  ];
+
+  const outputRows = [outputHeader];
+
+  // Helper to find column index
+  function findCol(header, name) {
+    const idx = header.indexOf(name);
+    if (idx === -1) throw new Error('Column not found: ' + name);
+    return idx;
+  }
+
+  // Process KREF
+  if (krefData.length > 1) {
+    const krefHeader = krefData[0];
+    try {
+      const colFirst = findCol(krefHeader, 'DonorFirst');
+      const colLast = findCol(krefHeader, 'DonorLast');
+      const colAddr1 = findCol(krefHeader, 'Address1');
+      const colAddr2 = krefHeader.indexOf('Address2'); // Optional
+      const colCity = findCol(krefHeader, 'City');
+      const colState = findCol(krefHeader, 'State');
+      const colZip = findCol(krefHeader, 'Zip');
+      const colAmount = findCol(krefHeader, 'Amount');
+      const colWeightedAmount = findCol(krefHeader, 'WeightedAmount');
+      const colReceiptDate = findCol(krefHeader, 'ReceiptDate');
+      const colOccupation = findCol(krefHeader, 'Occupation');
+      const colEmployer = findCol(krefHeader, 'Employer');
+
+      for (let i = 1; i < krefData.length; i++) {
+        const row = krefData[i];
+        const key = 'K:' + (i + 1);
+        const assignment = assignments[key] || { donorId: '', confidence: '' };
+
+        outputRows.push([
+          'K',
+          row[colFirst] || '',
+          row[colLast] || '',
+          row[colAddr1] || '',
+          colAddr2 >= 0 ? (row[colAddr2] || '') : '',
+          row[colCity] || '',
+          row[colState] || '',
+          row[colZip] || '',
+          row[colAmount] || '',
+          row[colWeightedAmount] || '',
+          row[colReceiptDate] || '',
+          row[colOccupation] || '',
+          row[colEmployer] || '',
+          key,
+          assignment.donorId,
+          assignment.confidence
+        ]);
+      }
+    } catch (err) {
+      SpreadsheetApp.getUi().alert('Error processing KREF: ' + err.message + '. Make sure Amount and WeightedAmount columns exist.');
+      return;
+    }
+  }
+
+  // Process FEC
+  if (fecData.length > 1) {
+    const fecHeader = fecData[0];
+    try {
+      const colFirst = findCol(fecHeader, 'DonorFirst');
+      const colLast = findCol(fecHeader, 'DonorLast');
+      const colAddr1 = findCol(fecHeader, 'Address1');
+      const colAddr2 = fecHeader.indexOf('Address2'); // Optional
+      const colCity = findCol(fecHeader, 'City');
+      const colState = findCol(fecHeader, 'State');
+      const colZip = findCol(fecHeader, 'Zip');
+      const colAmount = findCol(fecHeader, 'Amount');
+      const colWeightedAmount = findCol(fecHeader, 'WeightedAmount');
+      const colReceiptDate = findCol(fecHeader, 'ReceiptDate');
+      const colOccupation = findCol(fecHeader, 'Occupation');
+      const colEmployer = findCol(fecHeader, 'Employer');
+
+      for (let i = 1; i < fecData.length; i++) {
+        const row = fecData[i];
+        const key = 'F:' + (i + 1);
+        const assignment = assignments[key] || { donorId: '', confidence: '' };
+
+        outputRows.push([
+          'F',
+          row[colFirst] || '',
+          row[colLast] || '',
+          row[colAddr1] || '',
+          colAddr2 >= 0 ? (row[colAddr2] || '') : '',
+          row[colCity] || '',
+          row[colState] || '',
+          row[colZip] || '',
+          row[colAmount] || '',
+          row[colWeightedAmount] || '',
+          row[colReceiptDate] || '',
+          row[colOccupation] || '',
+          row[colEmployer] || '',
+          key,
+          assignment.donorId,
+          assignment.confidence
+        ]);
+      }
+    } catch (err) {
+      SpreadsheetApp.getUi().alert('Error processing FEC: ' + err.message + '. Make sure Amount and WeightedAmount columns exist.');
+      return;
+    }
+  }
+
+  // Write to Merge output sheet
+  const mergeSheet = donor_getOrCreateSheet_('Merge output');
+  mergeSheet.clear();
+  mergeSheet.getRange(1, 1, outputRows.length, outputHeader.length).setValues(outputRows);
+  mergeSheet.setFrozenRows(1);
+
+  SpreadsheetApp.getActive().toast('Donor ID list built successfully! Check the "Merge output" sheet.', 'Success', 5);
 }
 
 /** Token and helpers */
