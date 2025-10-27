@@ -2201,3 +2201,252 @@ function donor_generatePairsFromBlocks__debug_(blocks, bigBlocksSkippedInitial) 
   Logger.log('Pairs generated: ' + pairs.length + ' | bigBlocksSkipped: ' + bigBlocksSkipped);
   return pairs;
 }
+
+// ========================================
+// Campaign Deputy Upload Functions
+// ========================================
+
+/**
+ * Opens a dialog for drag-and-drop CSV upload
+ */
+function cd_uploadDialog() {
+  const html = HtmlService.createHtmlOutput(cd_getUploadHtml_())
+    .setWidth(500)
+    .setHeight(300)
+    .setTitle('Upload Campaign Deputy Export');
+  SpreadsheetApp.getUi().showModalDialog(html, 'Campaign Deputy Upload');
+}
+
+/**
+ * Returns the HTML for the drag-and-drop interface
+ */
+function cd_getUploadHtml_() {
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 20px;
+      margin: 0;
+    }
+    #dropzone {
+      border: 3px dashed #4285f4;
+      border-radius: 8px;
+      padding: 40px;
+      text-align: center;
+      background-color: #f8f9fa;
+      transition: all 0.3s;
+      cursor: pointer;
+    }
+    #dropzone.dragover {
+      background-color: #e8f0fe;
+      border-color: #1967d2;
+    }
+    #dropzone:hover {
+      background-color: #e8f0fe;
+    }
+    .icon {
+      font-size: 48px;
+      color: #4285f4;
+      margin-bottom: 10px;
+    }
+    .message {
+      font-size: 16px;
+      color: #5f6368;
+      margin-bottom: 8px;
+    }
+    .hint {
+      font-size: 12px;
+      color: #80868b;
+    }
+    #status {
+      margin-top: 20px;
+      padding: 10px;
+      border-radius: 4px;
+      display: none;
+    }
+    #status.success {
+      background-color: #d4edda;
+      color: #155724;
+      border: 1px solid #c3e6cb;
+      display: block;
+    }
+    #status.error {
+      background-color: #f8d7da;
+      color: #721c24;
+      border: 1px solid #f5c6cb;
+      display: block;
+    }
+    #status.processing {
+      background-color: #fff3cd;
+      color: #856404;
+      border: 1px solid #ffeaa7;
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <div id="dropzone">
+    <div class="icon">📄</div>
+    <div class="message">Drag and drop your Campaign Deputy CSV file here</div>
+    <div class="hint">or click to select a file</div>
+  </div>
+  <input type="file" id="fileInput" accept=".csv" style="display: none;">
+  <div id="status"></div>
+
+  <script>
+    const dropzone = document.getElementById('dropzone');
+    const fileInput = document.getElementById('fileInput');
+    const status = document.getElementById('status');
+
+    // Click to select file
+    dropzone.addEventListener('click', () => {
+      fileInput.click();
+    });
+
+    // File selected via input
+    fileInput.addEventListener('change', (e) => {
+      if (e.target.files.length > 0) {
+        handleFile(e.target.files[0]);
+      }
+    });
+
+    // Prevent default drag behaviors
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+      dropzone.addEventListener(eventName, preventDefaults, false);
+      document.body.addEventListener(eventName, preventDefaults, false);
+    });
+
+    function preventDefaults(e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+
+    // Highlight drop zone when dragging over it
+    ['dragenter', 'dragover'].forEach(eventName => {
+      dropzone.addEventListener(eventName, () => {
+        dropzone.classList.add('dragover');
+      }, false);
+    });
+
+    ['dragleave', 'drop'].forEach(eventName => {
+      dropzone.addEventListener(eventName, () => {
+        dropzone.classList.remove('dragover');
+      }, false);
+    });
+
+    // Handle dropped files
+    dropzone.addEventListener('drop', (e) => {
+      const files = e.dataTransfer.files;
+      if (files.length > 0) {
+        handleFile(files[0]);
+      }
+    }, false);
+
+    function handleFile(file) {
+      // Validate file type
+      if (!file.name.endsWith('.csv')) {
+        showStatus('error', 'Please upload a CSV file only.');
+        return;
+      }
+
+      showStatus('processing', 'Reading file: ' + file.name + '...');
+
+      // Read file contents
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const csvContent = e.target.result;
+        showStatus('processing', 'Uploading to Google Sheets...');
+        
+        // Send to server
+        google.script.run
+          .withSuccessHandler(onSuccess)
+          .withFailureHandler(onError)
+          .cd_processUpload(csvContent, file.name);
+      };
+      reader.onerror = () => {
+        showStatus('error', 'Failed to read file. Please try again.');
+      };
+      reader.readAsText(file);
+    }
+
+    function onSuccess(result) {
+      showStatus('success', result.message + ' (' + result.rowCount + ' rows imported)');
+      setTimeout(() => {
+        google.script.host.close();
+      }, 2000);
+    }
+
+    function onError(error) {
+      showStatus('error', 'Error: ' + error.message);
+    }
+
+    function showStatus(type, message) {
+      status.className = type;
+      status.textContent = message;
+    }
+  </script>
+</body>
+</html>
+  `;
+}
+
+/**
+ * Processes the uploaded CSV and writes to CD_donors sheet
+ * @param {string} csvContent - The CSV file contents
+ * @param {string} fileName - The original filename
+ * @returns {Object} Result with success status and message
+ */
+function cd_processUpload(csvContent, fileName) {
+  try {
+    const ss = SpreadsheetApp.getActive();
+    
+    // Get or create CD_donors sheet
+    let sheet = ss.getSheetByName('CD_donors');
+    if (!sheet) {
+      sheet = ss.insertSheet('CD_donors');
+    } else {
+      // Clear existing content
+      sheet.clear();
+    }
+    
+    // Parse CSV
+    const rows = Utilities.parseCsv(csvContent);
+    
+    if (rows.length === 0) {
+      throw new Error('CSV file is empty');
+    }
+    
+    // Write to sheet
+    sheet.getRange(1, 1, rows.length, rows[0].length).setValues(rows);
+    
+    // Format header row
+    if (rows.length > 0) {
+      const headerRange = sheet.getRange(1, 1, 1, rows[0].length);
+      headerRange.setFontWeight('bold');
+      headerRange.setBackground('#4285f4');
+      headerRange.setFontColor('#ffffff');
+      sheet.setFrozenRows(1);
+    }
+    
+    // Auto-resize columns
+    for (let i = 1; i <= rows[0].length; i++) {
+      sheet.autoResizeColumn(i);
+    }
+    
+    Logger.log('Campaign Deputy export uploaded: ' + fileName + ' (' + rows.length + ' rows)');
+    
+    return {
+      success: true,
+      message: 'Successfully imported ' + fileName,
+      rowCount: rows.length - 1 // Exclude header
+    };
+    
+  } catch (error) {
+    Logger.log('Error uploading Campaign Deputy export: ' + error.message);
+    throw new Error('Failed to process CSV: ' + error.message);
+  }
+}
