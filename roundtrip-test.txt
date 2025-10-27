@@ -1464,6 +1464,10 @@ function doGet(e) {
       '                donor_confidence[a_idx] = max(donor_confidence.get(a_idx, 0), p)',
       '                donor_confidence[b_idx] = max(donor_confidence.get(b_idx, 0), p)',
       '                matches_found += 1',
+      '                ',
+      '                # Debug: Show first 20 matches',
+      '                if matches_found <= 20:',
+      '                    print(f"  Match {matches_found}: {a.get(\'_name\',\'\')} {a.get(\'_last\',\'\')} <-> {b.get(\'_name\',\'\')} {b.get(\'_last\',\'\')} (p={p:.3f})")',
       '',
       'print(f"Checked {pairs_checked} candidate pairs")',
       'print(f"Found {matches_found} matches above threshold {threshold}")',
@@ -1839,6 +1843,7 @@ function donor_buildDonorIdList(assignments) {
     if (krefData.length > 1) {
       const krefHeader = krefData[0];
       try {
+        const colRecipient = krefHeader.indexOf('Recipient'); // Optional
         const colFirst = findCol(krefHeader, 'DonorFirst');
         const colLast = findCol(krefHeader, 'DonorLast');
         const colAddr1 = findCol(krefHeader, 'Address1');
@@ -1858,7 +1863,7 @@ function donor_buildDonorIdList(assignments) {
           const assignment = assignments[key] || { donorId: '', confidence: '' };
 
           outputRows.push([
-            'K',
+            colRecipient >= 0 ? (row[colRecipient] || 'K') : 'K',
             row[colFirst] || '',
             row[colLast] || '',
             row[colAddr1] || '',
@@ -1885,6 +1890,7 @@ function donor_buildDonorIdList(assignments) {
     if (fecData.length > 1) {
       const fecHeader = fecData[0];
       try {
+        const colRecipient = fecHeader.indexOf('Recipient'); // Optional
         const colFirst = findCol(fecHeader, 'DonorFirst');
         const colLast = findCol(fecHeader, 'DonorLast');
         const colAddr1 = findCol(fecHeader, 'Address1');
@@ -1904,7 +1910,7 @@ function donor_buildDonorIdList(assignments) {
           const assignment = assignments[key] || { donorId: '', confidence: '' };
 
           outputRows.push([
-            'F',
+            colRecipient >= 0 ? (row[colRecipient] || 'F') : 'F',
             row[colFirst] || '',
             row[colLast] || '',
             row[colAddr1] || '',
