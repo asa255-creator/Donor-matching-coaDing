@@ -1043,6 +1043,53 @@ function doGet(e) {
       'feature_names = ["name", "last", "addr", "employer", "occupation", "name*last", "name*addr", "name*employer", "name*occupation", "last*addr", "last*employer", "last*occupation", "addr*employer", "addr*occupation", "employer*occupation"]',
       '',
       '# ----------------------------',
+      '# Check for existing training data',
+      'print("\\nChecking for existing training data...")',
+      'existing_model = http_get(job["modelUrl"]).decode("utf-8")',
+      'existing_data = json.loads(existing_model)',
+      '',
+      'if existing_data.get("weights"):',
+      '    print(f"Found existing model with {len(existing_data[\\'weights\\'])} weights")',
+      '    ',
+      '    # Ask user: load or new',
+      '    while True:',
+      '        choice = read_tty("(L)oad existing training data and continue, or start (N)ew? (l/n): ").strip().lower()',
+      '        if choice == "l":',
+      '            print("Loading existing training data...")',
+      '            # Fetch training data',
+      '            training_url = job["modelUrl"].replace("model=1", "training=1")',
+      '            training_json = http_get(training_url).decode("utf-8")',
+      '            training_data = json.loads(training_json)',
+      '            ',
+      '            if training_data.get("training_rows"):',
+      '                training_rows = training_data["training_rows"]',
+      '                w = existing_data["weights"]',
+      '                ',
+      '                # Build seen_pairs from loaded data',
+      '                for row in training_rows:',
+      '                    a_key = (row["a"]["origin"], row["a"]["row"])',
+      '                    b_key = (row["b"]["origin"], row["b"]["row"])',
+      '                    pair_key = (a_key, b_key) if a_key <= b_key else (b_key, a_key)',
+      '                    seen_pairs.add(pair_key)',
+      '                    ',
+      '                    # Track donor usage',
+      '                    donor_usage_count[a_key] = donor_usage_count.get(a_key, 0) + 1',
+      '                    donor_usage_count[b_key] = donor_usage_count.get(b_key, 0) + 1',
+      '                ',
+      '                print(f"Loaded {len(training_rows)} existing labeled pairs")',
+      '                print(f"Model has {len(w)} weights")',
+      '            else:',
+      '                print("No training data found, starting fresh")',
+      '            break',
+      '        elif choice == "n":',
+      '            print("Starting new training session...")',
+      '            break',
+      '        else:',
+      '            print(\'Please enter "l" to load or "n" for new.\')',
+      'else:',
+      '    print("No existing model found. Starting fresh.")',
+      '',
+      '# ----------------------------',
       '# Retraining function',
       'def retrain_model(training_rows, w, epochs=50, lr=0.1):',
       '    """Do multiple passes through training data to improve model."""',
@@ -1492,6 +1539,75 @@ function doGet(e) {
       first_pair_table: fp ? JSON.parse(fp) : {}
     };
     return ContentService.createTextOutput(JSON.stringify(body)).setMimeType(ContentService.MimeType.JSON);
+  }
+
+  // Training data endpoint - fetch existing training rows
+  if (p.training == '1') {
+    const ss = SpreadsheetApp.getActive();
+    const sh = ss.getSheetByName(DONOR_CFG.trainingSheet);
+
+    if (!sh || sh.getLastRow() < 2) {
+      return ContentService.createTextOutput(JSON.stringify({ training_rows: [] })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    const vals = sh.getDataRange().getValues();
+    const header = vals[0];
+    const trainingRows = [];
+
+    for (let i = 1; i < vals.length; i++) {
+      const row = vals[i];
+      const label = Number(row[0]);
+      if (label !== 0 && label !== 1) continue; // Skip unlabeled
+
+      // Parse the row into the format Python expects
+      trainingRows.push({
+        a: {
+          origin: String(row[1] || ''),
+          row: Number(row[2] || 0),
+          first: String(row[3] || ''),
+          last: String(row[4] || ''),
+          addr: String(row[5] || ''),
+          city: String(row[6] || ''),
+          state: String(row[7] || ''),
+          zip: String(row[8] || ''),
+          employer: String(row[9] || ''),
+          occupation: String(row[10] || '')
+        },
+        b: {
+          origin: String(row[11] || ''),
+          row: Number(row[12] || 0),
+          first: String(row[13] || ''),
+          last: String(row[14] || ''),
+          addr: String(row[15] || ''),
+          city: String(row[16] || ''),
+          state: String(row[17] || ''),
+          zip: String(row[18] || ''),
+          employer: String(row[19] || ''),
+          occupation: String(row[20] || '')
+        },
+        features: {
+          nameSim: Number(row[21] || 0),
+          lastSim: Number(row[22] || 0),
+          addrSim: Number(row[24] || 0),
+          empSim: Number(row[31] || 0),
+          occSim: Number(row[32] || 0),
+          // Compute interactions from base features
+          name_last: Number(row[21] || 0) * Number(row[22] || 0),
+          name_addr: Number(row[21] || 0) * Number(row[24] || 0),
+          name_emp: Number(row[21] || 0) * Number(row[31] || 0),
+          name_occ: Number(row[21] || 0) * Number(row[32] || 0),
+          last_addr: Number(row[22] || 0) * Number(row[24] || 0),
+          last_emp: Number(row[22] || 0) * Number(row[31] || 0),
+          last_occ: Number(row[22] || 0) * Number(row[32] || 0),
+          addr_emp: Number(row[24] || 0) * Number(row[31] || 0),
+          addr_occ: Number(row[24] || 0) * Number(row[32] || 0),
+          emp_occ: Number(row[31] || 0) * Number(row[32] || 0)
+        },
+        label: label
+      });
+    }
+
+    return ContentService.createTextOutput(JSON.stringify({ training_rows: trainingRows })).setMimeType(ContentService.MimeType.JSON);
   }
 
   return ContentService.createTextOutput('Invalid query').setMimeType(ContentService.MimeType.TEXT);
