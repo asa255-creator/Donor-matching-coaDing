@@ -1047,6 +1047,7 @@ function doGet(e) {
       'print("\\nChecking for existing training data...")',
       'existing_model = http_get(job["modelUrl"]).decode("utf-8")',
       'existing_data = json.loads(existing_model)',
+      'is_continuing = False  # Track if we loaded existing data',
       '',
       'if existing_data.get("weights"):',
       '    weights_count = len(existing_data.get("weights", []))',
@@ -1065,6 +1066,7 @@ function doGet(e) {
       '            if training_data.get("training_rows"):',
       '                training_rows = training_data["training_rows"]',
       '                w = existing_data["weights"]',
+      '                is_continuing = True  # Mark as continuing',
       '                ',
       '                # Build seen_pairs from loaded data',
       '                for row in training_rows:',
@@ -1342,7 +1344,7 @@ function doGet(e) {
       '    print(f"Donors remaining in pool: {len(remaining_pool)}")',
       '    return True',
       '',
-      'round_num = 1',
+      'round_num = 2 if is_continuing else 1',
       'while True:',
       '    if not run_round(round_num):',
       '        break',
@@ -1503,7 +1505,7 @@ function doGet(e) {
       '}',
       'http_post(job["resultUrl"], payload)',
       'print("\\nAll results posted to Google Sheets!")',
-      'print(\'You can now run "Build Final Donor ID List" from the menu.\')'
+      'print(\'Final donor ID list has been automatically generated in the "Merge output" sheet.\')'
     ].join('\n');
 
     return ContentService.createTextOutput(py).setMimeType(ContentService.MimeType.TEXT);
@@ -1715,6 +1717,9 @@ function donor_applyResult_assignedIds_(idMapObj) {
 function donor_applyResult_donorAssignments_(assignments) {
   PropertiesService.getDocumentProperties()
     .setProperty('donor_final_assignments', JSON.stringify(assignments));
+
+  // Automatically build the final donor ID list
+  donor_buildDonorIdList();
 }
 
 function donor_buildDonorIdList() {
