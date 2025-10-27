@@ -1507,9 +1507,31 @@ function doGet(e) {
       '  "model_weights": w,',
       '  "donor_assignments": donor_assignments',
       '}',
-      'http_post(job["resultUrl"], payload)',
-      'print("\\nAll results posted to Google Sheets!")',
-      'print(\'Final donor ID list has been automatically generated in the "Merge output" sheet.\')'
+      'print("\\nPosting results to Google Sheets...")',
+      'response_raw = http_post(job["resultUrl"], payload)',
+      'try:',
+      '    response = json.loads(response_raw.decode("utf-8"))',
+      '    ',
+      '    if response.get("ok"):',
+      '        print("All results posted successfully!")',
+      '        ',
+      '        if "merge_output" in response:',
+      '            merge = response["merge_output"]',
+      '            if merge.get("success"):',
+      '                print(f"✓ Merge output: {merge[\'message\']}")',
+      '                print(f"  - Rows written: {merge.get(\'rows\', \'unknown\')}")',
+      '                print(f"  - Assignments: {merge.get(\'assignments\', \'unknown\')}")',
+      '            else:',
+      '                print(f"✗ Merge output FAILED: {merge.get(\'error\', \'unknown error\')}")',
+      '        else:',
+      '            print("Warning: No merge output status in response")',
+      '    else:',
+      '        print(f"ERROR: Apps Script returned failure: {response.get(\'error\', \'unknown\')}")',
+      '        if "merge_output" in response:',
+      '            print(f"  Merge output error: {response[\'merge_output\'].get(\'error\', \'unknown\')}")',
+      'except Exception as e:',
+      '    print(f"ERROR parsing response: {e}")',
+      '    print(f"Raw response: {response_raw[:500]}")'
     ].join('\n');
 
     return ContentService.createTextOutput(py).setMimeType(ContentService.MimeType.TEXT);
@@ -1635,16 +1657,20 @@ function doPost(e) {
     return ContentService.createTextOutput(JSON.stringify({ ok: false, error: 'Invalid JSON' })).setMimeType(ContentService.MimeType.JSON);
   }
 
+  const responseData = { ok: true };
+
   if (body.progress) {
     dl_setProgress_(String(body.progress.phase || ''), Number(body.progress.done || 0), Number(body.progress.total || 0), String(body.progress.note || ''));
   }
 
   if (Array.isArray(body.training_rows) && body.training_rows.length) {
     donor_applyResult_trainingRows_(body.training_rows);
+    responseData.training_saved = body.training_rows.length;
   }
 
   if (Array.isArray(body.model_weights) && body.model_weights.length) {
     donor_applyResult_modelWeights_(body.model_weights);
+    responseData.weights_saved = body.model_weights.length;
   }
 
   if (body.id_map && typeof body.id_map === 'object') {
@@ -1654,10 +1680,26 @@ function doPost(e) {
   if (body.donor_assignments && typeof body.donor_assignments === 'object') {
     Logger.log('Received donor_assignments with ' + Object.keys(body.donor_assignments).length + ' entries');
     Logger.log('First 5 keys: ' + Object.keys(body.donor_assignments).slice(0, 5).join(', '));
-    donor_applyResult_donorAssignments_(body.donor_assignments);
+
+    const mergeResult = donor_applyResult_donorAssignments_(body.donor_assignments);
+
+    if (mergeResult.success) {
+      responseData.merge_output = {
+        success: true,
+        rows: mergeResult.rowCount,
+        assignments: mergeResult.assignmentCount,
+        message: mergeResult.message
+      };
+    } else {
+      responseData.ok = false;
+      responseData.merge_output = {
+        success: false,
+        error: mergeResult.error
+      };
+    }
   }
 
-  return ContentService.createTextOutput(JSON.stringify({ ok: true })).setMimeType(ContentService.MimeType.JSON);
+  return ContentService.createTextOutput(JSON.stringify(responseData)).setMimeType(ContentService.MimeType.JSON);
 }
 
 /** Apply helpers for POST payloads */
@@ -1725,44 +1767,47 @@ function donor_applyResult_donorAssignments_(assignments) {
     .setProperty('donor_final_assignments', JSON.stringify(assignments));
 
   // Automatically build the final donor ID list
-  try {
-    donor_buildDonorIdList();
-    Logger.log('Successfully built donor ID list with ' + Object.keys(assignments).length + ' assignments');
-  } catch (err) {
-    Logger.log('ERROR building donor ID list: ' + err.message);
-    Logger.log('Stack: ' + err.stack);
-    throw err; // Re-throw so Python can see the error
+  Logger.log('Building donor ID list with ' + Object.keys(assignments).length + ' assignments');
+  const result = donor_buildDonorIdList();
+
+  if (result.success) {
+    Logger.log('Successfully built donor ID list: ' + result.message);
+  } else {
+    Logger.log('ERROR building donor ID list: ' + result.error);
   }
+
+  return result;
 }
 
 function donor_buildDonorIdList() {
   const ss = SpreadsheetApp.getActive();
 
-  // Load donor assignments
-  const assignmentsRaw = PropertiesService.getDocumentProperties()
-    .getProperty('donor_final_assignments');
+  try {
+    // Load donor assignments
+    const assignmentsRaw = PropertiesService.getDocumentProperties()
+      .getProperty('donor_final_assignments');
 
-  if (!assignmentsRaw) {
-    throw new Error('No donor assignments found. Please run the training process first.');
-  }
+    if (!assignmentsRaw) {
+      throw new Error('No donor assignments found. Please run the training process first.');
+    }
 
-  const assignments = JSON.parse(assignmentsRaw);
+    const assignments = JSON.parse(assignmentsRaw);
 
-  // Load KREF and FEC sheets with ALL columns
-  const krefSheet = ss.getSheetByName(DONOR_CFG.krefSheet);
-  const fecSheet = ss.getSheetByName(DONOR_CFG.fecSheet);
+    // Load KREF and FEC sheets with ALL columns
+    const krefSheet = ss.getSheetByName(DONOR_CFG.krefSheet);
+    const fecSheet = ss.getSheetByName(DONOR_CFG.fecSheet);
 
-  if (!krefSheet || !fecSheet) {
-    throw new Error('Missing KREF_Exports or FEC_Exports sheets.');
-  }
+    if (!krefSheet || !fecSheet) {
+      throw new Error('Missing KREF_Exports or FEC_Exports sheets.');
+    }
 
-  // Read all data
-  const krefData = krefSheet.getDataRange().getValues();
-  const fecData = fecSheet.getDataRange().getValues();
+    // Read all data
+    const krefData = krefSheet.getDataRange().getValues();
+    const fecData = fecSheet.getDataRange().getValues();
 
-  if (krefData.length < 2 && fecData.length < 2) {
-    throw new Error('No data found in KREF or FEC sheets.');
-  }
+    if (krefData.length < 2 && fecData.length < 2) {
+      throw new Error('No data found in KREF or FEC sheets.');
+    }
 
   // Define output header
   const outputHeader = [
@@ -1882,8 +1927,24 @@ function donor_buildDonorIdList() {
   mergeSheet.getRange(1, 1, outputRows.length, outputHeader.length).setValues(outputRows);
   mergeSheet.setFrozenRows(1);
 
-  Logger.log('Merge output sheet populated successfully with ' + (outputRows.length - 1) + ' data rows');
-  SpreadsheetApp.getActive().toast('Donor ID list built successfully! Check the "Merge output" sheet.', 'Success', 5);
+    Logger.log('Merge output sheet populated successfully with ' + (outputRows.length - 1) + ' data rows');
+    SpreadsheetApp.getActive().toast('Donor ID list built successfully! Check the "Merge output" sheet.', 'Success', 5);
+
+    return {
+      success: true,
+      rowCount: outputRows.length - 1,
+      assignmentCount: Object.keys(assignments).length,
+      message: 'Merge output sheet populated with ' + (outputRows.length - 1) + ' rows'
+    };
+  } catch (err) {
+    Logger.log('ERROR in donor_buildDonorIdList: ' + err.message);
+    Logger.log('Stack: ' + err.stack);
+    return {
+      success: false,
+      error: err.message,
+      stack: err.stack
+    };
+  }
 }
 
 /** Token and helpers */
