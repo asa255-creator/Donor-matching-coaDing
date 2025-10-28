@@ -2780,13 +2780,21 @@ function cd_prepareMatchingJob_() {
  */
 function cd_createTempCsv_(data, name) {
   const csvContent = data.map(row => row.map(cell => {
+    // Convert Date objects to simple M/D/YYYY format
+    if (cell instanceof Date && !isNaN(cell.getTime())) {
+      const month = cell.getMonth() + 1;
+      const day = cell.getDate();
+      const year = cell.getFullYear();
+      cell = `${month}/${day}/${year}`;
+    }
+
     const str = String(cell || '');
     if (str.includes(',') || str.includes('"') || str.includes('\n')) {
       return '"' + str.replace(/"/g, '""') + '"';
     }
     return str;
   }).join(',')).join('\n');
-  
+
   const folder = DriveApp.getRootFolder();
   const file = folder.createFile(name + '_' + Date.now() + '.csv', csvContent, MimeType.CSV);
   return file;
