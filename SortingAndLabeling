@@ -1,0 +1,223 @@
+/**
+ * Sorting and Labeling
+ *
+ * Handles district matching setup and geocoding for Campaign Deputy uploads.
+ * Matches addresses to Federal Districts, State Senate Districts, and Counties.
+ */
+
+// All 50 states + DC
+const US_STATES = [
+  'Alabama', 'Alaska', 'Arizona', 'Arkansas', 'California', 'Colorado',
+  'Connecticut', 'Delaware', 'Florida', 'Georgia', 'Hawaii', 'Idaho',
+  'Illinois', 'Indiana', 'Iowa', 'Kansas', 'Kentucky', 'Louisiana',
+  'Maine', 'Maryland', 'Massachusetts', 'Michigan', 'Minnesota',
+  'Mississippi', 'Missouri', 'Montana', 'Nebraska', 'Nevada',
+  'New Hampshire', 'New Jersey', 'New Mexico', 'New York',
+  'North Carolina', 'North Dakota', 'Ohio', 'Oklahoma', 'Oregon',
+  'Pennsylvania', 'Rhode Island', 'South Carolina', 'South Dakota',
+  'Tennessee', 'Texas', 'Utah', 'Vermont', 'Virginia', 'Washington',
+  'West Virginia', 'Wisconsin', 'Wyoming', 'District of Columbia'
+];
+
+const DISTRICT_SUBFOLDER_NAMES = [
+  'Federal Districts',
+  'State Senate Districts',
+  'Counties'
+];
+
+/**
+ * Main function to set up district matching folder structure
+ * Called from menu: Extensions → Donor Tools → Set up District Matching
+ */
+function setupDistrictMatching() {
+  try {
+    SpreadsheetApp.getActive().toast('Setting up district matching folders...', 'District Matching', 3);
+
+    const props = PropertiesService.getDocumentProperties();
+    const mainFolderId = props.getProperty('district_main_folder_id');
+
+    let mainFolder;
+    let isNewSetup = false;
+
+    // Check if main folder exists
+    if (mainFolderId) {
+      try {
+        mainFolder = DriveApp.getFolderById(mainFolderId);
+        Logger.log('Found existing main folder: ' + mainFolder.getName());
+      } catch (e) {
+        Logger.log('Stored folder ID invalid, creating new structure');
+        mainFolder = null;
+      }
+    }
+
+    // Create main folder if it doesn't exist
+    if (!mainFolder) {
+      isNewSetup = true;
+      const spreadsheetFile = DriveApp.getFileById(SpreadsheetApp.getActive().getId());
+      const parentFolder = spreadsheetFile.getParents().hasNext()
+        ? spreadsheetFile.getParents().next()
+        : DriveApp.getRootFolder();
+
+      mainFolder = parentFolder.createFolder('District Shapefiles');
+      props.setProperty('district_main_folder_id', mainFolder.getId());
+      Logger.log('Created main folder: District Shapefiles');
+    }
+
+    // Set up or verify all state folders
+    const results = setupStateFolders_(mainFolder, props, isNewSetup);
+
+    // Show results to user
+    const ui = SpreadsheetApp.getUi();
+    let message = '';
+
+    if (isNewSetup) {
+      message = `✓ Created folder structure for all 51 states\n\n`;
+      message += `Main folder: "${mainFolder.getName()}"\n`;
+      message += `Location: ${mainFolder.getUrl()}\n\n`;
+      message += `Each state has 3 subfolders:\n`;
+      message += `• Federal Districts\n`;
+      message += `• State Senate Districts\n`;
+      message += `• Counties\n\n`;
+      message += `You can now add shapefiles to these folders.`;
+    } else {
+      message = `✓ Verified all district folders\n\n`;
+      message += `States checked: ${results.verified}\n`;
+      message += `Folders created: ${results.created}\n`;
+      message += `Folders repaired: ${results.repaired}\n\n`;
+
+      if (results.created > 0 || results.repaired > 0) {
+        message += `Some folders were missing and have been recreated.\n\n`;
+      }
+
+      message += `Main folder: ${mainFolder.getUrl()}`;
+    }
+
+    ui.alert('District Matching Setup Complete', message, ui.ButtonSet.OK);
+    SpreadsheetApp.getActive().toast('Setup complete!', 'District Matching', 3);
+
+  } catch (error) {
+    Logger.log('Error in setupDistrictMatching: ' + error.message);
+    SpreadsheetApp.getUi().alert(
+      'Error',
+      'Failed to set up district matching:\n\n' + error.message,
+      SpreadsheetApp.getUi().ButtonSet.OK
+    );
+  }
+}
+
+/**
+ * Sets up or verifies folders for all states
+ * @private
+ */
+function setupStateFolders_(mainFolder, props, isNewSetup) {
+  const results = {
+    verified: 0,
+    created: 0,
+    repaired: 0
+  };
+
+  for (const state of US_STATES) {
+    try {
+      const stateKey = 'district_state_' + state.replace(/\s+/g, '_').toLowerCase();
+      let stateFolder = null;
+
+      // Try to find existing state folder
+      if (!isNewSetup) {
+        const storedId = props.getProperty(stateKey);
+        if (storedId) {
+          try {
+            stateFolder = DriveApp.getFolderById(storedId);
+            results.verified++;
+          } catch (e) {
+            Logger.log(`State folder for ${state} not found, will recreate`);
+          }
+        }
+      }
+
+      // Create state folder if it doesn't exist
+      if (!stateFolder) {
+        // Check if folder exists by name (in case ID was lost)
+        const existingFolders = mainFolder.getFoldersByName(state);
+        if (existingFolders.hasNext()) {
+          stateFolder = existingFolders.next();
+          props.setProperty(stateKey, stateFolder.getId());
+          results.repaired++;
+          Logger.log(`Found and reconnected folder for ${state}`);
+        } else {
+          stateFolder = mainFolder.createFolder(state);
+          props.setProperty(stateKey, stateFolder.getId());
+          results.created++;
+          Logger.log(`Created folder for ${state}`);
+        }
+      }
+
+      // Verify/create subfolders
+      verifySubfolders_(stateFolder, state);
+
+    } catch (error) {
+      Logger.log(`Error setting up ${state}: ${error.message}`);
+      throw new Error(`Failed to set up ${state}: ${error.message}`);
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Verifies or creates the 3 required subfolders for a state
+ * @private
+ */
+function verifySubfolders_(stateFolder, stateName) {
+  for (const subfolderName of DISTRICT_SUBFOLDER_NAMES) {
+    let subfolder = null;
+    const folders = stateFolder.getFoldersByName(subfolderName);
+
+    if (folders.hasNext()) {
+      subfolder = folders.next();
+    } else {
+      subfolder = stateFolder.createFolder(subfolderName);
+      Logger.log(`Created subfolder: ${stateName}/${subfolderName}`);
+    }
+  }
+}
+
+/**
+ * Helper to get main district folder
+ * Returns null if not set up yet
+ */
+function getDistrictMainFolder_() {
+  const props = PropertiesService.getDocumentProperties();
+  const folderId = props.getProperty('district_main_folder_id');
+
+  if (!folderId) return null;
+
+  try {
+    return DriveApp.getFolderById(folderId);
+  } catch (e) {
+    Logger.log('Main folder ID invalid: ' + e.message);
+    return null;
+  }
+}
+
+/**
+ * Helper to get a specific state's folder
+ */
+function getStateFolder_(stateName) {
+  const props = PropertiesService.getDocumentProperties();
+  const stateKey = 'district_state_' + stateName.replace(/\s+/g, '_').toLowerCase();
+  const folderId = props.getProperty(stateKey);
+
+  if (!folderId) return null;
+
+  try {
+    return DriveApp.getFolderById(folderId);
+  } catch (e) {
+    Logger.log(`State folder for ${stateName} not found: ${e.message}`);
+    return null;
+  }
+}
+
+// Future functions will go here:
+// - geocodeAddress_(address, city, state, zip)
+// - matchToDistricts_(latitude, longitude, state)
+// - addDistrictColumnsToUpload_()
