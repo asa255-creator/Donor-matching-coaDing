@@ -1054,10 +1054,23 @@ function doGet(e) {
       '    zip_str = str(zip_code).strip()[:3]',
       '    return ZIP_TO_STATE.get(zip_str, "")',
       '',
+      '# Valid US state abbreviations (50 states + DC + territories)',
+      'VALID_US_STATES = {',
+      '    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",',
+      '    "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",',
+      '    "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",',
+      '    "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC",',
+      '    "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",',
+      '    "DC", "PR", "VI", "GU", "AS", "MP"',
+      '}',
+      '',
       'def is_broken_value(val):',
       '    if not val: return True',
       '    s = str(val).strip().upper()',
-      '    return s in ["", "NA", "N/A", "UNKNOWN", "NULL"]',
+      '    # Check if empty, NA, or other broken values',
+      '    if s in ["", "NA", "N/A", "UNKNOWN", "NULL"]: return True',
+      '    # Also check if it\'s not a valid US state',
+      '    return s not in VALID_US_STATES',
       '',
       'def row_as_obj(header, row):',
       '    m = dict(zip(header, row))',
@@ -2529,12 +2542,27 @@ function cd_lookupStateFromZip_(zipCode) {
 }
 
 /**
- * Check if value is broken/missing
+ * Valid US state abbreviations (50 states + DC + territories)
+ */
+const CD_VALID_US_STATES = new Set([
+  'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA',
+  'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD',
+  'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ',
+  'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC',
+  'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY',
+  'DC', 'PR', 'VI', 'GU', 'AS', 'MP'
+]);
+
+/**
+ * Check if value is broken/missing or not a valid US state
  */
 function cd_isBrokenValue_(val) {
   if (!val) return true;
   const s = String(val).trim().toUpperCase();
-  return s === '' || s === 'NA' || s === 'N/A' || s === 'UNKNOWN' || s === 'NULL';
+  // Check if empty, NA, or other broken values
+  if (s === '' || s === 'NA' || s === 'N/A' || s === 'UNKNOWN' || s === 'NULL') return true;
+  // Also check if it's not a valid US state
+  return !CD_VALID_US_STATES.has(s);
 }
 
 /**
@@ -3078,10 +3106,23 @@ function cd_getMatcherScript_() {
     'print(f"Total unmatched: {total_unmatched} DonorIDs ({100*total_unmatched/len(donor_groups):.1f}%)")',
     '',
     '# Helper to check if value is "broken"',
+    '# Valid US state abbreviations (50 states + DC + territories)',
+    'VALID_US_STATES = {',
+    '    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",',
+    '    "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",',
+    '    "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",',
+    '    "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC",',
+    '    "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",',
+    '    "DC", "PR", "VI", "GU", "AS", "MP"',
+    '}',
+    '',
     'def is_broken(val):',
     '    if not val: return True',
     '    s = str(val).strip().upper()',
-    '    return s in ["", "NA", "N/A", "UNKNOWN", "NULL"]',
+    '    # Check if empty, NA, or other broken values',
+    '    if s in ["", "NA", "N/A", "UNKNOWN", "NULL"]: return True',
+    '    # Also check if it\'s not a valid US state',
+    '    return s not in VALID_US_STATES',
     '',
     '# ZIP prefix to State lookup (covers most common ZIP ranges)',
     'ZIP_TO_STATE = {',
