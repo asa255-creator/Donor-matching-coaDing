@@ -5,18 +5,14 @@
  * Matches addresses to Federal Districts, State Senate Districts, and Counties.
  */
 
-// All 50 states + DC
+// All 50 states + DC (using 2-letter codes)
 const US_STATES = [
-  'Alabama', 'Alaska', 'Arizona', 'Arkansas', 'California', 'Colorado',
-  'Connecticut', 'Delaware', 'Florida', 'Georgia', 'Hawaii', 'Idaho',
-  'Illinois', 'Indiana', 'Iowa', 'Kansas', 'Kentucky', 'Louisiana',
-  'Maine', 'Maryland', 'Massachusetts', 'Michigan', 'Minnesota',
-  'Mississippi', 'Missouri', 'Montana', 'Nebraska', 'Nevada',
-  'New Hampshire', 'New Jersey', 'New Mexico', 'New York',
-  'North Carolina', 'North Dakota', 'Ohio', 'Oklahoma', 'Oregon',
-  'Pennsylvania', 'Rhode Island', 'South Carolina', 'South Dakota',
-  'Tennessee', 'Texas', 'Utah', 'Vermont', 'Virginia', 'Washington',
-  'West Virginia', 'Wisconsin', 'Wyoming', 'District of Columbia'
+  'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA',
+  'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD',
+  'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ',
+  'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC',
+  'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY',
+  'DC'
 ];
 
 const DISTRICT_SUBFOLDER_NAMES = [
@@ -74,14 +70,14 @@ function setupDistrictMatching() {
       message = `✓ Created folder structure for all 51 states\n\n`;
       message += `Main folder: "${mainFolder.getName()}"\n`;
       message += `Location: ${mainFolder.getUrl()}\n\n`;
-      message += `Each state has 3 subfolders:\n`;
+      message += `Each state folder (AL, AK, AZ, etc.) has 3 subfolders:\n`;
       message += `• Federal Districts\n`;
       message += `• State Senate Districts\n`;
       message += `• Counties\n\n`;
       message += `You can now add shapefiles to these folders.`;
     } else {
       message = `✓ Verified all district folders\n\n`;
-      message += `States checked: ${results.verified}\n`;
+      message += `State codes checked: ${results.verified}\n`;
       message += `Folders created: ${results.created}\n`;
       message += `Folders repaired: ${results.repaired}\n\n`;
 
@@ -118,7 +114,7 @@ function setupStateFolders_(mainFolder, props, isNewSetup) {
 
   for (const state of US_STATES) {
     try {
-      const stateKey = 'district_state_' + state.replace(/\s+/g, '_').toLowerCase();
+      const stateKey = 'district_state_' + state.toLowerCase();
       let stateFolder = null;
 
       // Try to find existing state folder
@@ -201,10 +197,11 @@ function getDistrictMainFolder_() {
 
 /**
  * Helper to get a specific state's folder
+ * @param {string} stateCode - 2-letter state code (e.g., "KY", "CA")
  */
-function getStateFolder_(stateName) {
+function getStateFolder_(stateCode) {
   const props = PropertiesService.getDocumentProperties();
-  const stateKey = 'district_state_' + stateName.replace(/\s+/g, '_').toLowerCase();
+  const stateKey = 'district_state_' + stateCode.toLowerCase();
   const folderId = props.getProperty(stateKey);
 
   if (!folderId) return null;
@@ -212,7 +209,7 @@ function getStateFolder_(stateName) {
   try {
     return DriveApp.getFolderById(folderId);
   } catch (e) {
-    Logger.log(`State folder for ${stateName} not found: ${e.message}`);
+    Logger.log(`State folder for ${stateCode} not found: ${e.message}`);
     return null;
   }
 }
