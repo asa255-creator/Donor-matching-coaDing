@@ -1,0 +1,3037 @@
+/****************************************************
+ * Donor Matcher v3 + Local Runner Adapter
+ * Safe to include without renaming your existing menu glue
+ * Exposes:
+ *   donor_createTrainingPairs
+ *   donor_trainMatcher
+ *   donor_assignDonorIds
+ *   donor_addUncertainPairs
+ *   donor_createTrainingPairs_debug
+ *   donor_createTrainingPairs_lite
+ *   dl_prepareLocalJobAndShowCommand_
+ *   dl_showProgressSidebar
+ *   doGet
+ *   doPost
+ ****************************************************/
+
+/** =========================
+ * Donor Matcher v3 config
+ * ========================= */
+const DONOR_CFG = {
+  krefSheet: 'KREF_Exports',
+  fecSheet: 'FEC_Exports',
+  trainingSheet: 'Training',
+  idColumnName: 'DonorID',
+  sampleTrainingPairs: 20,
+  initialSamplePairs: 20,
+  uncertainBatchSize: 10,
+  uncertaintyBand: 0.15,
+  predictThreshold: 0.7,
+  maxPairsPerBlock: 4000,
+  maxTotalPairs: 200000,
+  learningRate: 0.1,
+  maxTrainIterations: 400
+};
+
+/** =========================
+ * Training sheet header
+ * ========================= */
+const DONOR_TRAINING_HEADER = [
+  'Label',
+  'sheet_a','row_a','first_a','last_a','addr_a','city_a','state_a','zip_a','employer_a','occupation_a',
+  'sheet_b','row_b','first_b','last_b','addr_b','city_b','state_b','zip_b','employer_b','occupation_b',
+  'feat_name','feat_first','feat_firstinit','feat_lastsame',
+  'feat_addr','feat_citysame','feat_statesame','feat_zip5','feat_zip3','feat_house','feat_addrstrong',
+  'feat_employer','feat_occupation','feat_firstpairprob'
+];
+
+/** =========================
+ * Step 1: Create Training Pairs
+ * ========================= */
+function donor_createTrainingPairs() {
+  const rows = donor_loadAllRows_();
+  const blocks = donor_buildBlocks_(rows);
+  const pairs = donor_generatePairsFromBlocks_(blocks);
+  const sampled = donor_sampleArray_(pairs, DONOR_CFG.sampleTrainingPairs);
+  donor_writeTrainingSheet_(sampled);
+  SpreadsheetApp.getActive().toast('Training sheet ready. Label 1 or 0, then run Train matcher.', 'Donor Matcher', 8);
+}
+
+/** =========================
+ * Step 2: Train Matcher
+ * ========================= */
+function donor_trainMatcher() {
+  const sh = donor_getOrCreateSheet_(DONOR_CFG.trainingSheet);
+  const vals = sh.getDataRange().getValues();
+  if (vals.length < 2) {
+    SpreadsheetApp.getUi().alert('No training data found. Run Create training pairs.');
+    return;
+  }
+  const h = vals[0].map(s => String(s || '').trim());
+  function idx(name) {
+    const i = h.indexOf(name);
+    if (i === -1) throw new Error('Missing column: ' + name);
+    return i;
+  }
+  const featureCols = [
+    'feat_name','feat_first','feat_firstinit','feat_lastsame',
+    'feat_addr','feat_citysame','feat_statesame','feat_zip5','feat_zip3','feat_house','feat_addrstrong',
+    'feat_employer','feat_occupation','feat_firstpairprob'
+  ];
+  const I = featureCols.map(idx);
+  const iLabel = idx('Label');
+
+  const X = [];
+  const y = [];
+  for (let r = 1; r < vals.length; r++) {
+    const row = vals[r];
+    const label = Number(row[iLabel]);
+    if (label !== 0 && label !== 1) continue;
+    const feat = [];
+    for (let k = 0; k < I.length; k++) feat.push(Number(row[I[k]] || 0));
+    X.push(feat);
+    y.push(label);
+  }
+  if (!X.length) {
+    SpreadsheetApp.getUi().alert('No labeled rows. Set Label to 1 or 0.');
+    return;
+  }
+  const w = donor_fitLogReg_(X, y, DONOR_CFG.learningRate, DONOR_CFG.maxTrainIterations);
+  PropertiesService.getDocumentProperties().setProperty('donor_model_weights', JSON.stringify(w));
+  donor_buildAndStoreFirstNamePairTable_();
+  SpreadsheetApp.getUi().alert('Training complete. Weights and first name table saved.');
+}
+
+/** =========================
+ * Step 3: Assign Donor IDs
+ * ========================= */
+function donor_assignDonorIds() {
+  const wRaw = PropertiesService.getDocumentProperties().getProperty('donor_model_weights');
+  if (!wRaw) {
+    SpreadsheetApp.getUi().alert('No trained model found. Run Train matcher first.');
+    return;
+  }
+  const w = JSON.parse(wRaw);
+  const rows = donor_loadAllRows_();
+  const blocks = donor_buildBlocks_(rows);
+  const pairs = donor_generatePairsFromBlocks_(blocks);
+  const uf = donor_newUnionFind_(rows.length);
+  let kept = 0;
+  for (let i = 0; i < pairs.length; i++) {
+    const f = pairs[i].features;
+    const x = [
+      f.nameSim, f.firstSim, f.firstInitEq, f.lastSame,
+      f.addrSim, f.citySame, f.stateSame, f.zip5Same, f.zip3Same, f.houseMatch, f.addrStrong,
+      f.empSim, f.occSim, f.firstPairProb
+    ];
+    const prob = donor_predictLogReg_(x, w);
+    if (prob >= DONOR_CFG.predictThreshold) {
+      donor_union_(uf, pairs[i].aIdx, pairs[i].bIdx);
+      kept++;
+    }
+  }
+  const comps = donor_components_(uf);
+  const idMap = new Map();
+  let nextId = 1;
+  for (let c = 0; c < comps.length; c++) {
+    const comp = comps[c];
+    for (let j = 0; j < comp.length; j++) idMap.set(comp[j], nextId);
+    nextId++;
+  }
+  donor_writeIdsToSheets_(rows, idMap);
+  SpreadsheetApp.getActive().toast('Assigned DonorIDs. Matches kept: ' + kept, 'Donor Matcher', 8);
+}
+
+/** =========================
+ * Step 4: Iterative labeling helper
+ * ========================= */
+function donor_addUncertainPairs() {
+  const weightsRaw = PropertiesService.getDocumentProperties().getProperty('donor_model_weights');
+  const rows = donor_loadAllRows_();
+  const blocks = donor_buildBlocks_(rows);
+  const pairs = donor_generatePairsFromBlocks_(blocks);
+
+  if (!weightsRaw) {
+    const seed = donor_sampleArray_(pairs, DONOR_CFG.initialSamplePairs);
+    donor_appendPairsToTraining_(seed);
+    SpreadsheetApp.getUi().alert('Added ' + seed.length + ' seed pairs. Label them, train, then run again.');
+    return;
+  }
+  const w = JSON.parse(weightsRaw);
+  const seen = donor_getSeenPairKeys_();
+  const band = DONOR_CFG.uncertaintyBand;
+  const lower = 0.5 - band;
+  const upper = 0.5 + band;
+  const candidates = [];
+  for (let i = 0; i < pairs.length; i++) {
+    const p = pairs[i];
+    const key = donor_pairKey_(p.a, p.b);
+    if (seen.has(key)) continue;
+    const f = p.features;
+    const x = [
+      f.nameSim, f.firstSim, f.firstInitEq, f.lastSame,
+      f.addrSim, f.citySame, f.stateSame, f.zip5Same, f.zip3Same, f.houseMatch, f.addrStrong,
+      f.empSim, f.occSim, f.firstPairProb
+    ];
+    const prob = donor_predictLogReg_(x, w);
+    if (prob >= lower && prob <= upper) {
+      candidates.push({ pair: p, uncertainty: Math.abs(prob - 0.5) });
+    }
+  }
+  candidates.sort((a, b) => a.uncertainty - b.uncertainty);
+  const take = Math.min(DONOR_CFG.uncertainBatchSize, candidates.length);
+  const toAppend = [];
+  for (let j = 0; j < take; j++) toAppend.push(candidates[j].pair);
+  if (!toAppend.length) {
+    SpreadsheetApp.getUi().alert('No uncertain pairs in current band. Increase uncertaintyBand or add data.');
+    return;
+  }
+  donor_appendPairsToTraining_(toAppend);
+  SpreadsheetApp.getUi().alert('Added ' + toAppend.length + ' uncertain pairs. Label them and retrain.');
+}
+
+/** =========================
+ * Data loading
+ * ========================= */
+function donor_loadAllRows_() {
+  const kref = donor_readSheetAsObjects_(DONOR_CFG.krefSheet);
+  const fec = donor_readSheetAsObjects_(DONOR_CFG.fecSheet);
+
+  function mapRow(r, i, origin) {
+    const first = String(r.DonorFirst || '').trim();
+    const last = String(r.DonorLast || '').trim();
+    const addr1 = String(r.Address1 || '').trim();
+    const city = String(r.City || '').trim();
+    const state = String(r.State || '').trim();
+    const zip = donor_normalizeZip_(r.Zip);
+    const employer = String(r.Employer || '').trim();
+    const occupation = String(r.Occupation || '').trim();
+    const fullName = (first + ' ' + last).trim();
+    const house = donor_extractHouseNumber_(addr1);
+    return { origin, rowIndex: i, first, last, addr1, city, state, zip, employer, occupation, fullName, house, globalIdx: -1 };
+  }
+
+  const all = [];
+  for (let i = 0; i < kref.rows.length; i++) all.push(mapRow(kref.rows[i], i, 'K'));
+  for (let j = 0; j < fec.rows.length; j++) all.push(mapRow(fec.rows[j], j, 'F'));
+  for (let k = 0; k < all.length; k++) all[k].globalIdx = k;
+  return all;
+}
+
+/** =========================
+ * Blocking keys
+ * ========================= */
+function donor_blockingKeys_(r) {
+  const keys = [];
+  const last = String(r.last || '').toUpperCase();
+  const lastSound = donor_soundex_(last);
+  const first = String(r.first || '').toUpperCase();
+  const firstInit = first ? first[0] : '';
+  const zip = r.zip || '';
+  const house = r.house || '';
+  const city = String(r.city || '').toUpperCase().replace(/\s+/g, ' ').trim();
+  const state = String(r.state || '').toUpperCase().trim();
+  const employerTok = donor_employerToken_(r.employer);
+
+  if (zip && lastSound) keys.push('ZL:' + zip + ':' + lastSound);
+  if (house && lastSound) keys.push('HL:' + house + ':' + lastSound);
+  if (lastSound) keys.push('L:' + lastSound);
+  if (firstInit && lastSound) keys.push('FL:' + firstInit + ':' + lastSound);
+  if (city && state && lastSound) keys.push('CSL:' + city + ':' + state + ':' + lastSound);
+  if (employerTok && lastSound) keys.push('EL:' + employerTok + ':' + lastSound);
+  return keys;
+}
+
+function donor_employerToken_(s) {
+  let t = String(s || '').toUpperCase();
+  if (!t) return '';
+  t = t.replace(/[^A-Z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+  t = t.replace(/\b(THE|INC|LLC|LTD|CO|COMPANY|CORP|CORPORATION|UNIVERSITY|UNIV|SCHOOL|HOSPITAL|DEPT|DEPARTMENT|STATE|CITY|COUNTY)\b/g, '').trim();
+  if (!t) return '';
+  const parts = t.split(' ');
+  const take = [];
+  for (let i = 0; i < parts.length && take.length < 2; i++) {
+    if (parts[i].length >= 3) take.push(parts[i]);
+  }
+  return take.join('_');
+}
+
+/** =========================
+ * Pair generation with caps
+ * ========================= */
+function donor_generatePairsFromBlocks_(blocks) {
+  const pairs = [];
+  let total = 0;
+  const seen = new Set();
+  const it = blocks.entries();
+  while (true) {
+    const step = it.next();
+    if (step.done) break;
+    const blockRows = step.value[1];
+    if (!blockRows || blockRows.length < 2) continue;
+    const n = blockRows.length;
+    if (n * n > DONOR_CFG.maxPairsPerBlock) continue;
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const a = blockRows[i];
+        const b = blockRows[j];
+        const ka = a.globalIdx < b.globalIdx ? a.globalIdx + '|' + b.globalIdx : b.globalIdx + '|' + a.globalIdx;
+        if (seen.has(ka)) continue;
+        seen.add(ka);
+        const feat = donor_makeFeatures_(a, b);
+        pairs.push({ a, b, aIdx: a.globalIdx, bIdx: b.globalIdx, features: feat });
+        total++;
+        if (total > DONOR_CFG.maxTotalPairs) return pairs;
+      }
+    }
+  }
+  return pairs;
+}
+
+/** =========================
+ * Feature builder
+ * ========================= */
+function donor_makeFeatures_(a, b) {
+  const fullNameSim = donor_jaroWinkler_(a.fullName, b.fullName);
+  const firstSim = donor_jaroWinkler_(a.first, b.first);
+  const firstInitEq = (a.first && b.first && a.first[0].toUpperCase() === b.first[0].toUpperCase()) ? 1 : 0;
+  const lastSame = (a.last && b.last && a.last.toUpperCase() === b.last.toUpperCase()) ? 1 : 0;
+  const addrSim = donor_jaroWinkler_(a.addr1, b.addr1);
+  const citySame = (a.city && b.city && a.city.toUpperCase() === b.city.toUpperCase()) ? 1 : 0;
+  const stateSame = (a.state && b.state && a.state.toUpperCase() === b.state.toUpperCase()) ? 1 : 0;
+  const zip5Same = (a.zip && b.zip && a.zip === b.zip) ? 1 : 0;
+  const zip3Same = (a.zip && b.zip && a.zip.slice(0,3) === b.zip.slice(0,3)) ? 1 : 0;
+  const houseMatch = (a.house && b.house && a.house === b.house) ? 1 : 0;
+  const addrStrong = (houseMatch && zip5Same) ? 1 : 0;
+  const empSim = donor_jaroWinkler_(a.employer || '', b.employer || '');
+  const occSim = donor_jaroWinkler_(a.occupation || '', b.occupation || '');
+  const firstPairProb = donor_lookupFirstNamePairProb_(a.first, b.first);
+  return {
+    nameSim: donor_round4_(fullNameSim),
+    firstSim: donor_round4_(firstSim),
+    firstInitEq: firstInitEq,
+    lastSame: lastSame,
+    addrSim: donor_round4_(addrSim),
+    citySame: citySame,
+    stateSame: stateSame,
+    zip5Same: zip5Same,
+    zip3Same: zip3Same,
+    houseMatch: houseMatch,
+    addrStrong: addrStrong,
+    empSim: donor_round4_(empSim),
+    occSim: donor_round4_(occSim),
+    firstPairProb: donor_round4_(firstPairProb)
+  };
+}
+
+/** =========================
+ * Training writers
+ * ========================= */
+function donor_writeTrainingSheet_(pairs) {
+  const sh = donor_getOrCreateSheet_(DONOR_CFG.trainingSheet);
+  sh.clear();
+  sh.getRange(1, 1, 1, DONOR_TRAINING_HEADER.length).setValues([DONOR_TRAINING_HEADER]);
+  const data = [];
+  for (let i = 0; i < pairs.length; i++) {
+    const p = pairs[i], f = p.features;
+    data.push([
+      '',
+      p.a.origin, p.a.rowIndex + 2, p.a.first, p.a.last, p.a.addr1, p.a.city, p.a.state, p.a.zip, p.a.employer, p.a.occupation,
+      p.b.origin, p.b.rowIndex + 2, p.b.first, p.b.last, p.b.addr1, p.b.city, p.b.state, p.b.zip, p.b.employer, p.b.occupation,
+      f.nameSim, f.firstSim, f.firstInitEq, f.lastSame,
+      f.addrSim, f.citySame, f.stateSame, f.zip5Same, f.zip3Same, f.houseMatch, f.addrStrong,
+      f.empSim, f.occSim, f.firstPairProb
+    ]);
+  }
+  if (data.length) sh.getRange(2, 1, data.length, DONOR_TRAINING_HEADER.length).setValues(data);
+  sh.setFrozenRows(1);
+}
+function donor_appendPairsToTraining_(pairs) {
+  const sh = donor_getOrCreateSheet_(DONOR_CFG.trainingSheet);
+  let lastRow = sh.getLastRow();
+  if (lastRow === 0) {
+    sh.getRange(1, 1, 1, DONOR_TRAINING_HEADER.length).setValues([DONOR_TRAINING_HEADER]);
+    sh.setFrozenRows(1);
+    lastRow = 1;
+  }
+  const data = [];
+  for (let i = 0; i < pairs.length; i++) {
+    const p = pairs[i], f = p.features;
+    data.push([
+      '',
+      p.a.origin, p.a.rowIndex + 2, p.a.first, p.a.last, p.a.addr1, p.a.city, p.a.state, p.a.zip, p.a.employer, p.a.occupation,
+      p.b.origin, p.b.rowIndex + 2, p.b.first, p.b.last, p.b.addr1, p.b.city, p.b.state, p.b.zip, p.b.employer, p.b.occupation,
+      f.nameSim, f.firstSim, f.firstInitEq, f.lastSame,
+      f.addrSim, f.citySame, f.stateSame, f.zip5Same, f.zip3Same, f.houseMatch, f.addrStrong,
+      f.empSim, f.occSim, f.firstPairProb
+    ]);
+  }
+  if (data.length) sh.getRange(lastRow + 1, 1, data.length, DONOR_TRAINING_HEADER.length).setValues(data);
+}
+
+/** =========================
+ * First name pair prior
+ * ========================= */
+function donor_buildAndStoreFirstNamePairTable_() {
+  const sh = donor_getOrCreateSheet_(DONOR_CFG.trainingSheet);
+  const vals = sh.getDataRange().getValues();
+  if (vals.length < 2) {
+    PropertiesService.getDocumentProperties().deleteProperty('donor_first_pair_table');
+    return;
+  }
+  const h = vals[0].map(s => String(s || '').trim());
+  const iLabel = h.indexOf('Label');
+  const iFirstA = h.indexOf('first_a');
+  const iFirstB = h.indexOf('first_b');
+  if (iLabel === -1 || iFirstA === -1 || iFirstB === -1) return;
+
+  const counts = {};
+  function firstOf(name) {
+    const s = String(name || '').trim().toUpperCase();
+    if (!s) return '';
+    return s.split(/\s+/)[0];
+  }
+  for (let i = 1; i < vals.length; i++) {
+    const row = vals[i];
+    const la = Number(row[iLabel]);
+    if (la !== 0 && la !== 1) continue;
+    const fa = firstOf(row[iFirstA]);
+    const fb = firstOf(row[iFirstB]);
+    if (!fa || !fb) continue;
+    const key = fa < fb ? fa + '|' + fb : fb + '|' + fa;
+    if (!counts[key]) counts[key] = {pos:0, neg:0};
+    if (la === 1) counts[key].pos++; else counts[key].neg++;
+  }
+  const table = {};
+  for (const k in counts) {
+    const c = counts[k];
+    const prob = (c.pos + 1) / (c.pos + c.neg + 2);
+    table[k] = prob;
+  }
+  PropertiesService.getDocumentProperties().setProperty('donor_first_pair_table', JSON.stringify(table));
+}
+function donor_lookupFirstNamePairProb_(fa, fb) {
+  const s = PropertiesService.getDocumentProperties().getProperty('donor_first_pair_table');
+  if (!s) return 0.5;
+  const table = JSON.parse(s);
+  const A = String(fa || '').trim().toUpperCase().split(/\s+/)[0] || '';
+  const B = String(fb || '').trim().toUpperCase().split(/\s+/)[0] || '';
+  if (!A || !B) return 0.5;
+  const key = A < B ? A + '|' + B : B + '|' + A;
+  return table[key] != null ? Number(table[key]) : 0.5;
+}
+
+/** =========================
+ * Write DonorIDs to sheets
+ * ========================= */
+function donor_writeIdsToSheets_(rows, idMap) {
+  const ss = SpreadsheetApp.getActive();
+  const groupedK = [];
+  const groupedF = [];
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    if (r.origin === 'K') groupedK.push(r); else if (r.origin === 'F') groupedF.push(r);
+  }
+  function writeOne(sheetName, list) {
+    const sh = ss.getSheetByName(sheetName);
+    if (!sh) return;
+    const header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+    let idCol = header.indexOf(DONOR_CFG.idColumnName) + 1;
+    if (idCol === 0) {
+      idCol = header.length + 1;
+      sh.getRange(1, idCol).setValue(DONOR_CFG.idColumnName);
+    }
+    const out = [];
+    for (let i = 0; i < list.length; i++) out.push([idMap.get(list[i].globalIdx) || '']);
+    if (out.length) sh.getRange(2, idCol, out.length, 1).setValues(out);
+  }
+  writeOne(DONOR_CFG.krefSheet, groupedK);
+  writeOne(DONOR_CFG.fecSheet, groupedF);
+}
+
+/** =========================
+ * Utilities
+ * ========================= */
+function donor_readSheetAsObjects_(name) {
+  const sh = SpreadsheetApp.getActive().getSheetByName(name);
+  if (!sh) return { header: [], rows: [] };
+  const vals = sh.getDataRange().getValues();
+  if (vals.length < 2) return { header: vals[0] || [], rows: [] };
+  const header = vals[0].map(s => String(s || '').trim());
+  const rows = [];
+  for (let i = 1; i < vals.length; i++) {
+    const row = vals[i];
+    const obj = {};
+    for (let j = 0; j < header.length; j++) obj[header[j]] = row[j];
+    rows.push(obj);
+  }
+  return { header, rows };
+}
+function donor_getOrCreateSheet_(name) {
+  const ss = SpreadsheetApp.getActive();
+  return ss.getSheetByName(name) || ss.insertSheet(name);
+}
+function donor_normalizeZip_(s) {
+  const digits = String(s || '').replace(/\D+/g, '');
+  if (digits.length >= 5) return digits.slice(0, 5);
+  if (digits.length > 0) return digits.padStart(5, '0');
+  return '';
+}
+function donor_extractHouseNumber_(addr) {
+  const m = String(addr || '').match(/\b(\d{1,6})\b/);
+  return m ? m[1] : '';
+}
+function donor_round4_(x) {
+  return Math.round(Number(x || 0) * 10000) / 10000;
+}
+function donor_soundex_(s) {
+  s = String(s || '').toUpperCase().replace(/[^A-Z]/g, '');
+  if (!s) return '';
+  const f = s[0];
+  const map = {B:1,F:1,P:1,V:1,C:2,G:2,J:2,K:2,Q:2,S:2,X:2,Z:2,D:3,T:3,L:4,M:5,N:5,R:6};
+  let out = f;
+  let prev = map[f] || 0;
+  for (let i = 1; i < s.length && out.length < 4; i++) {
+    const c = s[i];
+    const code = map[c] || 0;
+    if (code !== 0 && code !== prev) out += String(code);
+    prev = code;
+  }
+  return (out + '000').slice(0, 4);
+}
+function donor_jaroWinkler_(s1, s2) {
+  s1 = String(s1 || '').toUpperCase();
+  s2 = String(s2 || '').toUpperCase();
+  if (!s1 && !s2) return 1;
+  if (!s1 || !s2) return 0;
+  const mDist = Math.max(0, Math.floor(Math.max(s1.length, s2.length) / 2) - 1);
+  const s1M = new Array(s1.length).fill(false);
+  const s2M = new Array(s2.length).fill(false);
+  let matches = 0;
+  for (let i = 0; i < s1.length; i++) {
+    const start = Math.max(0, i - mDist);
+    const end = Math.min(i + mDist + 1, s2.length);
+    for (let j = start; j < end; j++) {
+      if (s2M[j] || s1[i] !== s2[j]) continue;
+      s1M[i] = true;
+      s2M[j] = true;
+      matches++;
+      break;
+    }
+  }
+  if (!matches) return 0;
+  let t = 0;
+  let k = 0;
+  for (let i = 0; i < s1.length; i++) {
+    if (!s1M[i]) continue;
+    while (!s2M[k]) k++;
+    if (s1[i] !== s2[k]) t++;
+    k++;
+  }
+  t = t / 2;
+  const j = (matches / s1.length + matches / s2.length + (matches - t) / matches) / 3;
+  let l = 0;
+  while (l < 4 && s1[l] && s2[l] && s1[l] === s2[l]) l++;
+  return j + l * 0.1 * (1 - j);
+}
+
+/** =========================
+ * Logistic regression and clustering
+ * ========================= */
+function donor_fitLogReg_(X, y, lr, iters) {
+  const n = X.length;
+  const d = X[0].length;
+  const w = new Array(d + 1).fill(0);
+  function sigmoid(z) { return 1 / (1 + Math.exp(-z)); }
+  for (let it = 0; it < iters; it++) {
+    const grad = new Array(d + 1).fill(0);
+    for (let i = 0; i < n; i++) {
+      let z = w[d];
+      const xi = X[i];
+      for (let j = 0; j < d; j++) z += w[j] * xi[j];
+      const p = sigmoid(z);
+      const err = p - y[i];
+      for (let j2 = 0; j2 < d; j2++) grad[j2] += err * xi[j2];
+      grad[d] += err;
+    }
+    for (let g = 0; g < d + 1; g++) w[g] -= lr * grad[g] / n;
+  }
+  return w;
+}
+function donor_predictLogReg_(x, w) {
+  const d = x.length;
+  let z = w[d];
+  for (let j = 0; j < d; j++) z += w[j] * x[j];
+  return 1 / (1 + Math.exp(-z));
+}
+function donor_newUnionFind_(size) {
+  const parent = [];
+  const rank = [];
+  for (let i = 0; i < size; i++) { parent[i] = i; rank[i] = 0; }
+  return { parent, rank };
+}
+function donor_find_(uf, x) {
+  if (uf.parent[x] !== x) uf.parent[x] = donor_find_(uf, uf.parent[x]);
+  return uf.parent[x];
+}
+function donor_union_(uf, a, b) {
+  let pa = donor_find_(uf, a);
+  let pb = donor_find_(uf, b);
+  if (pa === pb) return;
+  if (uf.rank[pa] < uf.rank[pb]) { const tmp = pa; pa = pb; pb = tmp; }
+  uf.parent[pb] = pa;
+  if (uf.rank[pa] === uf.rank[pb]) uf.rank[pa]++;
+}
+function donor_components_(uf) {
+  const groups = new Map();
+  for (let i = 0; i < uf.parent.length; i++) {
+    const p = donor_find_(uf, i);
+    if (!groups.has(p)) groups.set(p, []);
+    groups.get(p).push(i);
+  }
+  return Array.from(groups.values());
+}
+
+/** =========================
+ * Sampling and keys
+ * ========================= */
+function donor_sampleArray_(arr, n) {
+  n = Math.max(0, Math.floor(n || 0));
+  const res = [];
+  const L = Array.isArray(arr) ? arr.length : 0;
+  if (n === 0 || L === 0) return res;
+  for (let i = 0; i < L; i++) {
+    if (i < n) {
+      res.push(arr[i]);
+    } else {
+      const j = Math.floor(Math.random() * (i + 1));
+      if (j < n) res[j] = arr[i];
+    }
+  }
+  return res;
+}
+function donor_pairKey_(a, b) {
+  const ka = a.origin + ':' + (a.rowIndex + 2);
+  const kb = b.origin + ':' + (b.rowIndex + 2);
+  return (ka < kb) ? (ka + '|' + kb) : (kb + '|' + ka);
+}
+function donor_getSeenPairKeys_() {
+  const sh = donor_getOrCreateSheet_(DONOR_CFG.trainingSheet);
+  const vals = sh.getDataRange().getValues();
+  if (vals.length < 2) return new Set();
+  const h = vals[0].map(s => String(s || '').trim());
+  const iSheetA = h.indexOf('sheet_a');
+  const iRowA = h.indexOf('row_a');
+  const iSheetB = h.indexOf('sheet_b');
+  const iRowB = h.indexOf('row_b');
+  if (iSheetA === -1 || iRowA === -1 || iSheetB === -1 || iRowB === -1) return new Set();
+  const set = new Set();
+  for (let i = 1; i < vals.length; i++) {
+    const row = vals[i];
+    const ka = String(row[iSheetA] || '') + ':' + String(row[iRowA] || '');
+    const kb = String(row[iSheetB] || '') + ':' + String(row[iRowB] || '');
+    if (!ka || !kb) continue;
+    const key = (ka < kb) ? (ka + '|' + kb) : (kb + '|' + ka);
+    set.add(key);
+  }
+  return set;
+}
+
+/** =========================================================
+ * Local runner adapter
+ * ========================================================= */
+const DL_CFG = {
+  krefSheet: DONOR_CFG.krefSheet,
+  fecSheet: DONOR_CFG.fecSheet,
+  sampleTrainingPairs: DONOR_CFG.sampleTrainingPairs,
+  uncertainBatchSize: DONOR_CFG.uncertainBatchSize,
+  uncertaintyBand: DONOR_CFG.uncertaintyBand,
+  maxPairsPerBlock: DONOR_CFG.maxPairsPerBlock,
+  maxTotalPairs: DONOR_CFG.maxTotalPairs,
+  tokenMinutes: 30
+};
+
+/** Prepare job and show Terminal command */
+function dl_prepareLocalJobAndShowCommand_() {
+  dl_resetProgress_();
+  dl_setProgress_('Preparing job', 0, 1, 'Creating Drive bundle');
+
+  const webAppUrl = dl_getExecUrlFromOptions_();
+  if (!webAppUrl) {
+    SpreadsheetApp.getUi().alert(
+      'Put your Web App URL ending with /exec in Options!I2.\nExample:\nhttps://script.google.com/macros/s/AKfycb.../exec'
+    );
+    return;
+  }
+
+  const kref = dl_exportSheetAsCsv_(DL_CFG.krefSheet);
+  const fec  = dl_exportSheetAsCsv_(DL_CFG.fecSheet);
+  if (!kref.file || !fec.file) {
+    SpreadsheetApp.getUi().alert(
+      'Missing input sheets or no rows. Confirm sheets exist: ' + DL_CFG.krefSheet + ' and ' + DL_CFG.fecSheet
+    );
+    return;
+  }
+
+  const token = dl_makeToken_();
+  const until = Date.now() + DL_CFG.tokenMinutes * 60 * 1000;
+
+  // Read match threshold from Options!J2
+  const ss = SpreadsheetApp.getActive();
+  const optionsSheet = ss.getSheetByName('Options');
+  const threshold = optionsSheet ? Number(optionsSheet.getRange('J2').getValue() || 0.7) : 0.7;
+
+  const job = {
+    jobId: 'job_' + Utilities.getUuid().replace(/-/g, '').slice(0, 12),
+    cfg: {
+      sampleTrainingPairs: DL_CFG.sampleTrainingPairs,
+      uncertainBatchSize: DL_CFG.uncertainBatchSize,
+      uncertaintyBand: DL_CFG.uncertaintyBand,
+      maxPairsPerBlock: DL_CFG.maxPairsPerBlock,
+      maxTotalPairs: DL_CFG.maxTotalPairs,
+      predictThreshold: threshold
+    },
+    krefUrl: webAppUrl + '?csv=kref&token=' + encodeURIComponent(token),
+    fecUrl:  webAppUrl + '?csv=fec&token=' + encodeURIComponent(token),
+    modelUrl: webAppUrl + '?model=1',
+    resultUrl: webAppUrl + '?result=1&token=' + encodeURIComponent(token)
+  };
+
+  const props = PropertiesService.getDocumentProperties();
+  props.setProperty('dl_token', token);
+  props.setProperty('dl_token_until', String(until));
+  props.setProperty('dl_job_json', JSON.stringify(job));
+  props.setProperty('dl_kref_fileId', kref.file.getId());
+  props.setProperty('dl_fec_fileId',  fec.file.getId());
+  props.setProperty('dl_staging_folderId', kref.folder.getId());
+
+  const cmd =
+    "curl -sSL '" + webAppUrl + "?runner=1' | " +
+    "python3 - --bundle '" + webAppUrl + "?job=1&token=" + token + "' " +
+    "--result '" + webAppUrl + "?result=1&token=" + token + "'";
+
+  dl_setProgress_('Waiting', 0, 0, 'Copy the command into Terminal');
+
+  const html = HtmlService.createHtmlOutput(
+    '<div style="font-family:system-ui,Arial;padding:12px;max-width:720px">' +
+      '<div style="margin:6px 0">Token expires in about ' + DL_CFG.tokenMinutes + ' minutes</div>' +
+      '<div style="margin:6px 0">Copy this command into your Mac Terminal:</div>' +
+      '<textarea id="cmd" style="width:100%;height:140px" readonly>' +
+        dl_htmlEscape_(cmd) +
+      '</textarea>' +
+      '<div style="margin-top:8px">' +
+        '<button onclick="navigator.clipboard.writeText(document.getElementById(\'cmd\').value)">Copy to clipboard</button>' +
+      '</div>' +
+      '<div style="margin-top:8px;color:#666;font-size:12px">Keep this sheet open. Progress will appear in the sidebar.</div>' +
+    '</div>'
+  ).setWidth(740).setHeight(280);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Run locally');
+}
+
+/** Progress sidebar */
+function dl_showProgressSidebar() {
+  const html = HtmlService.createHtmlOutput(
+    '<div style="font-family:system-ui,Arial;padding:12px;max-width:360px">' +
+      '<h3 style="margin:0 0 8px 0;font-weight:600">Local run progress</h3>' +
+      '<div id="p">No updates yet.</div>' +
+      '<script>' +
+      '  function fmt(p){ if(!p) return "No updates yet."; ' +
+      '    return "Phase: " + (p.phase||"") + "<br>Done: " + (p.done||0) + " of " + (p.total||0) + "<br>Note: " + (p.note||"") + "<br><small>"+new Date(p.ts).toLocaleString()+"</small>"; }' +
+      '  function poll(){ google.script.run.withSuccessHandler(function(s){ ' +
+      '      try{var p=s?JSON.parse(s):null; document.getElementById("p").innerHTML = fmt(p);}catch(e){document.getElementById("p").textContent="Parse error";}' +
+      '    }).dl_getProgressPayload_(); }' +
+      '  setInterval(poll, 1500); poll();' +
+      '</script>' +
+    '</div>'
+  ).setTitle('Local run progress');
+  SpreadsheetApp.getUi().showSidebar(html);
+}
+function dl_getProgressPayload_() {
+  return PropertiesService.getDocumentProperties().getProperty('dl_progress') || '';
+}
+
+/** Web app endpoints */
+
+function doGet(e) {
+  const p = e.parameter || {};
+
+  // Python runner payload
+  if (p.runner == '1') {
+    const py = [
+      '#!/usr/bin/env python3',
+      'import sys, json, csv, io, urllib.request, argparse, time, math, random, re',
+      '',
+      '# ----------------------------',
+      '# HTTP helpers',
+      'def http_get(url):',
+      '    with urllib.request.urlopen(url) as r:',
+      '        return r.read()',
+      '',
+      'def http_post(url, obj):',
+      '    data = json.dumps(obj).encode("utf-8")',
+      '    req = urllib.request.Request(url, data=data, headers={"Content-Type":"application/json"})',
+      '    with urllib.request.urlopen(req) as r:',
+      '        return r.read().decode("utf-8")',
+      '',
+      'def parse_csv(text):',
+      '    f = io.StringIO(text)',
+      '    rdr = csv.reader(f)',
+      '    rows = list(rdr)',
+      '    if not rows: return [], []',
+      '    header = rows[0]',
+      '    return header, rows[1:]',
+      '',
+      '# ----------------------------',
+      '# Similarity and model',
+      'def jaro_winkler(a,b):',
+      '    a = (a or "").upper(); b = (b or "").upper()',
+      '    if not a and not b: return 1.0',
+      '    if not a or not b: return 0.0',
+      '    m_dist = max(0, max(len(a), len(b))//2 - 1)',
+      '    a_m = [False]*len(a); b_m = [False]*len(b)',
+      '    matches = 0',
+      '    for i in range(len(a)):',
+      '        start = max(0, i - m_dist); end = min(i + m_dist + 1, len(b))',
+      '        for j in range(start, end):',
+      '            if b_m[j] or a[i] != b[j]:',
+      '                continue',
+      '            a_m[i] = True; b_m[j] = True; matches += 1; break',
+      '    if matches == 0: return 0.0',
+      '    t = 0; k = 0',
+      '    for i in range(len(a)):',
+      '        if not a_m[i]:',
+      '            continue',
+      '        while not b_m[k]:',
+      '            k += 1',
+      '        if a[i] != b[k]:',
+      '            t += 1',
+      '        k += 1',
+      '    t = t / 2.0',
+      '    j = (matches/len(a) + matches/len(b) + (matches - t)/matches) / 3.0',
+      '    l = 0',
+      '    while l < 4 and l < len(a) and l < len(b) and a[l] == b[l]:',
+      '        l += 1',
+      '    return j + l*0.1*(1.0 - j)',
+      '',
+      'def sigmoid(z):',
+      '    return 1.0/(1.0+math.exp(-z))',
+      '',
+      'def predict(x, w):',
+      '    z = w[-1]',
+      '    for i in range(len(x)):',
+      '        z += w[i]*x[i]',
+      '    return sigmoid(z)',
+      '',
+      'def sgd_update(w, x, y, lr=0.1):',
+      '    p = predict(x, w)',
+      '    err = p - y',
+      '    for i in range(len(x)):',
+      '        w[i] -= lr*err*x[i]',
+      '    w[-1] -= lr*err',
+      '    return w',
+      '',
+      '# ----------------------------',
+      '# Features with interactions',
+      'def features(a, b):',
+      '    # Base features [0-4]',
+      '    f0 = jaro_winkler((a.get("DonorFirst","")+" "+a.get("DonorLast","")).strip(), (b.get("DonorFirst","")+" "+b.get("DonorLast","")).strip())  # name',
+      '    f1 = jaro_winkler(a.get("DonorLast",""), b.get("DonorLast",""))  # last',
+      '    f2 = jaro_winkler(a.get("Address1",""), b.get("Address1",""))  # address',
+      '    f3 = jaro_winkler(a.get("Employer",""), b.get("Employer",""))  # employer',
+      '    f4 = jaro_winkler(a.get("Occupation",""), b.get("Occupation",""))  # occupation',
+      '    ',
+      '    # Interaction features [5-14]',
+      '    f5 = f0 * f1   # name * last',
+      '    f6 = f0 * f2   # name * address',
+      '    f7 = f0 * f3   # name * employer',
+      '    f8 = f0 * f4   # name * occupation',
+      '    f9 = f1 * f2   # last * address',
+      '    f10 = f1 * f3  # last * employer',
+      '    f11 = f1 * f4  # last * occupation',
+      '    f12 = f2 * f3  # address * employer',
+      '    f13 = f2 * f4  # address * occupation',
+      '    f14 = f3 * f4  # employer * occupation',
+      '    ',
+      '    return [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13, f14]',
+      '',
+      'def features_dict(a, b):',
+      '    """Return features as a dict for storage in training data."""',
+      '    f = features(a, b)',
+      '    return {',
+      '        "nameSim": f[0], "lastSim": f[1], "addrSim": f[2], "empSim": f[3], "occSim": f[4],',
+      '        "name_last": f[5], "name_addr": f[6], "name_emp": f[7], "name_occ": f[8],',
+      '        "last_addr": f[9], "last_emp": f[10], "last_occ": f[11],',
+      '        "addr_emp": f[12], "addr_occ": f[13], "emp_occ": f[14]',
+      '    }',
+      '',
+      '# ----------------------------',
+      '# TTY input that works even when stdin is piped',
+      'def read_tty(prompt=""):',
+      '    try:',
+      '        if sys.stdin and hasattr(sys.stdin, "isatty") and sys.stdin.isatty():',
+      '            return input(prompt)',
+      '        with open("/dev/tty") as tty:',
+      '            if prompt:',
+      '                print(prompt, end="", flush=True)',
+      '            return tty.readline().rstrip("\\n")',
+      '    except Exception:',
+      '        return ""',
+      '',
+      'def show_pair_and_get_label(i, total, a, b, x, p):',
+      '    print(f"[{i}/{total}]")',
+      '    def fmt(o):',
+      '        nm = (o.get("DonorFirst","")+" "+o.get("DonorLast","")).strip()',
+      '        ad = ", ".join([s for s in [o.get("Address1",""), o.get("City",""), o.get("State","")] if s])',
+      '        em = " | ".join([s for s in [o.get("Employer",""), o.get("Occupation","")] if s])',
+      '        return nm+"\\n"+ad+"\\n"+em',
+      '    print("A:"); print(fmt(a))',
+      '    print("B:"); print(fmt(b))',
+      '    print(f"feat nameSim={x[0]:.3f} addrSim={x[2]:.3f} empSim={x[3]:.3f} occSim={x[4]:.3f}  model_p={p:.3f}")',
+      '    while True:',
+      '        s = read_tty("Label this pair (1=match, 0=not match, 2=skip): ").strip()',
+      '        if s in ("0","1","2"):',
+      '            return int(s)',
+      '        print("Please enter 1, 0, or 2.")',
+      '',
+      '# ----------------------------',
+      '# Stable keys and candidate generators',
+      'def stable_pair_key(a_obj, b_obj):',
+      '    a = (str(a_obj.get("_origin","C")), int(a_obj.get("_rownum", 0)))',
+      '    b = (str(b_obj.get("_origin","C")), int(b_obj.get("_rownum", 0)))',
+      '    return (a, b) if a <= b else (b, a)',
+      '',
+      'def cold_start_candidates(window_rows, want, seen_pairs, donor_usage_count, max_usage=3):',
+      '    # Address-forward scoring. Skip exact name+address dupes and already-seen pairs.',
+      '    cands = []; L = len(window_rows)',
+      '    if L < 2: return []',
+      '    limit = min(L, 2500)',
+      '    for i in range(limit):',
+      '        a = window_rows[i]',
+      '        for j in range(i+1, limit):',
+      '            b = window_rows[j]',
+      '            k = stable_pair_key(a, b)',
+      '            if k in seen_pairs:',
+      '                continue',
+      '            # Skip overused donors',
+      '            ra = (a.get("_origin","C"), a.get("_rownum",0))',
+      '            rb = (b.get("_origin","C"), b.get("_rownum",0))',
+      '            if donor_usage_count.get(ra, 0) >= max_usage or donor_usage_count.get(rb, 0) >= max_usage:',
+      '                continue',
+      '            fullA = (a.get("DonorFirst","")+" "+a.get("DonorLast","")).strip().upper()',
+      '            fullB = (b.get("DonorFirst","")+" "+b.get("DonorLast","")).strip().upper()',
+      '            addrA = (a.get("Address1","") or "").strip().upper()',
+      '            addrB = (b.get("Address1","") or "").strip().upper()',
+      '            if fullA == fullB and addrA and addrA == addrB:',
+      '                continue',
+      '            x = features(a,b)',
+      '            score = 0.60*x[2] + 0.25*x[0] + 0.15*x[3]',
+      '            if score >= 0.75 or x[2] >= 0.80:',
+      '                cands.append((score, a, b, x))',
+      '            if len(cands) >= want*80:',
+      '                break',
+      '        if len(cands) >= want*80:',
+      '            break',
+      '    cands.sort(key=lambda t: -t[0])',
+      '    chosen = []; used = set()',
+      '    for _, a, b, x in cands:',
+      '        # one-use per row in a batch',
+      '        ra = (a.get("_origin","C"), a.get("_rownum",0))',
+      '        rb = (b.get("_origin","C"), b.get("_rownum",0))',
+      '        if ra in used or rb in used:',
+      '            continue',
+      '        chosen.append((a, b, x))',
+      '        used.add(ra); used.add(rb)',
+      '        if len(chosen) >= want:',
+      '            break',
+      '    return chosen',
+      '',
+      'def uncertain_candidates(window_rows, want, seen_pairs, w, donor_usage_count, max_usage=3):',
+      '    # Pairs closest to 0.5 under current model, skipping seen ones.',
+      '    picks = []; L = len(window_rows)',
+      '    if L < 2: return []',
+      '    limit = min(L, 5000)',
+      '    # More aggressive sampling to find uncertain pairs',
+      '    if limit <= 2000:',
+      '        step = 1  # Dense sampling for smaller windows',
+      '    else:',
+      '        step = max(1, limit // 1500)  # More dense than before',
+      '    sampled = 0',
+      '    # Increase search effort',
+      '    max_samples = want * 1000',
+      '    for i in range(0, limit, step):',
+      '        a = window_rows[i]',
+      '        for j in range(i+1, limit, step):',
+      '            b = window_rows[j]',
+      '            k = stable_pair_key(a, b)',
+      '            if k in seen_pairs:',
+      '                continue',
+      '            # Skip overused donors',
+      '            ra = (a.get("_origin","C"), a.get("_rownum",0))',
+      '            rb = (b.get("_origin","C"), b.get("_rownum",0))',
+      '            if donor_usage_count.get(ra, 0) >= max_usage or donor_usage_count.get(rb, 0) >= max_usage:',
+      '                continue',
+      '            x = features(a, b)',
+      '            z = w[-1]',
+      '            for t in range(0,5):',
+      '                z += w[t]*x[t]',
+      '            p = 1.0/(1.0+math.exp(-z))',
+      '            u = abs(p - 0.5)',
+      '            # Accept slightly wider uncertainty band (0.35 to 0.65)',
+      '            if 0.35 <= p <= 0.65:',
+      '                picks.append((u, p, a, b, x, p))',
+      '            sampled += 1',
+      '            if sampled >= max_samples:',
+      '                break',
+      '        if sampled >= max_samples:',
+      '            break',
+      '    # sort by lowest uncertainty, then prefer a bit higher p as tie-break',
+      '    picks.sort(key=lambda t: (t[0], -t[1]))',
+      '    chosen = []; used_rows = set()',
+      '    for _, __, a, b, x, p in picks:',
+      '        ra = (a.get("_origin","C"), a.get("_rownum",0))',
+      '        rb = (b.get("_origin","C"), b.get("_rownum",0))',
+      '        if ra in used_rows or rb in used_rows:',
+      '            continue',
+      '        chosen.append((a, b, x, p))',
+      '        used_rows.add(ra); used_rows.add(rb)',
+      '        if len(chosen) >= want:',
+      '            break',
+      '    return chosen',
+      '',
+      '# ----------------------------',
+      '# CLI args and data',
+      'ap = argparse.ArgumentParser()',
+      'ap.add_argument("--bundle", required=True)',
+      'ap.add_argument("--result", required=True)',
+      'args = ap.parse_args()',
+      '',
+      'job = json.loads(http_get(args.bundle).decode("utf-8"))',
+      'hdrK, rowsK = parse_csv(http_get(job["krefUrl"]).decode("utf-8"))',
+      'hdrF, rowsF = parse_csv(http_get(job["fecUrl"]).decode("utf-8"))',
+      '',
+      'def row_as_obj(header, row):',
+      '    m = dict(zip(header, row))',
+      '    return {',
+      '        "DonorFirst": (m.get("DonorFirst","") or "").strip(),',
+      '        "DonorLast":  (m.get("DonorLast","") or "").strip(),',
+      '        "Address1":   (m.get("Address1","") or "").strip(),',
+      '        "City":       (m.get("City","") or "").strip(),',
+      '        "State":      (m.get("State","") or "").strip(),',
+      '        "Zip":        (m.get("Zip","") or "").strip(),',
+      '        "Employer":   (m.get("Employer","") or "").strip(),',
+      '        "Occupation": (m.get("Occupation","") or "").strip()',
+      '    }',
+      '',
+      'K_rows = [row_as_obj(hdrK, r) for r in rowsK]',
+      'F_rows = [row_as_obj(hdrF, r) for r in rowsF]',
+      'COMBINED = []',
+      'global_idx = 0',
+      'for i, r in enumerate(K_rows, start=2):',
+      '    o = dict(r); o["_origin"] = "K"; o["_rownum"] = i; o["_globalIdx"] = global_idx; COMBINED.append(o); global_idx += 1',
+      'for j, r in enumerate(F_rows, start=2):',
+      '    o = dict(r); o["_origin"] = "F"; o["_rownum"] = j; o["_globalIdx"] = global_idx; COMBINED.append(o); global_idx += 1',
+      'print(f"Loaded {len(COMBINED)} donors total")',
+      '',
+      '# Session storage',
+      'training_rows = []',
+      'seen_pairs = set()',
+      'w = [0.0]*16  # 15 features (5 base + 10 interactions) + bias',
+      'selected_donors = []  # Progressive random sample',
+      'remaining_pool = list(COMBINED)  # Pool of not-yet-selected donors',
+      'random.shuffle(remaining_pool)  # Shuffle once at start',
+      'donor_usage_count = {}  # Track how many times each donor appears in training',
+      'feature_names = ["name", "last", "addr", "employer", "occupation", "name*last", "name*addr", "name*employer", "name*occupation", "last*addr", "last*employer", "last*occupation", "addr*employer", "addr*occupation", "employer*occupation"]',
+      'loaded_training_count = 0  # Track how many training rows were loaded (vs newly added)',
+      '',
+      '# ----------------------------',
+      '# Check for existing training data',
+      'print("\\nChecking for existing training data...")',
+      'existing_model = http_get(job["modelUrl"]).decode("utf-8")',
+      'existing_data = json.loads(existing_model)',
+      'is_continuing = False  # Track if we loaded existing data',
+      '',
+      'if existing_data.get("weights"):',
+      '    weights_count = len(existing_data.get("weights", []))',
+      '    print(f"Found existing model with {weights_count} weights")',
+      '    ',
+      '    # Ask user: load or new',
+      '    while True:',
+      '        choice = read_tty("(L)oad existing training data and continue, or start (N)ew? (l/n): ").strip().lower()',
+      '        if choice == "l":',
+      '            print("Loading existing training data...")',
+      '            # Fetch training data',
+      '            training_url = job["modelUrl"].replace("model=1", "training=1")',
+      '            training_json = http_get(training_url).decode("utf-8")',
+      '            training_data = json.loads(training_json)',
+      '            ',
+      '            if training_data.get("training_rows"):',
+      '                training_rows = training_data["training_rows"]',
+      '                w = existing_data["weights"]',
+      '                is_continuing = True  # Mark as continuing',
+      '                loaded_training_count = len(training_rows)  # Track how many we loaded',
+      '                ',
+      '                # Build seen_pairs from loaded data',
+      '                for row in training_rows:',
+      '                    a_key = (row["a"]["origin"], row["a"]["row"])',
+      '                    b_key = (row["b"]["origin"], row["b"]["row"])',
+      '                    pair_key = (a_key, b_key) if a_key <= b_key else (b_key, a_key)',
+      '                    seen_pairs.add(pair_key)',
+      '                    ',
+      '                    # Track donor usage',
+      '                    donor_usage_count[a_key] = donor_usage_count.get(a_key, 0) + 1',
+      '                    donor_usage_count[b_key] = donor_usage_count.get(b_key, 0) + 1',
+      '                ',
+      '                print(f"Loaded {len(training_rows)} existing labeled pairs")',
+      '                print(f"Model has {len(w)} weights")',
+      '            else:',
+      '                print("No training data found, starting fresh")',
+      '            break',
+      '        elif choice == "n":',
+      '            print("Starting new training session...")',
+      '            # Clear any existing weights so we start fresh',
+      '            print("Clearing any previously saved model weights...")',
+      '            clear_url = job["modelUrl"].replace("model=1", "clear=1")',
+      '            try:',
+      '                http_get(clear_url)',
+      '                print("Old model cleared.")',
+      '            except:',
+      '                print("(No old model to clear)")',
+      '            break',
+      '        else:',
+      '            print(\'Please enter "l" to load or "n" for new.\')',
+      'else:',
+      '    print("No existing model found. Starting fresh.")',
+      '',
+      '# ----------------------------',
+      '# Retraining function',
+      'def retrain_model(training_rows, w, epochs=50, lr=0.1):',
+      '    """Do multiple passes through training data to improve model."""',
+      '    if not training_rows:',
+      '        return w',
+      '    for epoch in range(epochs):',
+      '        # Shuffle training data each epoch',
+      '        shuffled = list(training_rows)',
+      '        random.shuffle(shuffled)',
+      '        for row in shuffled:',
+      '            # Extract all 15 features from stored training row',
+      '            f = row.get("features", {})',
+      '            x = [f.get("nameSim",0), f.get("lastSim",0), f.get("addrSim",0), f.get("empSim",0), f.get("occSim",0),',
+      '                 f.get("name_last",0), f.get("name_addr",0), f.get("name_emp",0), f.get("name_occ",0),',
+      '                 f.get("last_addr",0), f.get("last_emp",0), f.get("last_occ",0),',
+      '                 f.get("addr_emp",0), f.get("addr_occ",0), f.get("emp_occ",0)]',
+      '            y = row.get("label", 0)',
+      '            w[:] = sgd_update(w, x, y, lr)',
+      '    return w',
+      '',
+      '# ----------------------------',
+      '# Weight analysis and blocking strategy generation',
+      'def analyze_weights(w, feature_names):',
+      '    """Analyze learned weights to identify top features/interactions."""',
+      '    # Get absolute weights (excluding bias)',
+      '    weights_with_names = [(abs(w[i]), w[i], feature_names[i], i) for i in range(len(feature_names))]',
+      '    weights_with_names.sort(key=lambda x: -x[0])  # Sort by absolute value descending',
+      '    return weights_with_names',
+      '',
+      'def generate_blocking_key(donor, feature_name):',
+      '    """Generate a blocking key for a donor based on feature name."""',
+      '    # Extract relevant fields based on feature',
+      '    if "name" in feature_name and "last" not in feature_name:',
+      '        # Use full name soundex',
+      '        full_name = (donor.get("DonorFirst","") + " " + donor.get("DonorLast","")).strip().upper()',
+      '        if not full_name: return None',
+      '        # Simple soundex-like: first letter + next 2 consonants',
+      '        clean = re.sub(r"[^A-Z]", "", full_name)',
+      '        return clean[:4] if len(clean) >= 4 else clean',
+      '    ',
+      '    if "last" in feature_name:',
+      '        # Use last name soundex',
+      '        last = donor.get("DonorLast","").strip().upper()',
+      '        if not last: return None',
+      '        clean = re.sub(r"[^A-Z]", "", last)',
+      '        return clean[:3] if len(clean) >= 3 else clean',
+      '    ',
+      '    if "addr" in feature_name:',
+      '        # Use zip code or city+state',
+      '        zip_code = donor.get("Zip","").strip()',
+      '        if zip_code and len(zip_code) >= 5:',
+      '            return zip_code[:5]',
+      '        city = donor.get("City","").strip().upper()',
+      '        state = donor.get("State","").strip().upper()',
+      '        if city and state:',
+      '            return city + ":" + state',
+      '        return None',
+      '    ',
+      '    if "employer" in feature_name:',
+      '        # Use employer token',
+      '        emp = donor.get("Employer","").strip().upper()',
+      '        if not emp or emp == "N/A": return None',
+      '        clean = re.sub(r"[^A-Z0-9]", " ", emp)',
+      '        tokens = [t for t in clean.split() if len(t) >= 3 and t not in ["THE", "INC", "LLC", "LTD"]]',
+      '        return tokens[0] if tokens else None',
+      '    ',
+      '    if "occupation" in feature_name:',
+      '        # Use occupation token',
+      '        occ = donor.get("Occupation","").strip().upper()',
+      '        if not occ or occ == "N/A": return None',
+      '        clean = re.sub(r"[^A-Z]", " ", occ)',
+      '        tokens = [t for t in clean.split() if len(t) >= 4]',
+      '        return tokens[0] if tokens else None',
+      '    ',
+      '    return None',
+      '',
+      'def generate_interaction_blocking_key(donor, feature_name):',
+      '    """Generate blocking key for interaction features (e.g., last*employer)."""',
+      '    parts = feature_name.split("*")',
+      '    if len(parts) != 2:',
+      '        return generate_blocking_key(donor, feature_name)',
+      '    ',
+      '    key1 = generate_blocking_key(donor, parts[0])',
+      '    key2 = generate_blocking_key(donor, parts[1])',
+      '    ',
+      '    if key1 and key2:',
+      '        return f"{key1}|{key2}"',
+      '    return None',
+      '',
+      'def adaptive_candidates(window_rows, want, seen_pairs, w, feature_names, donor_usage_count, max_usage=3):',
+      '    """Find candidate pairs using learned blocking strategies."""',
+      '    # Analyze weights to get top features',
+      '    weight_analysis = analyze_weights(w, feature_names)',
+      '    ',
+      '    print(f"  Top learned features: {[\', \'.join([f\'{name}={weight:.2f}\' for _, weight, name, _ in weight_analysis[:5]])]}")',
+      '    ',
+      '    # Use top 3-5 features for blocking',
+      '    top_features = weight_analysis[:5]',
+      '    ',
+      '    # Build blocks using top features',
+      '    all_blocks = {}',
+      '    for abs_w, w_val, feat_name, feat_idx in top_features:',
+      '        if abs_w < 0.1:  # Skip very weak features',
+      '            continue',
+      '        ',
+      '        blocks = {}',
+      '        for donor in window_rows:',
+      '            if "*" in feat_name:',
+      '                key = generate_interaction_blocking_key(donor, feat_name)',
+      '            else:',
+      '                key = generate_blocking_key(donor, feat_name)',
+      '            ',
+      '            if key:',
+      '                if key not in blocks:',
+      '                    blocks[key] = []',
+      '                blocks[key].append(donor)',
+      '        ',
+      '        # Merge blocks from this feature',
+      '        for key, donors in blocks.items():',
+      '            if len(donors) >= 2:  # Only keep blocks with 2+ donors',
+      '                block_id = f"{feat_name}:{key}"',
+      '                all_blocks[block_id] = donors',
+      '    ',
+      '    print(f"  Generated {len(all_blocks)} blocks from top features")',
+      '    ',
+      '    # Collect candidate pairs from all blocks',
+      '    candidates = []',
+      '    seen_candidate_pairs = set()',
+      '    ',
+      '    for block_id, block_donors in all_blocks.items():',
+      '        if len(block_donors) > 100:  # Skip very large blocks',
+      '            continue',
+      '        ',
+      '        for i in range(len(block_donors)):',
+      '            for j in range(i+1, len(block_donors)):',
+      '                a = block_donors[i]',
+      '                b = block_donors[j]',
+      '                ',
+      '                pair_key = stable_pair_key(a, b)',
+      '                if pair_key in seen_pairs or pair_key in seen_candidate_pairs:',
+      '                    continue',
+      '                ',
+      '                # Skip overused donors',
+      '                ra = (a.get("_origin","C"), a.get("_rownum",0))',
+      '                rb = (b.get("_origin","C"), b.get("_rownum",0))',
+      '                if donor_usage_count.get(ra, 0) >= max_usage or donor_usage_count.get(rb, 0) >= max_usage:',
+      '                    continue',
+      '                ',
+      '                seen_candidate_pairs.add(pair_key)',
+      '                ',
+      '                # Compute features and predict',
+      '                x = features(a, b)',
+      '                z = w[-1]  # bias',
+      '                for t in range(len(x)):',
+      '                    z += w[t] * x[t]',
+      '                p = 1.0 / (1.0 + math.exp(-z))',
+      '                u = abs(p - 0.5)',
+      '                ',
+      '                # Accept pairs in uncertainty band',
+      '                if 0.35 <= p <= 0.65:',
+      '                    candidates.append((u, p, a, b, x, p))',
+      '    ',
+      '    print(f"  Found {len(candidates)} uncertain pairs in blocks")',
+      '    ',
+      '    # Sort by uncertainty and select diverse pairs',
+      '    candidates.sort(key=lambda t: (t[0], -t[1]))',
+      '    ',
+      '    chosen = []',
+      '    used_rows = set()',
+      '    for _, __, a, b, x, p in candidates:',
+      '        ra = (a.get("_origin","C"), a.get("_rownum",0))',
+      '        rb = (b.get("_origin","C"), b.get("_rownum",0))',
+      '        if ra in used_rows or rb in used_rows:',
+      '            continue',
+      '        chosen.append((a, b, x, p))',
+      '        used_rows.add(ra)',
+      '        used_rows.add(rb)',
+      '        if len(chosen) >= want:',
+      '            break',
+      '    ',
+      '    return chosen',
+      '',
+      '# ----------------------------',
+      '# Rounds',
+      'def run_round(round_num):',
+      '    # Add 1000 more random donors to selected pool',
+      '    batch_size = 1000',
+      '    to_add = min(batch_size, len(remaining_pool))',
+      '    if to_add == 0:',
+      '        print("No more donors to add.")',
+      '        return False',
+      '    for _ in range(to_add):',
+      '        selected_donors.append(remaining_pool.pop())',
+      '    print(f"Round {round_num}: Now considering {len(selected_donors)} total donors (added {to_add} new)")',
+      '    ',
+      '    if len(selected_donors) < 2:',
+      '        print("Not enough donors to compare.")',
+      '        return False',
+      '    ',
+      '    # Generate candidate pairs from current selected set',
+      '    if round_num == 1:',
+      '        ask = 15',
+      '        batch = cold_start_candidates(selected_donors, ask, seen_pairs, donor_usage_count)',
+      '    else:',
+      '        ask = 5',
+      '        print("Using adaptive blocking based on learned weights...")',
+      '        batch = adaptive_candidates(selected_donors, ask, seen_pairs, w, feature_names, donor_usage_count)',
+      '    ',
+      '    if not batch:',
+      '        print("No new candidate pairs found this round.")',
+      '        return True',
+      '    ',
+      '    labeled_count = 0',
+      '    for i, item in enumerate(batch, start=1):',
+      '        if round_num == 1:',
+      '            a, b, x = item; p = 0.5',
+      '        else:',
+      '            a, b, x, p = item',
+      '        y = show_pair_and_get_label(i, len(batch), a, b, x, p)',
+      '        ',
+      '        if y == 2:  # Skip',
+      '            print("  Skipped.")',
+      '            continue',
+      '        ',
+      '        # Only process if labeled (0 or 1)',
+      '        training_rows.append({',
+      '          "a":{"origin":a.get("_origin","C"), "row":a.get("_rownum",0), "first":a.get("DonorFirst",""), "last":a.get("DonorLast",""), "addr":a.get("Address1",""), "city":a.get("City",""), "state":a.get("State",""), "zip":a.get("Zip",""), "employer":a.get("Employer",""), "occupation":a.get("Occupation","")},',
+      '          "b":{"origin":b.get("_origin","C"), "row":b.get("_rownum",0), "first":b.get("DonorFirst",""), "last":b.get("DonorLast",""), "addr":b.get("Address1",""), "city":b.get("City",""), "state":b.get("State",""), "zip":b.get("Zip",""), "employer":b.get("Employer",""), "occupation":b.get("Occupation","")},',
+      '          "features": features_dict(a, b),',
+      '          "label": int(y)',
+      '        })',
+      '        w[:] = sgd_update(w, x, int(y), lr=0.1)',
+      '        seen_pairs.add(stable_pair_key(a, b))',
+      '        # Track donor usage',
+      '        ra = (a.get("_origin","C"), a.get("_rownum",0))',
+      '        rb = (b.get("_origin","C"), b.get("_rownum",0))',
+      '        donor_usage_count[ra] = donor_usage_count.get(ra, 0) + 1',
+      '        donor_usage_count[rb] = donor_usage_count.get(rb, 0) + 1',
+      '        labeled_count += 1',
+      '    ',
+      '    print(f"Round {round_num} complete. Labeled {len(batch)} pairs. Total labels: {len(training_rows)}")',
+      '    ',
+      '    # Retrain model on all data after each round',
+      '    if len(training_rows) > 0:',
+      '        print(f"Retraining model on {len(training_rows)} labeled pairs...")',
+      '        w[:] = retrain_model(training_rows, w, epochs=50, lr=0.1)',
+      '        print("Model retrained.")',
+      '    ',
+      '    print(f"Donors remaining in pool: {len(remaining_pool)}")',
+      '    return True',
+      '',
+      'if not is_continuing:',
+      '    # Start fresh training',
+      '    round_num = 1',
+      '    while True:',
+      '        if not run_round(round_num):',
+      '            break',
+      '        if len(remaining_pool) == 0:',
+      '            print("All donors have been included in training!")',
+      '            break',
+      '        # Require valid y/n response',
+      '        while True:',
+      '            ans = read_tty("Continue to next round? (y/n): ").strip().lower()',
+      '            if ans == "y":',
+      '                break',
+      '            elif ans == "n":',
+      '                print("Training stopped by user.")',
+      '                break',
+      '            else:',
+      '                print(\'Please enter "y" to continue or "n" to stop.\')',
+      '        if ans == "n":',
+      '            break',
+      '        round_num += 1',
+      'else:',
+      '    print("Using existing trained model - proceeding directly to final matching...")',
+      '',
+      '# ----------------------------',
+      '# Final Matching Phase',
+      'print("\\n" + "="*60)',
+      'print("TRAINING COMPLETE")',
+      'print(f"Total labeled pairs: {len(training_rows)}")',
+      'print("="*60)',
+      'print("\\nStarting final matching on all donors...")',
+      '',
+      'threshold = job.get("cfg", {}).get("predictThreshold", 0.7)',
+      'print(f"Using match threshold: {threshold}")',
+      '',
+      '# Build blocks using adaptive blocking on ALL donors',
+      'print(f"\\nApplying adaptive blocking to {len(COMBINED)} donors...")',
+      'weight_analysis = analyze_weights(w, feature_names)',
+      'print(f"Top features: {[\', \'.join([f\'{name}={weight:.2f}\' for _, weight, name, _ in weight_analysis[:3]])]}")',
+      '',
+      '# Use Union-Find for clustering',
+      'parent = list(range(len(COMBINED)))',
+      'rank = [0] * len(COMBINED)',
+      'donor_confidence = {}  # Track confidence per donor',
+      '',
+      'def uf_find(x):',
+      '    if parent[x] != x:',
+      '        parent[x] = uf_find(parent[x])',
+      '    return parent[x]',
+      '',
+      'def uf_union(a, b):',
+      '    pa = uf_find(a)',
+      '    pb = uf_find(b)',
+      '    if pa == pb:',
+      '        return',
+      '    if rank[pa] < rank[pb]:',
+      '        pa, pb = pb, pa',
+      '    parent[pb] = pa',
+      '    if rank[pa] == rank[pb]:',
+      '        rank[pa] += 1',
+      '',
+      '# Use adaptive blocking to find candidate pairs',
+      'top_features = weight_analysis[:5]',
+      'all_blocks = {}',
+      '',
+      'for abs_w, w_val, feat_name, feat_idx in top_features:',
+      '    if abs_w < 0.1:',
+      '        continue',
+      '    blocks = {}',
+      '    for donor in COMBINED:',
+      '        if "*" in feat_name:',
+      '            key = generate_interaction_blocking_key(donor, feat_name)',
+      '        else:',
+      '            key = generate_blocking_key(donor, feat_name)',
+      '        if key:',
+      '            if key not in blocks:',
+      '                blocks[key] = []',
+      '            blocks[key].append(donor)',
+      '    for key, donors in blocks.items():',
+      '        if len(donors) >= 2 and len(donors) <= 200:',
+      '            block_id = f"{feat_name}:{key}"',
+      '            all_blocks[block_id] = donors',
+      '',
+      'print(f"Generated {len(all_blocks)} blocks for matching")',
+      '',
+      '# Find matching pairs',
+      'matches_found = 0',
+      'pairs_checked = 0',
+      'seen_final_pairs = set()',
+      '',
+      'for block_id, block_donors in all_blocks.items():',
+      '    for i in range(len(block_donors)):',
+      '        for j in range(i+1, len(block_donors)):',
+      '            a = block_donors[i]',
+      '            b = block_donors[j]',
+      '            ',
+      '            a_idx = a.get("_globalIdx", -1)',
+      '            b_idx = b.get("_globalIdx", -1)',
+      '            if a_idx == -1 or b_idx == -1:',
+      '                continue',
+      '            ',
+      '            pair_key = (min(a_idx, b_idx), max(a_idx, b_idx))',
+      '            if pair_key in seen_final_pairs:',
+      '                continue',
+      '            seen_final_pairs.add(pair_key)',
+      '            ',
+      '            x = features(a, b)',
+      '            z = w[-1]',
+      '            for t in range(len(x)):',
+      '                z += w[t] * x[t]',
+      '            p = 1.0 / (1.0 + math.exp(-z))',
+      '            pairs_checked += 1',
+      '            ',
+      '            if p >= threshold:',
+      '                uf_union(a_idx, b_idx)',
+      '                # Store confidence for both donors',
+      '                donor_confidence[a_idx] = max(donor_confidence.get(a_idx, 0), p)',
+      '                donor_confidence[b_idx] = max(donor_confidence.get(b_idx, 0), p)',
+      '                matches_found += 1',
+      '                ',
+      '                # Debug: Show first 20 matches',
+      '                if matches_found <= 20:',
+      '                    a_first = a.get("DonorFirst","")',
+      '                    a_last = a.get("DonorLast","")',
+      '                    b_first = b.get("DonorFirst","")',
+      '                    b_last = b.get("DonorLast","")',
+      '                    print(f"  Match {matches_found}: {a_first} {a_last} <-> {b_first} {b_last} (p={p:.3f})")',
+      '',
+      'print(f"Checked {pairs_checked} candidate pairs")',
+      'print(f"Found {matches_found} matches above threshold {threshold}")',
+      '',
+      '# Assign DonorIDs',
+      'components = {}',
+      'for i in range(len(COMBINED)):',
+      '    root = uf_find(i)',
+      '    if root not in components:',
+      '        components[root] = []',
+      '    components[root].append(i)',
+      '',
+      'donor_assignments = {}',
+      'next_id = 1',
+      '',
+      'for root, members in components.items():',
+      '    for member_idx in members:',
+      '        donor = COMBINED[member_idx]',
+      '        origin = donor.get("_origin", "C")',
+      '        rownum = donor.get("_rownum", 0)',
+      '        key = f"{origin}:{rownum}"',
+      '        ',
+      '        # Solo donors get confidence 1.0',
+      '        conf = donor_confidence.get(member_idx, 1.0) if len(members) > 1 else 1.0',
+      '        ',
+      '        donor_assignments[key] = {',
+      '            "donorId": next_id,',
+      '            "confidence": round(conf, 4)',
+      '        }',
+      '    next_id += 1',
+      '',
+      'print(f"\\nAssigned {next_id - 1} unique DonorIDs to {len(COMBINED)} donors")',
+      'unique_matched = sum(1 for members in components.values() if len(members) > 1)',
+      'print(f"Unique donors with matches: {unique_matched}")',
+      'print(f"Solo donors (no matches): {len(components) - unique_matched}")',
+      '',
+      '# Final post back to Apps Script',
+      '# Only send NEW training rows (not ones we loaded)',
+      'new_training_rows = training_rows[loaded_training_count:]',
+      'print(f"Posting {len(new_training_rows)} new training rows (out of {len(training_rows)} total)")',
+      'payload = {',
+      '  "progress": {"phase":"Complete","done":len(COMBINED),"total":len(COMBINED),"note":"matching complete"},',
+      '  "training_rows": new_training_rows,',
+      '  "model_weights": w,',
+      '  "donor_assignments": donor_assignments',
+      '}',
+      'print("\\nPosting results to Google Sheets...")',
+      'response_raw = http_post(job["resultUrl"], payload)',
+      'try:',
+      '    response = json.loads(response_raw)',
+      '    ',
+      '    if response.get("ok"):',
+      '        print("All results posted successfully!")',
+      '        ',
+      '        if "merge_output" in response:',
+      '            merge = response["merge_output"]',
+      '            if merge.get("success"):',
+      '                print(f"✓ Merge output: {merge[\'message\']}")',
+      '                print(f"  - Rows written: {merge.get(\'rows\', \'unknown\')}")',
+      '                print(f"  - Assignments: {merge.get(\'assignments\', \'unknown\')}")',
+      '            else:',
+      '                print(f"✗ Merge output FAILED: {merge.get(\'error\', \'unknown error\')}")',
+      '        else:',
+      '            print("Warning: No merge output status in response")',
+      '    else:',
+      '        print(f"ERROR: Apps Script returned failure: {response.get(\'error\', \'unknown\')}")',
+      '        if "merge_output" in response:',
+      '            print(f"  Merge output error: {response[\'merge_output\'].get(\'error\', \'unknown\')}")',
+      'except json.JSONDecodeError:',
+      '    print("ERROR: Apps Script returned an error page instead of JSON.")',
+      '    print("This usually means there is a JavaScript error in the script.")',
+      '    # Try to extract error from HTML',
+      '    if "Error" in response_raw and "<" in response_raw:',
+      '        print("\\nReceived HTML error page. Check the Apps Script logs for details.")',
+      '        print("Go to: Extensions → Apps Script → Executions (clock icon)")',
+      '    print(f"\\nFirst 500 chars of response:\\n{response_raw[:500]}")',
+      'except Exception as e:',
+      '    print(f"ERROR: {e}")',
+      '    print(f"Raw response: {response_raw[:500]}")'
+    ].join('\n');
+
+    return ContentService.createTextOutput(py).setMimeType(ContentService.MimeType.TEXT);
+  }
+
+  // Job bundle for the runner
+  if (p.job == '1') {
+    const chk = dl_validateToken_(p.token);
+    if (!chk.ok) return ContentService.createTextOutput(chk.msg).setMimeType(ContentService.MimeType.TEXT);
+    const job = PropertiesService.getDocumentProperties().getProperty('dl_job_json') || '{}';
+    return ContentService.createTextOutput(job).setMimeType(ContentService.MimeType.JSON);
+  }
+
+  // CSV endpoints for runner input
+  if (p.csv == 'kref' || p.csv == 'fec') {
+    const chk = dl_validateToken_(p.token);
+    if (!chk.ok) return ContentService.createTextOutput(chk.msg).setMimeType(ContentService.MimeType.TEXT);
+    const props = PropertiesService.getDocumentProperties();
+    const fileId = p.csv === 'kref' ? props.getProperty('dl_kref_fileId') : props.getProperty('dl_fec_fileId');
+    if (!fileId) return ContentService.createTextOutput('No CSV file id').setMimeType(ContentService.MimeType.TEXT);
+    const file = DriveApp.getFileById(fileId);
+    const out = ContentService.createTextOutput(file.getBlob().getDataAsString());
+    out.setMimeType(ContentService.MimeType.CSV);
+    return out;
+  }
+
+  // Model endpoint for runner to fetch current weights/prior if any
+  if (p.model == '1') {
+    const props = PropertiesService.getDocumentProperties();
+    const w = props.getProperty('donor_model_weights');
+    const fp = props.getProperty('donor_first_pair_table');
+    const body = {
+      weights: w ? JSON.parse(w) : null,
+      first_pair_table: fp ? JSON.parse(fp) : {}
+    };
+    return ContentService.createTextOutput(JSON.stringify(body)).setMimeType(ContentService.MimeType.JSON);
+  }
+
+  // Clear model endpoint - delete saved weights
+  if (p.clear == '1') {
+    const props = PropertiesService.getDocumentProperties();
+    props.deleteProperty('donor_model_weights');
+    props.deleteProperty('donor_first_pair_table');
+    return ContentService.createTextOutput(JSON.stringify({ ok: true, message: 'Model cleared' })).setMimeType(ContentService.MimeType.JSON);
+  }
+
+  // Training data endpoint - fetch existing training rows
+  if (p.training == '1') {
+    const ss = SpreadsheetApp.getActive();
+    const sh = ss.getSheetByName(DONOR_CFG.trainingSheet);
+
+    if (!sh || sh.getLastRow() < 2) {
+      return ContentService.createTextOutput(JSON.stringify({ training_rows: [] })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    const vals = sh.getDataRange().getValues();
+    const header = vals[0];
+    const trainingRows = [];
+
+    for (let i = 1; i < vals.length; i++) {
+      const row = vals[i];
+      const label = Number(row[0]);
+      if (label !== 0 && label !== 1) continue; // Skip unlabeled
+
+      // Parse the row into the format Python expects
+      trainingRows.push({
+        a: {
+          origin: String(row[1] || ''),
+          row: Number(row[2] || 0),
+          first: String(row[3] || ''),
+          last: String(row[4] || ''),
+          addr: String(row[5] || ''),
+          city: String(row[6] || ''),
+          state: String(row[7] || ''),
+          zip: String(row[8] || ''),
+          employer: String(row[9] || ''),
+          occupation: String(row[10] || '')
+        },
+        b: {
+          origin: String(row[11] || ''),
+          row: Number(row[12] || 0),
+          first: String(row[13] || ''),
+          last: String(row[14] || ''),
+          addr: String(row[15] || ''),
+          city: String(row[16] || ''),
+          state: String(row[17] || ''),
+          zip: String(row[18] || ''),
+          employer: String(row[19] || ''),
+          occupation: String(row[20] || '')
+        },
+        features: {
+          nameSim: Number(row[21] || 0),
+          lastSim: Number(row[22] || 0),
+          addrSim: Number(row[24] || 0),
+          empSim: Number(row[31] || 0),
+          occSim: Number(row[32] || 0),
+          // Compute interactions from base features
+          name_last: Number(row[21] || 0) * Number(row[22] || 0),
+          name_addr: Number(row[21] || 0) * Number(row[24] || 0),
+          name_emp: Number(row[21] || 0) * Number(row[31] || 0),
+          name_occ: Number(row[21] || 0) * Number(row[32] || 0),
+          last_addr: Number(row[22] || 0) * Number(row[24] || 0),
+          last_emp: Number(row[22] || 0) * Number(row[31] || 0),
+          last_occ: Number(row[22] || 0) * Number(row[32] || 0),
+          addr_emp: Number(row[24] || 0) * Number(row[31] || 0),
+          addr_occ: Number(row[24] || 0) * Number(row[32] || 0),
+          emp_occ: Number(row[31] || 0) * Number(row[32] || 0)
+        },
+        label: label
+      });
+    }
+
+    return ContentService.createTextOutput(JSON.stringify({ training_rows: trainingRows })).setMimeType(ContentService.MimeType.JSON);
+  }
+
+  // Campaign Deputy CSV endpoints
+  if (p.cd_csv == 'merge' || p.cd_csv == 'cd') {
+    return cd_serveCsv_(p.cd_csv, p.token);
+  }
+
+  // Campaign Deputy matcher Python script
+  if (p.cd_matcher == '1') {
+    return cd_getMatcherScript_();
+  }
+
+  return ContentService.createTextOutput('Invalid query').setMimeType(ContentService.MimeType.TEXT);
+}
+
+
+function doPost(e) {
+  const p = e.parameter || {};
+
+  // Handle Campaign Deputy matching results separately
+  if (p.cd_result == '1') {
+    const chk = cd_validateToken_(p.token);
+    if (!chk.ok) {
+      return ContentService.createTextOutput(JSON.stringify({ ok: false, error: chk.msg })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    let body = {};
+    try {
+      body = e.postData && e.postData.contents ? JSON.parse(e.postData.contents) : {};
+    } catch (err) {
+      return ContentService.createTextOutput(JSON.stringify({ ok: false, error: 'Invalid JSON' })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    const result = cd_receiveResults_(body);
+    return ContentService.createTextOutput(JSON.stringify(result)).setMimeType(ContentService.MimeType.JSON);
+  }
+
+  // Regular donor matching
+  const chk = dl_validateToken_(p.token);
+  if (!chk.ok) {
+    return ContentService.createTextOutput(JSON.stringify({ ok: false, error: chk.msg })).setMimeType(ContentService.MimeType.JSON);
+  }
+
+  let body = {};
+  try {
+    body = e.postData && e.postData.contents ? JSON.parse(e.postData.contents) : {};
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({ ok: false, error: 'Invalid JSON' })).setMimeType(ContentService.MimeType.JSON);
+  }
+
+  const responseData = { ok: true };
+
+  if (body.progress) {
+    dl_setProgress_(String(body.progress.phase || ''), Number(body.progress.done || 0), Number(body.progress.total || 0), String(body.progress.note || ''));
+  }
+
+  if (Array.isArray(body.training_rows) && body.training_rows.length) {
+    donor_applyResult_trainingRows_(body.training_rows);
+    responseData.training_saved = body.training_rows.length;
+  }
+
+  if (Array.isArray(body.model_weights) && body.model_weights.length) {
+    donor_applyResult_modelWeights_(body.model_weights);
+    responseData.weights_saved = body.model_weights.length;
+  }
+
+  if (body.id_map && typeof body.id_map === 'object') {
+    donor_applyResult_assignedIds_(body.id_map);
+  }
+
+  if (body.donor_assignments && typeof body.donor_assignments === 'object') {
+    Logger.log('Received donor_assignments with ' + Object.keys(body.donor_assignments).length + ' entries');
+    Logger.log('First 5 keys: ' + Object.keys(body.donor_assignments).slice(0, 5).join(', '));
+
+    const mergeResult = donor_applyResult_donorAssignments_(body.donor_assignments);
+
+    if (mergeResult.success) {
+      responseData.merge_output = {
+        success: true,
+        rows: mergeResult.rowCount,
+        assignments: mergeResult.assignmentCount,
+        message: mergeResult.message
+      };
+    } else {
+      responseData.ok = false;
+      responseData.merge_output = {
+        success: false,
+        error: mergeResult.error
+      };
+    }
+  }
+
+  return ContentService.createTextOutput(JSON.stringify(responseData)).setMimeType(ContentService.MimeType.JSON);
+}
+
+/** Apply helpers for POST payloads */
+function donor_applyResult_trainingRows_(rows) {
+  const sh = donor_getOrCreateSheet_(DONOR_CFG.trainingSheet);
+  let lastRow = sh.getLastRow();
+  if (lastRow === 0) {
+    sh.getRange(1, 1, 1, DONOR_TRAINING_HEADER.length).setValues([DONOR_TRAINING_HEADER]);
+    sh.setFrozenRows(1);
+    lastRow = 1;
+  }
+  const data = [];
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const a = r.a || {};
+    const b = r.b || {};
+    const f = r.features || {};
+    const label = (r.label === 0 || r.label === 1) ? r.label : '';
+    data.push([
+      label,
+      String(a.origin || ''), Number(a.row || 2), String(a.first || ''), String(a.last || ''), String(a.addr || ''), String(a.city || ''), String(a.state || ''), String(a.zip || ''), String(a.employer || ''), String(a.occupation || ''),
+      String(b.origin || ''), Number(b.row || 2), String(b.first || ''), String(b.last || ''), String(b.addr || ''), String(b.city || ''), String(b.state || ''), String(b.zip || ''), String(b.employer || ''), String(b.occupation || ''),
+      Number(f.nameSim||0), Number(f.firstSim||0), Number(f.firstInitEq||0), Number(f.lastSame||0),
+      Number(f.addrSim||0), Number(f.citySame||0), Number(f.stateSame||0), Number(f.zip5Same||0), Number(f.zip3Same||0), Number(f.houseMatch||0), Number(f.addrStrong||0),
+      Number(f.empSim||0), Number(f.occSim||0), Number(f.firstPairProb||0)
+    ]);
+  }
+  if (data.length) sh.getRange(lastRow + 1, 1, data.length, DONOR_TRAINING_HEADER.length).setValues(data);
+}
+
+function donor_applyResult_modelWeights_(weights) {
+  PropertiesService.getDocumentProperties()
+    .setProperty('donor_model_weights', JSON.stringify(weights));
+}
+
+function donor_applyResult_assignedIds_(idMapObj) {
+  const ss = SpreadsheetApp.getActive();
+  function writeTo(sheetName, originTag) {
+    const sh = ss.getSheetByName(sheetName);
+    if (!sh) return;
+    const header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+    let idCol = header.indexOf(DONOR_CFG.idColumnName) + 1;
+    if (idCol === 0) {
+      idCol = header.length + 1;
+      sh.getRange(1, idCol).setValue(DONOR_CFG.idColumnName);
+    }
+    const last = sh.getLastRow();
+    const out = new Array(Math.max(0, last - 1)).fill(['']);
+    Object.keys(idMapObj).forEach(k => {
+      const parts = String(k).split(':');
+      if (parts.length !== 2) return;
+      if (parts[0] !== originTag) return;
+      const row = Number(parts[1] || 0);
+      const id = idMapObj[k];
+      if (row >= 2 && row <= last) out[row - 2] = [id];
+    });
+    if (out.length) sh.getRange(2, idCol, out.length, 1).setValues(out);
+  }
+  writeTo(DONOR_CFG.krefSheet, 'K');
+  writeTo(DONOR_CFG.fecSheet, 'F');
+}
+
+function donor_applyResult_donorAssignments_(assignments) {
+  // Don't store in PropertiesService - it's too large!
+  // Instead, pass directly to build function
+
+  Logger.log('Building donor ID list with ' + Object.keys(assignments).length + ' assignments');
+  const result = donor_buildDonorIdList(assignments);
+
+  if (result.success) {
+    Logger.log('Successfully built donor ID list: ' + result.message);
+  } else {
+    Logger.log('ERROR building donor ID list: ' + result.error);
+  }
+
+  return result;
+}
+
+function donor_buildDonorIdList(assignments) {
+  const ss = SpreadsheetApp.getActive();
+
+  try {
+    // Use assignments parameter instead of loading from PropertiesService
+    if (!assignments) {
+      // Fallback: try to load from PropertiesService (for manual menu calls)
+      const assignmentsRaw = PropertiesService.getDocumentProperties()
+        .getProperty('donor_final_assignments');
+
+      if (!assignmentsRaw) {
+        throw new Error('No donor assignments found. Please run the training process first.');
+      }
+
+      assignments = JSON.parse(assignmentsRaw);
+    }
+
+    // Load KREF and FEC sheets with ALL columns
+    const krefSheet = ss.getSheetByName(DONOR_CFG.krefSheet);
+    const fecSheet = ss.getSheetByName(DONOR_CFG.fecSheet);
+
+    if (!krefSheet || !fecSheet) {
+      throw new Error('Missing KREF_Exports or FEC_Exports sheets.');
+    }
+
+    // Read all data
+    const krefData = krefSheet.getDataRange().getValues();
+    const fecData = fecSheet.getDataRange().getValues();
+
+    if (krefData.length < 2 && fecData.length < 2) {
+      throw new Error('No data found in KREF or FEC sheets.');
+    }
+
+    // Define output header
+    const outputHeader = [
+      'Recipient', 'DonorFirst', 'DonorLast', 'Address1', 'Address2',
+      'City', 'State', 'Zip', 'Amount', 'WeightedAmount', 'ReceiptDate',
+      'Occupation', 'Employer', 'DonationID', 'DonorID', 'Confidence'
+    ];
+
+    const outputRows = [outputHeader];
+
+    // Helper to find column index
+    function findCol(header, name) {
+      const idx = header.indexOf(name);
+      if (idx === -1) throw new Error('Column not found: ' + name);
+      return idx;
+    }
+
+    // Process KREF
+    if (krefData.length > 1) {
+      const krefHeader = krefData[0];
+      try {
+        const colRecipient = krefHeader.indexOf('Recipient'); // Optional
+        const colFirst = findCol(krefHeader, 'DonorFirst');
+        const colLast = findCol(krefHeader, 'DonorLast');
+        const colAddr1 = findCol(krefHeader, 'Address1');
+        const colAddr2 = krefHeader.indexOf('Address2'); // Optional
+        const colCity = findCol(krefHeader, 'City');
+        const colState = findCol(krefHeader, 'State');
+        const colZip = findCol(krefHeader, 'Zip');
+        const colAmount = findCol(krefHeader, 'Amount');
+        const colWeightedAmount = findCol(krefHeader, 'WeightedAmount');
+        const colReceiptDate = findCol(krefHeader, 'ReceiptDate');
+        const colOccupation = findCol(krefHeader, 'Occupation');
+        const colEmployer = findCol(krefHeader, 'Employer');
+
+        for (let i = 1; i < krefData.length; i++) {
+          const row = krefData[i];
+          const key = 'K:' + (i + 1);
+          const assignment = assignments[key] || { donorId: '', confidence: '' };
+
+          outputRows.push([
+            colRecipient >= 0 ? (row[colRecipient] || 'K') : 'K',
+            row[colFirst] || '',
+            row[colLast] || '',
+            row[colAddr1] || '',
+            colAddr2 >= 0 ? (row[colAddr2] || '') : '',
+            row[colCity] || '',
+            row[colState] || '',
+            row[colZip] || '',
+            row[colAmount] || '',
+            row[colWeightedAmount] || '',
+            row[colReceiptDate] || '',
+            row[colOccupation] || '',
+            row[colEmployer] || '',
+            key,
+            assignment.donorId,
+            assignment.confidence
+          ]);
+        }
+      } catch (err) {
+        throw new Error('Error processing KREF: ' + err.message + '. Make sure Amount and WeightedAmount columns exist.');
+      }
+    }
+
+    // Process FEC
+    if (fecData.length > 1) {
+      const fecHeader = fecData[0];
+      try {
+        const colRecipient = fecHeader.indexOf('Recipient'); // Optional
+        const colFirst = findCol(fecHeader, 'DonorFirst');
+        const colLast = findCol(fecHeader, 'DonorLast');
+        const colAddr1 = findCol(fecHeader, 'Address1');
+        const colAddr2 = fecHeader.indexOf('Address2'); // Optional
+        const colCity = findCol(fecHeader, 'City');
+        const colState = findCol(fecHeader, 'State');
+        const colZip = findCol(fecHeader, 'Zip');
+        const colAmount = findCol(fecHeader, 'Amount');
+        const colWeightedAmount = findCol(fecHeader, 'WeightedAmount');
+        const colReceiptDate = findCol(fecHeader, 'ReceiptDate');
+        const colOccupation = findCol(fecHeader, 'Occupation');
+        const colEmployer = findCol(fecHeader, 'Employer');
+
+        for (let i = 1; i < fecData.length; i++) {
+          const row = fecData[i];
+          const key = 'F:' + (i + 1);
+          const assignment = assignments[key] || { donorId: '', confidence: '' };
+
+          outputRows.push([
+            colRecipient >= 0 ? (row[colRecipient] || 'F') : 'F',
+            row[colFirst] || '',
+            row[colLast] || '',
+            row[colAddr1] || '',
+            colAddr2 >= 0 ? (row[colAddr2] || '') : '',
+            row[colCity] || '',
+            row[colState] || '',
+            row[colZip] || '',
+            row[colAmount] || '',
+            row[colWeightedAmount] || '',
+            row[colReceiptDate] || '',
+            row[colOccupation] || '',
+            row[colEmployer] || '',
+            key,
+            assignment.donorId,
+            assignment.confidence
+          ]);
+        }
+      } catch (err) {
+        throw new Error('Error processing FEC: ' + err.message + '. Make sure Amount and WeightedAmount columns exist.');
+      }
+    }
+
+    // Write to Merge output sheet
+    const mergeSheet = donor_getOrCreateSheet_('Merge output');
+    mergeSheet.clear();
+
+    Logger.log('Writing ' + outputRows.length + ' rows (including header) to Merge output sheet');
+    Logger.log('Total assignments: ' + Object.keys(assignments).length);
+
+    mergeSheet.getRange(1, 1, outputRows.length, outputHeader.length).setValues(outputRows);
+    mergeSheet.setFrozenRows(1);
+
+    Logger.log('Merge output sheet populated successfully with ' + (outputRows.length - 1) + ' data rows');
+    SpreadsheetApp.getActive().toast('Donor ID list built successfully! Check the "Merge output" sheet.', 'Success', 5);
+
+    return {
+      success: true,
+      rowCount: outputRows.length - 1,
+      assignmentCount: Object.keys(assignments).length,
+      message: 'Merge output sheet populated with ' + (outputRows.length - 1) + ' rows'
+    };
+  } catch (err) {
+    Logger.log('ERROR in donor_buildDonorIdList: ' + err.message);
+    Logger.log('Stack: ' + err.stack);
+    return {
+      success: false,
+      error: err.message,
+      stack: err.stack
+    };
+  }
+}
+
+/** Token and helpers */
+function dl_validateToken_(token) {
+  const props = PropertiesService.getDocumentProperties();
+  const t = props.getProperty('dl_token');
+  const until = Number(props.getProperty('dl_token_until') || '0');
+  if (!token || !t || token !== t) return {ok:false, msg:'Invalid or missing token'};
+  if (Date.now() > until) return {ok:false, msg:'Token expired'};
+  return {ok:true};
+}
+function dl_getExecUrlFromOptions_() {
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName('Options');
+  if (!sh) return null;
+  const val = String(sh.getRange('I2').getValue() || '').trim();
+  if (!val) return null;
+  return dl_normalizeWebAppUrl_(val);
+}
+function dl_normalizeWebAppUrl_(rawUrl) {
+  if (!rawUrl) return '';
+  return String(rawUrl).replace(/\/a\/[^/]+\/macros\//, '/macros/');
+}
+function dl_htmlEscape_(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+}
+function dl_setProgress_(phase, done, total, note) {
+  const props = PropertiesService.getDocumentProperties();
+  const payload = { phase, done, total, note, ts: Date.now() };
+  props.setProperty('dl_progress', JSON.stringify(payload));
+}
+function dl_resetProgress_() {
+  PropertiesService.getDocumentProperties().deleteProperty('dl_progress');
+}
+function dl_makeToken_() {
+  return Utilities.getUuid().replace(/-/g, '').slice(0, 40);
+}
+function dl_exportSheetAsCsv_(sheetName) {
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(sheetName);
+  if (!sh) return { file: null, folder: null };
+  const lastRow = sh.getLastRow();
+  const lastCol = sh.getLastColumn();
+  if (lastRow < 1 || lastCol < 1) return { file: null, folder: null };
+  const values = sh.getRange(1, 1, lastRow, lastCol).getDisplayValues();
+  const csv = dl_sheetToCsv_(values);
+  const folder = dl_getOrCreateStagingFolder_();
+  const blob = Utilities.newBlob(csv, 'text/csv', sheetName + '.csv');
+  const file = folder.createFile(blob);
+  return { file, folder };
+}
+function dl_sheetToCsv_(rows2d) {
+  function esc(v) {
+    const s = String(v == null ? '' : v);
+    if (/[",\r\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+    return s;
+  }
+  return rows2d.map(row => (row || []).map(esc).join(',')).join('\r\n');
+}
+function dl_getOrCreateStagingFolder_() {
+  const props = PropertiesService.getDocumentProperties();
+  const existingId = props.getProperty('dl_staging_folderId');
+  if (existingId) {
+    try { return DriveApp.getFolderById(existingId); } catch (e) {}
+  }
+  const parent = DriveApp.getFileById(SpreadsheetApp.getActive().getId()).getParents().hasNext()
+    ? DriveApp.getFileById(SpreadsheetApp.getActive().getId()).getParents().next()
+    : DriveApp.getRootFolder();
+  const folder = parent.createFolder('dl_staging_' + Utilities.getUuid().slice(0, 8));
+  props.setProperty('dl_staging_folderId', folder.getId());
+  return folder;
+}
+
+/** Optional quick logs */
+function dl_logExecUrlFromOptions_() {
+  const url = dl_getExecUrlFromOptions_();
+  console.log('Options!I2 /exec URL:', url || '(missing or invalid)');
+}
+function logCurrentWebAppUrl() {
+  const rawUrl = ScriptApp.getService().getUrl();
+  const webAppUrl = rawUrl ? rawUrl.replace(/\/a\/[^/]+\/macros\//, '/macros/') : null;
+  console.log('Service URL:', webAppUrl || '(no web app deployment found)');
+}
+
+/** Debug helpers preserved */
+function donor_createTrainingPairs_debug() {
+  const ui = SpreadsheetApp.getUi();
+  const t0 = Date.now();
+  SpreadsheetApp.getActive().toast('Debug: loading rows', 'Donor Matcher', 5);
+  const rows = donor_loadAllRows__debug_();
+  const t1 = Date.now();
+  if (!rows.length) {
+    ui.alert('No input rows found. Check sheet names and headers.');
+    return;
+  }
+  SpreadsheetApp.getActive().toast('Debug: building blocks', 'Donor Matcher', 5);
+  const dbg1 = donor_buildBlocks__debug_(rows);
+  const t2 = Date.now();
+  SpreadsheetApp.getActive().toast('Debug: generating pairs', 'Donor Matcher', 5);
+  const pairs = donor_generatePairsFromBlocks__debug_(dbg1.blocks, dbg1.bigBlocksSkipped);
+  const t3 = Date.now();
+  if (!pairs.length) {
+    ui.alert('Zero pairs after blocking or all blocks skipped by size.');
+    return;
+  }
+  SpreadsheetApp.getActive().toast('Debug: sampling and writing', 'Donor Matcher', 5);
+  const sampled = donor_sampleArray_(pairs, DONOR_CFG.sampleTrainingPairs);
+  donor_writeTrainingSheet_(sampled);
+  const t4 = Date.now();
+  const msg = 'Debug summary'
+    + '\n\nRows total: ' + rows.length
+    + '\nBlocks total: ' + dbg1.blockCount
+    + '\nBlocks with <2 rows: ' + dbg1.smallBlocks
+    + '\nBlocks skipped for size: ' + dbg1.bigBlocksSkipped
+    + '\nPairs produced: ' + pairs.length
+    + '\nPairs sampled to Training: ' + sampled.length
+    + '\n\nTiming (ms)'
+    + '\nLoad rows: ' + (t1 - t0)
+    + '\nBuild blocks: ' + (t2 - t1)
+    + '\nGenerate pairs: ' + (t3 - t2)
+    + '\nWrite sheet: ' + (t4 - t3)
+    + '\nTotal: ' + (t4 - t0);
+  Logger.log(msg);
+  SpreadsheetApp.getUi().alert(msg);
+  SpreadsheetApp.getActive().toast('Training sheet ready with ' + sampled.length + ' pairs', 'Donor Matcher', 8);
+}
+function donor_loadAllRows__debug_() {
+  const kref = donor_readSheetAsObjects_(DONOR_CFG.krefSheet);
+  const fec = donor_readSheetAsObjects_(DONOR_CFG.fecSheet);
+  function headerHas(h, name) { return h.indexOf(name) !== -1; }
+  const need = ['DonorFirst','DonorLast','Address1','City','State','Zip','Employer','Occupation'];
+  const missingK = need.filter(n => !headerHas(kref.header, n));
+  const missingF = need.filter(n => !headerHas(fec.header, n));
+  if (missingK.length && missingF.length) {
+    Logger.log('Both sheets missing expected headers. K missing: ' + missingK.join(', ') + ' | F missing: ' + missingF.join(', '));
+  } else {
+    if (missingK.length) Logger.log('K sheet missing: ' + missingK.join(', '));
+    if (missingF.length) Logger.log('F sheet missing: ' + missingF.join(', '));
+  }
+  function mapRow(r, i, origin) {
+    const first = String(r.DonorFirst || '').trim();
+    const last = String(r.DonorLast || '').trim();
+    const addr1 = String(r.Address1 || '').trim();
+    const city = String(r.City || '').trim();
+    const state = String(r.State || '').trim();
+    const zip = donor_normalizeZip_(r.Zip);
+    const employer = String(r.Employer || '').trim();
+    const occupation = String(r.Occupation || '').trim();
+    const fullName = (first + ' ' + last).trim();
+    const house = donor_extractHouseNumber_(addr1);
+    return { origin, rowIndex: i, first, last, addr1, city, state, zip, employer, occupation, fullName, house, globalIdx: -1 };
+  }
+  const all = [];
+  for (let i = 0; i < kref.rows.length; i++) all.push(mapRow(kref.rows[i], i, 'K'));
+  for (let j = 0; j < fec.rows.length; j++) all.push(mapRow(fec.rows[j], j, 'F'));
+  for (let k = 0; k < all.length; k++) all[k].globalIdx = k;
+  Logger.log('Loaded rows. K: ' + kref.rows.length + ' F: ' + fec.rows.length + ' total: ' + all.length);
+  return all;
+}
+function donor_buildBlocks__debug_(rows) {
+  const blocks = new Map();
+  let blockCount = 0;
+  let smallBlocks = 0;
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const keys = donor_blockingKeys_(r);
+    for (let j = 0; j < keys.length; j++) {
+      const key = keys[j];
+      if (!blocks.has(key)) { blocks.set(key, []); blockCount++; }
+      blocks.get(key).push(r);
+    }
+  }
+  const it = blocks.values();
+  while (true) {
+    const step = it.next();
+    if (step.done) break;
+    const arr = step.value;
+    if (!arr || arr.length < 2) smallBlocks++;
+  }
+  Logger.log('Blocks built. Total: ' + blockCount + ' small: ' + smallBlocks);
+  return { blocks, blockCount, smallBlocks, bigBlocksSkipped: 0 };
+}
+function donor_generatePairsFromBlocks__debug_(blocks, bigBlocksSkippedInitial) {
+  const pairs = [];
+  let total = 0;
+  const seen = new Set();
+  let bigBlocksSkipped = bigBlocksSkippedInitial || 0;
+  const it = blocks.entries();
+  while (true) {
+    const step = it.next();
+    if (step.done) break;
+    const blockRows = step.value[1];
+    if (!blockRows || blockRows.length < 2) continue;
+    const n = blockRows.length;
+    if (n * n > DONOR_CFG.maxPairsPerBlock) { bigBlocksSkipped++; continue; }
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const a = blockRows[i];
+        const b = blockRows[j];
+        const ka = a.globalIdx < b.globalIdx ? a.globalIdx + '|' + b.globalIdx : b.globalIdx + '|' + a.globalIdx;
+        if (seen.has(ka)) continue;
+        seen.add(ka);
+        const feat = donor_makeFeatures_(a, b);
+        pairs.push({ a, b, aIdx: a.globalIdx, bIdx: b.globalIdx, features: feat });
+        total++;
+        if (total > DONOR_CFG.maxTotalPairs) {
+          Logger.log('Hit maxTotalPairs cap at ' + DONOR_CFG.maxTotalPairs + '.');
+          return pairs;
+        }
+      }
+    }
+  }
+  Logger.log('Pairs generated: ' + pairs.length + ' | bigBlocksSkipped: ' + bigBlocksSkipped);
+  return pairs;
+}
+
+// ========================================
+// Campaign Deputy Upload Functions
+// ========================================
+
+/**
+ * Opens a dialog for drag-and-drop CSV upload
+ */
+function cd_uploadDialog() {
+  const html = HtmlService.createHtmlOutput(cd_getUploadHtml_())
+    .setWidth(500)
+    .setHeight(300)
+    .setTitle('Upload Campaign Deputy Export');
+  SpreadsheetApp.getUi().showModalDialog(html, 'Campaign Deputy Upload');
+}
+
+/**
+ * Returns the HTML for the drag-and-drop interface
+ */
+function cd_getUploadHtml_() {
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 20px;
+      margin: 0;
+    }
+    #dropzone {
+      border: 3px dashed #4285f4;
+      border-radius: 8px;
+      padding: 40px;
+      text-align: center;
+      background-color: #f8f9fa;
+      transition: all 0.3s;
+      cursor: pointer;
+    }
+    #dropzone.dragover {
+      background-color: #e8f0fe;
+      border-color: #1967d2;
+    }
+    #dropzone:hover {
+      background-color: #e8f0fe;
+    }
+    .icon {
+      font-size: 48px;
+      color: #4285f4;
+      margin-bottom: 10px;
+    }
+    .message {
+      font-size: 16px;
+      color: #5f6368;
+      margin-bottom: 8px;
+    }
+    .hint {
+      font-size: 12px;
+      color: #80868b;
+    }
+    #status {
+      margin-top: 20px;
+      padding: 10px;
+      border-radius: 4px;
+      display: none;
+    }
+    #status.success {
+      background-color: #d4edda;
+      color: #155724;
+      border: 1px solid #c3e6cb;
+      display: block;
+    }
+    #status.error {
+      background-color: #f8d7da;
+      color: #721c24;
+      border: 1px solid #f5c6cb;
+      display: block;
+    }
+    #status.processing {
+      background-color: #fff3cd;
+      color: #856404;
+      border: 1px solid #ffeaa7;
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <div id="dropzone">
+    <div class="icon">📄</div>
+    <div class="message">Drag and drop your Campaign Deputy CSV file here</div>
+    <div class="hint">or click to select a file</div>
+  </div>
+  <input type="file" id="fileInput" accept=".csv" style="display: none;">
+  <div id="status"></div>
+
+  <script>
+    const dropzone = document.getElementById('dropzone');
+    const fileInput = document.getElementById('fileInput');
+    const status = document.getElementById('status');
+
+    // Click to select file
+    dropzone.addEventListener('click', () => {
+      fileInput.click();
+    });
+
+    // File selected via input
+    fileInput.addEventListener('change', (e) => {
+      if (e.target.files.length > 0) {
+        handleFile(e.target.files[0]);
+      }
+    });
+
+    // Prevent default drag behaviors
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+      dropzone.addEventListener(eventName, preventDefaults, false);
+      document.body.addEventListener(eventName, preventDefaults, false);
+    });
+
+    function preventDefaults(e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+
+    // Highlight drop zone when dragging over it
+    ['dragenter', 'dragover'].forEach(eventName => {
+      dropzone.addEventListener(eventName, () => {
+        dropzone.classList.add('dragover');
+      }, false);
+    });
+
+    ['dragleave', 'drop'].forEach(eventName => {
+      dropzone.addEventListener(eventName, () => {
+        dropzone.classList.remove('dragover');
+      }, false);
+    });
+
+    // Handle dropped files
+    dropzone.addEventListener('drop', (e) => {
+      const files = e.dataTransfer.files;
+      if (files.length > 0) {
+        handleFile(files[0]);
+      }
+    }, false);
+
+    function handleFile(file) {
+      // Validate file type
+      if (!file.name.endsWith('.csv')) {
+        showStatus('error', 'Please upload a CSV file only.');
+        return;
+      }
+
+      showStatus('processing', 'Reading file: ' + file.name + '...');
+
+      // Read file contents
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const csvContent = e.target.result;
+        showStatus('processing', 'Uploading to Google Sheets...');
+        
+        // Send to server
+        google.script.run
+          .withSuccessHandler(onSuccess)
+          .withFailureHandler(onError)
+          .cd_processUpload(csvContent, file.name);
+      };
+      reader.onerror = () => {
+        showStatus('error', 'Failed to read file. Please try again.');
+      };
+      reader.readAsText(file);
+    }
+
+    function onSuccess(result) {
+      showStatus('success', result.message + ' (' + result.rowCount + ' rows imported)');
+      setTimeout(() => {
+        google.script.host.close();
+      }, 2000);
+    }
+
+    function onError(error) {
+      showStatus('error', 'Error: ' + error.message);
+    }
+
+    function showStatus(type, message) {
+      status.className = type;
+      status.textContent = message;
+    }
+  </script>
+</body>
+</html>
+  `;
+}
+
+/**
+ * Processes the uploaded CSV and writes to CD_donors sheet
+ * @param {string} csvContent - The CSV file contents
+ * @param {string} fileName - The original filename
+ * @returns {Object} Result with success status and message
+ */
+function cd_processUpload(csvContent, fileName) {
+  try {
+    const ss = SpreadsheetApp.getActive();
+    
+    // Get or create CD_donors sheet
+    let sheet = ss.getSheetByName('CD_donors');
+    if (!sheet) {
+      sheet = ss.insertSheet('CD_donors');
+    } else {
+      // Clear existing content
+      sheet.clear();
+    }
+    
+    // Parse CSV
+    const rows = Utilities.parseCsv(csvContent);
+    
+    if (rows.length === 0) {
+      throw new Error('CSV file is empty');
+    }
+    
+    // Write to sheet
+    sheet.getRange(1, 1, rows.length, rows[0].length).setValues(rows);
+    
+    // Format header row
+    if (rows.length > 0) {
+      const headerRange = sheet.getRange(1, 1, 1, rows[0].length);
+      headerRange.setFontWeight('bold');
+      headerRange.setBackground('#4285f4');
+      headerRange.setFontColor('#ffffff');
+      sheet.setFrozenRows(1);
+    }
+    
+    // Auto-resize columns
+    for (let i = 1; i <= rows[0].length; i++) {
+      sheet.autoResizeColumn(i);
+    }
+    
+    Logger.log('Campaign Deputy export uploaded: ' + fileName + ' (' + rows.length + ' rows)');
+    
+    return {
+      success: true,
+      message: 'Successfully imported ' + fileName,
+      rowCount: rows.length - 1 // Exclude header
+    };
+    
+  } catch (error) {
+    Logger.log('Error uploading Campaign Deputy export: ' + error.message);
+    throw new Error('Failed to process CSV: ' + error.message);
+  }
+}
+
+// ========================================
+// Campaign Deputy Matching Functions
+// ========================================
+
+/**
+ * Prepares matching job for Campaign Deputy donors
+ */
+function cd_prepareMatchingJob_() {
+  const ss = SpreadsheetApp.getActive();
+  
+  // Validate required sheets exist
+  const mergeSheet = ss.getSheetByName('Merge output');
+  const cdSheet = ss.getSheetByName('CD_donors');
+  
+  if (!mergeSheet) {
+    SpreadsheetApp.getUi().alert('Merge output sheet not found. Please run the donor matching first.');
+    return;
+  }
+  
+  if (!cdSheet) {
+    SpreadsheetApp.getUi().alert('CD_donors sheet not found. Please upload a Campaign Deputy export first.');
+    return;
+  }
+  
+  // Get web app URL
+  const webAppUrl = dl_getExecUrlFromOptions_();
+  if (!webAppUrl) {
+    SpreadsheetApp.getUi().alert(
+      'Put your Web App URL ending with /exec in Options!I2.\nExample:\nhttps://script.google.com/macros/s/AKfycb.../exec'
+    );
+    return;
+  }
+  
+  // Export sheets to Drive as CSV
+  const mergeData = mergeSheet.getDataRange().getValues();
+  const cdData = cdSheet.getDataRange().getValues();
+  
+  const mergeFile = cd_createTempCsv_(mergeData, 'merge_output');
+  const cdFile = cd_createTempCsv_(cdData, 'cd_donors');
+  
+  // Create token
+  const token = dl_makeToken_();
+  const until = Date.now() + 60 * 60 * 1000; // 1 hour
+  
+  // Store file IDs and token
+  const props = PropertiesService.getDocumentProperties();
+  props.setProperty('cd_token', token);
+  props.setProperty('cd_token_until', String(until));
+  props.setProperty('cd_merge_fileId', mergeFile.getId());
+  props.setProperty('cd_cd_fileId', cdFile.getId());
+  
+  // Build terminal command
+  const cmd = 
+    "curl -sSL '" + webAppUrl + "?cd_matcher=1' | " +
+    "python3 - --merge '" + webAppUrl + "?cd_csv=merge&token=" + token + "' " +
+    "--cd '" + webAppUrl + "?cd_csv=cd&token=" + token + "' " +
+    "--result '" + webAppUrl + "?cd_result=1&token=" + token + "'";
+  
+  // Show command in dialog
+  const html = HtmlService.createHtmlOutput(
+    '<div style="font-family:monospace; padding:20px; word-wrap:break-word;">' +
+    '<h3>Campaign Deputy Matching</h3>' +
+    '<p>Copy and paste this command into Terminal:</p>' +
+    '<textarea readonly style="width:100%; height:100px; font-family:monospace;">' + cmd + '</textarea>' +
+    '<p style="margin-top:20px;"><strong>What this does:</strong></p>' +
+    '<ul>' +
+    '<li>Matches donor clusters to Campaign Deputy PersonIDs</li>' +
+    '<li>Aggregates donation history</li>' +
+    '<li>Creates CD_To_Upload sheet for import</li>' +
+    '</ul>' +
+    '</div>'
+  ).setWidth(600).setHeight(400);
+  
+  SpreadsheetApp.getUi().showModalDialog(html, 'Campaign Deputy Matching');
+}
+
+/**
+ * Creates a temporary CSV file in Drive
+ */
+function cd_createTempCsv_(data, name) {
+  const csvContent = data.map(row => row.map(cell => {
+    const str = String(cell || '');
+    if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+      return '"' + str.replace(/"/g, '""') + '"';
+    }
+    return str;
+  }).join(',')).join('\n');
+  
+  const folder = DriveApp.getRootFolder();
+  const file = folder.createFile(name + '_' + Date.now() + '.csv', csvContent, MimeType.CSV);
+  return file;
+}
+
+/**
+ * Serves CSV files for Campaign Deputy matching
+ */
+function cd_serveCsv_(type, token) {
+  const chk = cd_validateToken_(token);
+  if (!chk.ok) return ContentService.createTextOutput(chk.msg).setMimeType(ContentService.MimeType.TEXT);
+  
+  const props = PropertiesService.getDocumentProperties();
+  const fileId = type === 'merge' ? 
+    props.getProperty('cd_merge_fileId') : 
+    props.getProperty('cd_cd_fileId');
+    
+  if (!fileId) return ContentService.createTextOutput('No CSV file id').setMimeType(ContentService.MimeType.TEXT);
+  
+  const file = DriveApp.getFileById(fileId);
+  const out = ContentService.createTextOutput(file.getBlob().getDataAsString());
+  out.setMimeType(ContentService.MimeType.CSV);
+  return out;
+}
+
+/**
+ * Validates Campaign Deputy matching token
+ */
+function cd_validateToken_(token) {
+  const props = PropertiesService.getDocumentProperties();
+  const t = props.getProperty('cd_token');
+  const until = Number(props.getProperty('cd_token_until') || '0');
+  if (!token || !t || token !== t) return {ok:false, msg:'Invalid or missing token'};
+  if (Date.now() > until) return {ok:false, msg:'Token expired'};
+  return {ok:true};
+}
+
+/**
+ * Receives matching results and creates CD_To_Upload sheet
+ */
+function cd_receiveResults_(body) {
+  try {
+    const ss = SpreadsheetApp.getActive();
+    
+    // Get or create CD_To_Upload sheet
+    let uploadSheet = ss.getSheetByName('CD_To_Upload');
+    if (!uploadSheet) {
+      uploadSheet = ss.insertSheet('CD_To_Upload');
+    } else {
+      uploadSheet.clear();
+    }
+    
+    // Write header
+    const header = [
+      'PersonID', 'NameFirst', 'NameLast', 'Address', 'City', 'State', 'Zip',
+      'TotalAmount', 'TotalWeighted', 'Occupation', 'Employer', 'Notes'
+    ];
+    uploadSheet.getRange(1, 1, 1, header.length).setValues([header]);
+    uploadSheet.getRange(1, 1, 1, header.length).setFontWeight('bold').setBackground('#4285f4').setFontColor('#ffffff');
+    uploadSheet.setFrozenRows(1);
+    
+    // Write data
+    const rows = body.upload_rows || [];
+    if (rows.length > 0) {
+      uploadSheet.getRange(2, 1, rows.length, header.length).setValues(rows);
+    }
+    
+    // Auto-resize columns
+    for (let i = 1; i <= header.length; i++) {
+      uploadSheet.autoResizeColumn(i);
+    }
+    
+    Logger.log('CD_To_Upload sheet created with ' + rows.length + ' rows');
+    
+    return {
+      success: true,
+      message: 'Created CD_To_Upload sheet',
+      rowCount: rows.length
+    };
+    
+  } catch (error) {
+    Logger.log('Error creating CD_To_Upload: ' + error.message);
+    throw new Error('Failed to create upload sheet: ' + error.message);
+  }
+}
+
+/**
+ * Returns the Python script for Campaign Deputy matching
+ */
+function cd_getMatcherScript_() {
+  const py = [
+    '#!/usr/bin/env python3',
+    'import sys, json, csv, io, urllib.request, argparse, math, re',
+    'from collections import defaultdict',
+    'from datetime import datetime',
+    '',
+    '# HTTP helpers',
+    'def http_get(url):',
+    '    with urllib.request.urlopen(url) as r:',
+    '        return r.read()',
+    '',
+    'def http_post(url, obj):',
+    '    data = json.dumps(obj).encode("utf-8")',
+    '    req = urllib.request.Request(url, data=data, headers={"Content-Type":"application/json"})',
+    '    with urllib.request.urlopen(req) as r:',
+    '        return r.read().decode("utf-8")',
+    '',
+    'def parse_csv(text):',
+    '    f = io.StringIO(text)',
+    '    rdr = csv.reader(f)',
+    '    rows = list(rdr)',
+    '    if not rows: return [], []',
+    '    return rows[0], rows[1:]',
+    '',
+    '# Parse args',
+    'ap = argparse.ArgumentParser()',
+    'ap.add_argument("--merge", required=True)',
+    'ap.add_argument("--cd", required=True)',
+    'ap.add_argument("--result", required=True)',
+    'args = ap.parse_args()',
+    '',
+    'print("Loading data...")',
+    'merge_hdr, merge_rows = parse_csv(http_get(args.merge).decode("utf-8"))',
+    'cd_hdr, cd_rows = parse_csv(http_get(args.cd).decode("utf-8"))',
+    '',
+    'print(f"Loaded {len(merge_rows)} donation records")',
+    'print(f"Loaded {len(cd_rows)} Campaign Deputy donors")',
+    '',
+    '# Load existing model weights',
+    'print("\\nChecking for trained model...")',
+    'model_url = args.merge.split("?")[0] + "?model=1"',
+    'model_data = json.loads(http_get(model_url).decode("utf-8"))',
+    'w = model_data.get("weights")',
+    '',
+    'if not w:',
+    '    print("ERROR: No trained model found. Please run donor matching first to train the model.")',
+    '    sys.exit(1)',
+    '',
+    'print(f"Using existing model with {len(w)} weights")',
+    '',
+    '# Parse merge output into donor groups',
+    'print("\\nGrouping donations by DonorID...")',
+    'donor_groups = defaultdict(list)',
+    '',
+    'for row in merge_rows:',
+    '    record = dict(zip(merge_hdr, row))',
+    '    donor_id = record.get("DonorID", "")',
+    '    if donor_id:',
+    '        donor_groups[donor_id].append(record)',
+    '',
+    'print(f"Found {len(donor_groups)} unique DonorIDs")',
+    '',
+    '# Jaro-Winkler similarity',
+    'def jaro_winkler(s1, s2):',
+    '    s1 = (s1 or "").strip().upper()',
+    '    s2 = (s2 or "").strip().upper()',
+    '    if not s1 or not s2: return 0.0',
+    '    if s1 == s2: return 1.0',
+    '    l1, l2 = len(s1), len(s2)',
+    '    match_dist = max(l1, l2) // 2 - 1',
+    '    if match_dist < 1: match_dist = 1',
+    '    s1_matches = [False] * l1',
+    '    s2_matches = [False] * l2',
+    '    matches = 0',
+    '    for i in range(l1):',
+    '        start = max(0, i - match_dist)',
+    '        end = min(i + match_dist + 1, l2)',
+    '        for j in range(start, end):',
+    '            if s2_matches[j] or s1[i] != s2[j]: continue',
+    '            s1_matches[i] = s2_matches[j] = True',
+    '            matches += 1',
+    '            break',
+    '    if matches == 0: return 0.0',
+    '    t = 0',
+    '    k = 0',
+    '    for i in range(l1):',
+    '        if not s1_matches[i]: continue',
+    '        while not s2_matches[k]: k += 1',
+    '        if s1[i] != s2[k]: t += 1',
+    '        k += 1',
+    '    jaro = (matches/l1 + matches/l2 + (matches - t/2)/matches) / 3.0',
+    '    prefix = 0',
+    '    for i in range(min(4, l1, l2)):',
+    '        if s1[i] == s2[i]: prefix += 1',
+    '        else: break',
+    '    return jaro + prefix * 0.1 * (1 - jaro)',
+    '',
+    '# Features for matching',
+    'def features(donor_rec, cd_rec):',
+    '    f0 = jaro_winkler(donor_rec.get("DonorFirst",""), cd_rec.get("NameFirst",""))',
+    '    f1 = jaro_winkler(donor_rec.get("DonorLast",""), cd_rec.get("NameLast",""))',
+    '    f2 = jaro_winkler(donor_rec.get("Address1",""), cd_rec.get("DeliveryLine1",""))',
+    '    f3 = jaro_winkler(donor_rec.get("Employer",""), cd_rec.get("Employer",""))',
+    '    f4 = jaro_winkler(donor_rec.get("Occupation",""), cd_rec.get("Occupation",""))',
+    '    return [f0, f1, f2, f3, f4,',
+    '            f0*f1, f0*f2, f0*f3, f0*f4,',
+    '            f1*f2, f1*f3, f1*f4,',
+    '            f2*f3, f2*f4, f3*f4]',
+    '',
+    '# Predict match probability',
+    'def predict(donor_rec, cd_rec):',
+    '    x = features(donor_rec, cd_rec)',
+    '    z = w[-1]',
+    '    for i in range(len(x)):',
+    '        z += w[i] * x[i]',
+    '    return 1.0 / (1.0 + math.exp(-z))',
+    '',
+    '# Match DonorIDs to PersonIDs',
+    'print("\\nMatching DonorIDs to Campaign Deputy PersonIDs...")',
+    'print("Using blocking by last name to speed up matching...")',
+    'donor_to_person = {}',
+    'threshold = 0.7',
+    '',
+    '# Build blocking index for CD donors by last name',
+    'cd_blocks = defaultdict(list)',
+    'for i, cd_row in enumerate(cd_rows):',
+    '    cd_rec = dict(zip(cd_hdr, cd_row))',
+    '    last_name = (cd_rec.get("NameLast", "") or "").strip().upper()',
+    '    if last_name:',
+    '        # Block by first 4 chars of last name',
+    '        block_key = last_name[:4]',
+    '        cd_blocks[block_key].append((i, cd_rec))',
+    '',
+    'print(f"Created {len(cd_blocks)} blocks for matching")',
+    '',
+    '# Two-pass matching strategy for better speed and accuracy',
+    'import time',
+    '',
+    '# FIRST PASS: Quick matching with candidate limit',
+    'print("\\n=== FIRST PASS: Quick matching ===\")',
+    'start_time = time.time()',
+    'total = len(donor_groups)',
+    'matched_count = 0',
+    'large_block_count = 0',
+    'unmatched_donors = []',
+    'used_person_ids = set()',
+    '',
+    'for idx, (donor_id, records) in enumerate(donor_groups.items(), 1):',
+    '    # Progress reporting',
+    '    if idx % 500 == 0 or idx == 1:',
+    '        elapsed = time.time() - start_time',
+    '        rate = idx / elapsed if elapsed > 0 else 0',
+    '        remaining = (total - idx) / rate if rate > 0 else 0',
+    '        mins = int(remaining / 60)',
+    '        secs = int(remaining % 60)',
+    '        print(f"  Progress: {idx}/{total} ({100*idx/total:.1f}%) - Matched: {matched_count} - Large blocks: {large_block_count} - ETA: {mins}m {secs}s", flush=True)',
+    '    ',
+    '    donor_rec = records[0]',
+    '    donor_last = (donor_rec.get("DonorLast", "") or "").strip().upper()',
+    '    ',
+    '    best_match = None',
+    '    best_prob = 0',
+    '    ',
+    '    # Get candidates from block',
+    '    candidates = []',
+    '    if donor_last:',
+    '        block_key = donor_last[:4]',
+    '        candidates = cd_blocks.get(block_key, [])',
+    '    ',
+    '    # Fallback: expand search for small blocks',
+    '    if len(candidates) < 5:',
+    '        for prefix_len in [3, 2, 1]:',
+    '            if len(donor_last) >= prefix_len:',
+    '                block_key = donor_last[:prefix_len]',
+    '                for key in cd_blocks:',
+    '                    if key.startswith(block_key):',
+    '                        candidates.extend(cd_blocks[key])',
+    '                if len(candidates) >= 20:',
+    '                    break',
+    '    ',
+    '    # FIRST PASS: Limit to 50 candidates for speed',
+    '    if len(candidates) > 50:',
+    '        large_block_count += 1',
+    '        candidates = candidates[:50]',
+    '    ',
+    '    # Find best match',
+    '    for i, cd_rec in candidates:',
+    '        prob = predict(donor_rec, cd_rec)',
+    '        if prob >= threshold and prob > best_prob:',
+    '            best_prob = prob',
+    '            best_match = cd_rec.get("PersonID", "")',
+    '    ',
+    '    if best_match:',
+    '        donor_to_person[donor_id] = best_match',
+    '        used_person_ids.add(best_match)',
+    '        matched_count += 1',
+    '    else:',
+    '        unmatched_donors.append((donor_id, records))',
+    '',
+    'print(f"\\nFirst pass complete: {matched_count} matched, {len(unmatched_donors)} unmatched")',
+    'print(f"Large blocks encountered: {large_block_count}")',
+    '',
+    '# SECOND PASS: Thorough matching for unmatched donors',
+    'if unmatched_donors:',
+    '    print(f"\\n=== SECOND PASS: Thorough matching ===\")',
+    '    print(f"Processing {len(unmatched_donors)} unmatched donors against {len(cd_rows) - len(used_person_ids)} remaining CD donors")',
+    '    ',
+    '    # Rebuild blocks excluding already-matched PersonIDs',
+    '    cd_blocks_filtered = defaultdict(list)',
+    '    for i, cd_row in enumerate(cd_rows):',
+    '        cd_rec = dict(zip(cd_hdr, cd_row))',
+    '        person_id = cd_rec.get("PersonID", "")',
+    '        if person_id and person_id not in used_person_ids:',
+    '            last_name = (cd_rec.get("NameLast", "") or "").strip().upper()',
+    '            if last_name:',
+    '                block_key = last_name[:4]',
+    '                cd_blocks_filtered[block_key].append((i, cd_rec))',
+    '    ',
+    '    print(f"Rebuilt {len(cd_blocks_filtered)} blocks for second pass")',
+    '    ',
+    '    start_time_pass2 = time.time()',
+    '    matched_count_pass2 = 0',
+    '    total_pass2 = len(unmatched_donors)',
+    '    ',
+    '    for idx, (donor_id, records) in enumerate(unmatched_donors, 1):',
+    '        # Progress reporting',
+    '        if idx % 200 == 0 or idx == 1:',
+    '            elapsed = time.time() - start_time_pass2',
+    '            rate = idx / elapsed if elapsed > 0 else 0',
+    '            remaining = (total_pass2 - idx) / rate if rate > 0 else 0',
+    '            mins = int(remaining / 60)',
+    '            secs = int(remaining % 60)',
+    '            print(f"  Progress: {idx}/{total_pass2} ({100*idx/total_pass2:.1f}%) - Matched: {matched_count_pass2} - ETA: {mins}m {secs}s", flush=True)',
+    '        ',
+    '        donor_rec = records[0]',
+    '        donor_last = (donor_rec.get("DonorLast", "") or "").strip().upper()',
+    '        ',
+    '        best_match = None',
+    '        best_prob = 0',
+    '        ',
+    '        # Get candidates from filtered blocks',
+    '        candidates = []',
+    '        if donor_last:',
+    '            block_key = donor_last[:4]',
+    '            candidates = cd_blocks_filtered.get(block_key, [])',
+    '        ',
+    '        # Fallback: expand search',
+    '        if len(candidates) < 5:',
+    '            for prefix_len in [3, 2, 1]:',
+    '                if len(donor_last) >= prefix_len:',
+    '                    block_key = donor_last[:prefix_len]',
+    '                    for key in cd_blocks_filtered:',
+    '                        if key.startswith(block_key):',
+    '                            candidates.extend(cd_blocks_filtered[key])',
+    '                    if len(candidates) >= 20:',
+    '                        break',
+    '        ',
+    '        # SECOND PASS: Higher limit (200) since pool is smaller',
+    '        if len(candidates) > 200:',
+    '            candidates = candidates[:200]',
+    '        ',
+    '        # Find best match',
+    '        for i, cd_rec in candidates:',
+    '            prob = predict(donor_rec, cd_rec)',
+    '            if prob >= threshold and prob > best_prob:',
+    '                best_prob = prob',
+    '                best_match = cd_rec.get("PersonID", "")',
+    '        ',
+    '        if best_match:',
+    '            donor_to_person[donor_id] = best_match',
+    '            used_person_ids.add(best_match)',
+    '            matched_count_pass2 += 1',
+    '    ',
+    '    print(f"\\nSecond pass complete: {matched_count_pass2} additional matches found")',
+    '',
+    'total_matched = len(donor_to_person)',
+    'total_unmatched = len(donor_groups) - total_matched',
+    'print(f"\\n=== FINAL RESULTS ===\")',
+    'print(f"Total matched: {total_matched} DonorIDs to PersonIDs ({100*total_matched/len(donor_groups):.1f}%)")',
+    'print(f"Total unmatched: {total_unmatched} DonorIDs ({100*total_unmatched/len(donor_groups):.1f}%)")',
+    '',
+    '# Helper to check if value is "broken"',
+    'def is_broken(val):',
+    '    if not val: return True',
+    '    s = str(val).strip().upper()',
+    '    return s in ["", "NA", "N/A", "UNKNOWN", "NULL"]',
+    '',
+    '# Parse date',
+    'def parse_date(date_str):',
+    '    if not date_str: return None',
+    '    try:',
+    '        for fmt in ["%m/%d/%Y", "%Y-%m-%d", "%m-%d-%Y"]:',
+    '            try: return datetime.strptime(str(date_str).strip(), fmt)',
+    '            except: pass',
+    '    except: pass',
+    '    return None',
+    '',
+    '# Build upload rows',
+    'print("\\nGenerating CD_To_Upload data...")',
+    'upload_rows = []',
+    '',
+    'for donor_id, records in donor_groups.items():',
+    '    person_id = donor_to_person.get(donor_id, "")',
+    '    ',
+    '    # Sort by date (newest first)',
+    '    dated_records = []',
+    '    for rec in records:',
+    '        dt = parse_date(rec.get("ReceiptDate", ""))',
+    '        dated_records.append((dt if dt else datetime(1900, 1, 1), rec))',
+    '    dated_records.sort(key=lambda x: x[0], reverse=True)',
+    '    sorted_records = [r for _, r in dated_records]',
+    '    ',
+    '    # Smart field selection (most recent non-broken)',
+    '    def pick_field(field_name):',
+    '        for rec in sorted_records:',
+    '            val = rec.get(field_name, "")',
+    '            if not is_broken(val):',
+    '                return val',
+    '        return ""',
+    '    ',
+    '    first_name = pick_field("DonorFirst")',
+    '    last_name = pick_field("DonorLast")',
+    '    address = pick_field("Address1")',
+    '    city = pick_field("City")',
+    '    state = pick_field("State")',
+    '    zip_code = pick_field("Zip")',
+    '    occupation = pick_field("Occupation")',
+    '    employer = pick_field("Employer")',
+    '    ',
+    '    # Calculate totals',
+    '    total_amount = 0',
+    '    total_weighted = 0',
+    '    for rec in records:',
+    '        try: total_amount += float(rec.get("Amount", 0) or 0)',
+    '        except: pass',
+    '        try: total_weighted += float(rec.get("WeightedAmount", 0) or 0)',
+    '        except: pass',
+    '    ',
+    '    # Build notes',
+    '    oldest_date = min((dt for dt, _ in dated_records if dt.year > 1900), default=None)',
+    '    oldest_str = oldest_date.strftime("%m/%d/%Y") if oldest_date else "unknown date"',
+    '    ',
+    '    notes = f"Donor gave ${total_amount:.2f} since {oldest_str} with a weighted score of {total_weighted:.0f}."',
+    '    for dt, rec in dated_records:',
+    '        if dt.year > 1900:',
+    '            date_str = dt.strftime("%m/%d/%Y")',
+    '            amt = rec.get("Amount", "")',
+    '            recipient = rec.get("Recipient", "Unknown")',
+    '            notes += f"\\nOn {date_str} they gave ${amt} to {recipient}"',
+    '    ',
+    '    upload_rows.append([',
+    '        person_id,',
+    '        first_name,',
+    '        last_name,',
+    '        address,',
+    '        city,',
+    '        state,',
+    '        zip_code,',
+    '        f"${total_amount:.2f}",',
+    '        f"${total_weighted:.2f}",',
+    '        occupation,',
+    '        employer,',
+    '        notes',
+    '    ])',
+    '',
+    'print(f"Generated {len(upload_rows)} rows for upload")',
+    '',
+    '# Post results',
+    'print("\\nPosting results to Google Sheets...")',
+    'payload = {"upload_rows": upload_rows}',
+    'response = http_post(args.result, payload)',
+    'print("Done! Check the CD_To_Upload sheet.")',
+  ].join('\n');
+
+  return ContentService.createTextOutput(py).setMimeType(ContentService.MimeType.TEXT);
+}
