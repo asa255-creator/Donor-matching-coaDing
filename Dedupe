@@ -1913,6 +1913,40 @@ function donor_applyResult_donorAssignments_(assignments) {
   return result;
 }
 
+/**
+ * Format a date value to simple M/D/YYYY string
+ * Handles Date objects, strings, and other values
+ */
+function donor_formatDate_(val) {
+  if (!val) return '';
+
+  // If it's already a string and not a Date object toString, return as-is
+  if (typeof val === 'string') return val;
+
+  // If it's a Date object, format it simply
+  if (val instanceof Date && !isNaN(val.getTime())) {
+    const month = val.getMonth() + 1;  // 0-indexed
+    const day = val.getDate();
+    const year = val.getFullYear();
+    return `${month}/${day}/${year}`;
+  }
+
+  // Try to parse as date if it's a number or other type
+  try {
+    const d = new Date(val);
+    if (!isNaN(d.getTime())) {
+      const month = d.getMonth() + 1;
+      const day = d.getDate();
+      const year = d.getFullYear();
+      return `${month}/${day}/${year}`;
+    }
+  } catch (e) {
+    // Ignore parse errors
+  }
+
+  return String(val);
+}
+
 function donor_buildDonorIdList(assignments) {
   const ss = SpreadsheetApp.getActive();
 
@@ -1996,7 +2030,7 @@ function donor_buildDonorIdList(assignments) {
             row[colZip] || '',
             row[colAmount] || '',
             row[colWeightedAmount] || '',
-            row[colReceiptDate] || '',
+            donor_formatDate_(row[colReceiptDate]),
             row[colOccupation] || '',
             row[colEmployer] || '',
             key,
@@ -2043,7 +2077,7 @@ function donor_buildDonorIdList(assignments) {
             row[colZip] || '',
             row[colAmount] || '',
             row[colWeightedAmount] || '',
-            row[colReceiptDate] || '',
+            donor_formatDate_(row[colReceiptDate]),
             row[colOccupation] || '',
             row[colEmployer] || '',
             key,
