@@ -2167,7 +2167,21 @@ function dl_exportSheetAsCsv_(sheetName) {
   const lastRow = sh.getLastRow();
   const lastCol = sh.getLastColumn();
   if (lastRow < 1 || lastCol < 1) return { file: null, folder: null };
-  const values = sh.getRange(1, 1, lastRow, lastCol).getDisplayValues();
+
+  // Use getValues() instead of getDisplayValues() to get raw values
+  const rawValues = sh.getRange(1, 1, lastRow, lastCol).getValues();
+
+  // Convert any Date objects to simple M/D/YYYY strings
+  const values = rawValues.map(row => row.map(cell => {
+    if (cell instanceof Date && !isNaN(cell.getTime())) {
+      const month = cell.getMonth() + 1;
+      const day = cell.getDate();
+      const year = cell.getFullYear();
+      return `${month}/${day}/${year}`;
+    }
+    return cell;
+  }));
+
   const csv = dl_sheetToCsv_(values);
   const folder = dl_getOrCreateStagingFolder_();
   const blob = Utilities.newBlob(csv, 'text/csv', sheetName + '.csv');
