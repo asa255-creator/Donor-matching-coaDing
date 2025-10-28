@@ -1676,12 +1676,42 @@ function doGet(e) {
     return ContentService.createTextOutput(JSON.stringify({ training_rows: trainingRows })).setMimeType(ContentService.MimeType.JSON);
   }
 
+  // Campaign Deputy CSV endpoints
+  if (p.cd_csv == 'merge' || p.cd_csv == 'cd') {
+    return cd_serveCsv_(p.cd_csv, p.token);
+  }
+
+  // Campaign Deputy matcher Python script
+  if (p.cd_matcher == '1') {
+    return cd_getMatcherScript_();
+  }
+
   return ContentService.createTextOutput('Invalid query').setMimeType(ContentService.MimeType.TEXT);
 }
 
 
 function doPost(e) {
   const p = e.parameter || {};
+
+  // Handle Campaign Deputy matching results separately
+  if (p.cd_result == '1') {
+    const chk = cd_validateToken_(p.token);
+    if (!chk.ok) {
+      return ContentService.createTextOutput(JSON.stringify({ ok: false, error: chk.msg })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    let body = {};
+    try {
+      body = e.postData && e.postData.contents ? JSON.parse(e.postData.contents) : {};
+    } catch (err) {
+      return ContentService.createTextOutput(JSON.stringify({ ok: false, error: 'Invalid JSON' })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    const result = cd_receiveResults_(body);
+    return ContentService.createTextOutput(JSON.stringify(result)).setMimeType(ContentService.MimeType.JSON);
+  }
+
+  // Regular donor matching
   const chk = dl_validateToken_(p.token);
   if (!chk.ok) {
     return ContentService.createTextOutput(JSON.stringify({ ok: false, error: chk.msg })).setMimeType(ContentService.MimeType.JSON);
@@ -2449,4 +2479,421 @@ function cd_processUpload(csvContent, fileName) {
     Logger.log('Error uploading Campaign Deputy export: ' + error.message);
     throw new Error('Failed to process CSV: ' + error.message);
   }
+}
+
+// ========================================
+// Campaign Deputy Matching Functions
+// ========================================
+
+/**
+ * Prepares matching job for Campaign Deputy donors
+ */
+function cd_prepareMatchingJob_() {
+  const ss = SpreadsheetApp.getActive();
+  
+  // Validate required sheets exist
+  const mergeSheet = ss.getSheetByName('Merge output');
+  const cdSheet = ss.getSheetByName('CD_donors');
+  
+  if (!mergeSheet) {
+    SpreadsheetApp.getUi().alert('Merge output sheet not found. Please run the donor matching first.');
+    return;
+  }
+  
+  if (!cdSheet) {
+    SpreadsheetApp.getUi().alert('CD_donors sheet not found. Please upload a Campaign Deputy export first.');
+    return;
+  }
+  
+  // Get web app URL
+  const webAppUrl = dl_getExecUrlFromOptions_();
+  if (!webAppUrl) {
+    SpreadsheetApp.getUi().alert(
+      'Put your Web App URL ending with /exec in Options!I2.\nExample:\nhttps://script.google.com/macros/s/AKfycb.../exec'
+    );
+    return;
+  }
+  
+  // Export sheets to Drive as CSV
+  const mergeData = mergeSheet.getDataRange().getValues();
+  const cdData = cdSheet.getDataRange().getValues();
+  
+  const mergeFile = cd_createTempCsv_(mergeData, 'merge_output');
+  const cdFile = cd_createTempCsv_(cdData, 'cd_donors');
+  
+  // Create token
+  const token = dl_makeToken_();
+  const until = Date.now() + 60 * 60 * 1000; // 1 hour
+  
+  // Store file IDs and token
+  const props = PropertiesService.getDocumentProperties();
+  props.setProperty('cd_token', token);
+  props.setProperty('cd_token_until', String(until));
+  props.setProperty('cd_merge_fileId', mergeFile.getId());
+  props.setProperty('cd_cd_fileId', cdFile.getId());
+  
+  // Build terminal command
+  const cmd = 
+    "curl -sSL '" + webAppUrl + "?cd_matcher=1' | " +
+    "python3 - --merge '" + webAppUrl + "?cd_csv=merge&token=" + token + "' " +
+    "--cd '" + webAppUrl + "?cd_csv=cd&token=" + token + "' " +
+    "--result '" + webAppUrl + "?cd_result=1&token=" + token + "'";
+  
+  // Show command in dialog
+  const html = HtmlService.createHtmlOutput(
+    '<div style="font-family:monospace; padding:20px; word-wrap:break-word;">' +
+    '<h3>Campaign Deputy Matching</h3>' +
+    '<p>Copy and paste this command into Terminal:</p>' +
+    '<textarea readonly style="width:100%; height:100px; font-family:monospace;">' + cmd + '</textarea>' +
+    '<p style="margin-top:20px;"><strong>What this does:</strong></p>' +
+    '<ul>' +
+    '<li>Matches donor clusters to Campaign Deputy PersonIDs</li>' +
+    '<li>Aggregates donation history</li>' +
+    '<li>Creates CD_To_Upload sheet for import</li>' +
+    '</ul>' +
+    '</div>'
+  ).setWidth(600).setHeight(400);
+  
+  SpreadsheetApp.getUi().showModalDialog(html, 'Campaign Deputy Matching');
+}
+
+/**
+ * Creates a temporary CSV file in Drive
+ */
+function cd_createTempCsv_(data, name) {
+  const csvContent = data.map(row => row.map(cell => {
+    const str = String(cell || '');
+    if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+      return '"' + str.replace(/"/g, '""') + '"';
+    }
+    return str;
+  }).join(',')).join('\n');
+  
+  const folder = DriveApp.getRootFolder();
+  const file = folder.createFile(name + '_' + Date.now() + '.csv', csvContent, MimeType.CSV);
+  return file;
+}
+
+/**
+ * Serves CSV files for Campaign Deputy matching
+ */
+function cd_serveCsv_(type, token) {
+  const chk = cd_validateToken_(token);
+  if (!chk.ok) return ContentService.createTextOutput(chk.msg).setMimeType(ContentService.MimeType.TEXT);
+  
+  const props = PropertiesService.getDocumentProperties();
+  const fileId = type === 'merge' ? 
+    props.getProperty('cd_merge_fileId') : 
+    props.getProperty('cd_cd_fileId');
+    
+  if (!fileId) return ContentService.createTextOutput('No CSV file id').setMimeType(ContentService.MimeType.TEXT);
+  
+  const file = DriveApp.getFileById(fileId);
+  const out = ContentService.createTextOutput(file.getBlob().getDataAsString());
+  out.setMimeType(ContentService.MimeType.CSV);
+  return out;
+}
+
+/**
+ * Validates Campaign Deputy matching token
+ */
+function cd_validateToken_(token) {
+  const props = PropertiesService.getDocumentProperties();
+  const t = props.getProperty('cd_token');
+  const until = Number(props.getProperty('cd_token_until') || '0');
+  if (!token || !t || token !== t) return {ok:false, msg:'Invalid or missing token'};
+  if (Date.now() > until) return {ok:false, msg:'Token expired'};
+  return {ok:true};
+}
+
+/**
+ * Receives matching results and creates CD_To_Upload sheet
+ */
+function cd_receiveResults_(body) {
+  try {
+    const ss = SpreadsheetApp.getActive();
+    
+    // Get or create CD_To_Upload sheet
+    let uploadSheet = ss.getSheetByName('CD_To_Upload');
+    if (!uploadSheet) {
+      uploadSheet = ss.insertSheet('CD_To_Upload');
+    } else {
+      uploadSheet.clear();
+    }
+    
+    // Write header
+    const header = [
+      'PersonID', 'NameFirst', 'NameLast', 'Address', 'City', 'State', 'Zip',
+      'TotalAmount', 'TotalWeighted', 'Occupation', 'Employer', 'Notes'
+    ];
+    uploadSheet.getRange(1, 1, 1, header.length).setValues([header]);
+    uploadSheet.getRange(1, 1, 1, header.length).setFontWeight('bold').setBackground('#4285f4').setFontColor('#ffffff');
+    uploadSheet.setFrozenRows(1);
+    
+    // Write data
+    const rows = body.upload_rows || [];
+    if (rows.length > 0) {
+      uploadSheet.getRange(2, 1, rows.length, header.length).setValues(rows);
+    }
+    
+    // Auto-resize columns
+    for (let i = 1; i <= header.length; i++) {
+      uploadSheet.autoResizeColumn(i);
+    }
+    
+    Logger.log('CD_To_Upload sheet created with ' + rows.length + ' rows');
+    
+    return {
+      success: true,
+      message: 'Created CD_To_Upload sheet',
+      rowCount: rows.length
+    };
+    
+  } catch (error) {
+    Logger.log('Error creating CD_To_Upload: ' + error.message);
+    throw new Error('Failed to create upload sheet: ' + error.message);
+  }
+}
+
+/**
+ * Returns the Python script for Campaign Deputy matching
+ */
+function cd_getMatcherScript_() {
+  const py = [
+    '#!/usr/bin/env python3',
+    'import sys, json, csv, io, urllib.request, argparse, math, re',
+    'from collections import defaultdict',
+    'from datetime import datetime',
+    '',
+    '# HTTP helpers',
+    'def http_get(url):',
+    '    with urllib.request.urlopen(url) as r:',
+    '        return r.read()',
+    '',
+    'def http_post(url, obj):',
+    '    data = json.dumps(obj).encode("utf-8")',
+    '    req = urllib.request.Request(url, data=data, headers={"Content-Type":"application/json"})',
+    '    with urllib.request.urlopen(req) as r:',
+    '        return r.read().decode("utf-8")',
+    '',
+    'def parse_csv(text):',
+    '    f = io.StringIO(text)',
+    '    rdr = csv.reader(f)',
+    '    rows = list(rdr)',
+    '    if not rows: return [], []',
+    '    return rows[0], rows[1:]',
+    '',
+    '# Parse args',
+    'ap = argparse.ArgumentParser()',
+    'ap.add_argument("--merge", required=True)',
+    'ap.add_argument("--cd", required=True)',
+    'ap.add_argument("--result", required=True)',
+    'args = ap.parse_args()',
+    '',
+    'print("Loading data...")',
+    'merge_hdr, merge_rows = parse_csv(http_get(args.merge).decode("utf-8"))',
+    'cd_hdr, cd_rows = parse_csv(http_get(args.cd).decode("utf-8"))',
+    '',
+    'print(f"Loaded {len(merge_rows)} donation records")',
+    'print(f"Loaded {len(cd_rows)} Campaign Deputy donors")',
+    '',
+    '# Load existing model weights',
+    'print("\\nChecking for trained model...")',
+    'model_url = args.merge.split("?")[0] + "?model=1"',
+    'model_data = json.loads(http_get(model_url).decode("utf-8"))',
+    'w = model_data.get("weights")',
+    '',
+    'if not w:',
+    '    print("ERROR: No trained model found. Please run donor matching first to train the model.")',
+    '    sys.exit(1)',
+    '',
+    'print(f"Using existing model with {len(w)} weights")',
+    '',
+    '# Parse merge output into donor groups',
+    'print("\\nGrouping donations by DonorID...")',
+    'donor_groups = defaultdict(list)',
+    '',
+    'for row in merge_rows:',
+    '    record = dict(zip(merge_hdr, row))',
+    '    donor_id = record.get("DonorID", "")',
+    '    if donor_id:',
+    '        donor_groups[donor_id].append(record)',
+    '',
+    'print(f"Found {len(donor_groups)} unique DonorIDs")',
+    '',
+    '# Jaro-Winkler similarity',
+    'def jaro_winkler(s1, s2):',
+    '    s1 = (s1 or "").strip().upper()',
+    '    s2 = (s2 or "").strip().upper()',
+    '    if not s1 or not s2: return 0.0',
+    '    if s1 == s2: return 1.0',
+    '    l1, l2 = len(s1), len(s2)',
+    '    match_dist = max(l1, l2) // 2 - 1',
+    '    if match_dist < 1: match_dist = 1',
+    '    s1_matches = [False] * l1',
+    '    s2_matches = [False] * l2',
+    '    matches = 0',
+    '    for i in range(l1):',
+    '        start = max(0, i - match_dist)',
+    '        end = min(i + match_dist + 1, l2)',
+    '        for j in range(start, end):',
+    '            if s2_matches[j] or s1[i] != s2[j]: continue',
+    '            s1_matches[i] = s2_matches[j] = True',
+    '            matches += 1',
+    '            break',
+    '    if matches == 0: return 0.0',
+    '    t = 0',
+    '    k = 0',
+    '    for i in range(l1):',
+    '        if not s1_matches[i]: continue',
+    '        while not s2_matches[k]: k += 1',
+    '        if s1[i] != s2[k]: t += 1',
+    '        k += 1',
+    '    jaro = (matches/l1 + matches/l2 + (matches - t/2)/matches) / 3.0',
+    '    prefix = 0',
+    '    for i in range(min(4, l1, l2)):',
+    '        if s1[i] == s2[i]: prefix += 1',
+    '        else: break',
+    '    return jaro + prefix * 0.1 * (1 - jaro)',
+    '',
+    '# Features for matching',
+    'def features(donor_rec, cd_rec):',
+    '    f0 = jaro_winkler(donor_rec.get("DonorFirst",""), cd_rec.get("NameFirst",""))',
+    '    f1 = jaro_winkler(donor_rec.get("DonorLast",""), cd_rec.get("NameLast",""))',
+    '    f2 = jaro_winkler(donor_rec.get("Address1",""), cd_rec.get("DeliveryLine1",""))',
+    '    f3 = jaro_winkler(donor_rec.get("Employer",""), cd_rec.get("Employer",""))',
+    '    f4 = jaro_winkler(donor_rec.get("Occupation",""), cd_rec.get("Occupation",""))',
+    '    return [f0, f1, f2, f3, f4,',
+    '            f0*f1, f0*f2, f0*f3, f0*f4,',
+    '            f1*f2, f1*f3, f1*f4,',
+    '            f2*f3, f2*f4, f3*f4]',
+    '',
+    '# Predict match probability',
+    'def predict(donor_rec, cd_rec):',
+    '    x = features(donor_rec, cd_rec)',
+    '    z = w[-1]',
+    '    for i in range(len(x)):',
+    '        z += w[i] * x[i]',
+    '    return 1.0 / (1.0 + math.exp(-z))',
+    '',
+    '# Match DonorIDs to PersonIDs',
+    'print("\\nMatching DonorIDs to Campaign Deputy PersonIDs...")',
+    'donor_to_person = {}',
+    'threshold = 0.7',
+    '',
+    'for donor_id, records in donor_groups.items():',
+    '    # Use first record as representative',
+    '    donor_rec = records[0]',
+    '    ',
+    '    best_match = None',
+    '    best_prob = 0',
+    '    ',
+    '    for cd_row in cd_rows:',
+    '        cd_rec = dict(zip(cd_hdr, cd_row))',
+    '        prob = predict(donor_rec, cd_rec)',
+    '        ',
+    '        if prob >= threshold and prob > best_prob:',
+    '            best_prob = prob',
+    '            best_match = cd_rec.get("PersonID", "")',
+    '    ',
+    '    if best_match:',
+    '        donor_to_person[donor_id] = best_match',
+    '',
+    'print(f"Matched {len(donor_to_person)} DonorIDs to PersonIDs")',
+    'print(f"Unmatched: {len(donor_groups) - len(donor_to_person)} DonorIDs")',
+    '',
+    '# Helper to check if value is "broken"',
+    'def is_broken(val):',
+    '    if not val: return True',
+    '    s = str(val).strip().upper()',
+    '    return s in ["", "NA", "N/A", "UNKNOWN", "NULL"]',
+    '',
+    '# Parse date',
+    'def parse_date(date_str):',
+    '    if not date_str: return None',
+    '    try:',
+    '        for fmt in ["%m/%d/%Y", "%Y-%m-%d", "%m-%d-%Y"]:',
+    '            try: return datetime.strptime(str(date_str).strip(), fmt)',
+    '            except: pass',
+    '    except: pass',
+    '    return None',
+    '',
+    '# Build upload rows',
+    'print("\\nGenerating CD_To_Upload data...")',
+    'upload_rows = []',
+    '',
+    'for donor_id, records in donor_groups.items():',
+    '    person_id = donor_to_person.get(donor_id, "")',
+    '    ',
+    '    # Sort by date (newest first)',
+    '    dated_records = []',
+    '    for rec in records:',
+    '        dt = parse_date(rec.get("ReceiptDate", ""))',
+    '        dated_records.append((dt if dt else datetime(1900, 1, 1), rec))',
+    '    dated_records.sort(reverse=True)',
+    '    sorted_records = [r for _, r in dated_records]',
+    '    ',
+    '    # Smart field selection (most recent non-broken)',
+    '    def pick_field(field_name):',
+    '        for rec in sorted_records:',
+    '            val = rec.get(field_name, "")',
+    '            if not is_broken(val):',
+    '                return val',
+    '        return ""',
+    '    ',
+    '    first_name = pick_field("DonorFirst")',
+    '    last_name = pick_field("DonorLast")',
+    '    address = pick_field("Address1")',
+    '    city = pick_field("City")',
+    '    state = pick_field("State")',
+    '    zip_code = pick_field("Zip")',
+    '    occupation = pick_field("Occupation")',
+    '    employer = pick_field("Employer")',
+    '    ',
+    '    # Calculate totals',
+    '    total_amount = 0',
+    '    total_weighted = 0',
+    '    for rec in records:',
+    '        try: total_amount += float(rec.get("Amount", 0) or 0)',
+    '        except: pass',
+    '        try: total_weighted += float(rec.get("WeightedAmount", 0) or 0)',
+    '        except: pass',
+    '    ',
+    '    # Build notes',
+    '    oldest_date = min((dt for dt, _ in dated_records if dt.year > 1900), default=None)',
+    '    oldest_str = oldest_date.strftime("%m/%d/%Y") if oldest_date else "unknown date"',
+    '    ',
+    '    notes = f"Donor gave ${total_amount:.2f} since {oldest_str} with a weighted score of {total_weighted:.0f}."',
+    '    for dt, rec in dated_records:',
+    '        if dt.year > 1900:',
+    '            date_str = dt.strftime("%m/%d/%Y")',
+    '            amt = rec.get("Amount", "")',
+    '            recipient = rec.get("Recipient", "Unknown")',
+    '            notes += f"\\nOn {date_str} they gave ${amt} to {recipient}"',
+    '    ',
+    '    upload_rows.append([',
+    '        person_id,',
+    '        first_name,',
+    '        last_name,',
+    '        address,',
+    '        city,',
+    '        state,',
+    '        zip_code,',
+    '        f"${total_amount:.2f}",',
+    '        f"${total_weighted:.2f}",',
+    '        occupation,',
+    '        employer,',
+    '        notes',
+    '    ])',
+    '',
+    'print(f"Generated {len(upload_rows)} rows for upload")',
+    '',
+    '# Post results',
+    'print("\\nPosting results to Google Sheets...")',
+    'payload = {"upload_rows": upload_rows}',
+    'response = http_post(args.result, payload)',
+    'print("Done! Check the CD_To_Upload sheet.")',
+  ].join('\n');
+
+  return ContentService.createTextOutput(py).setMimeType(ContentService.MimeType.TEXT);
 }

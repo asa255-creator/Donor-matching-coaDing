@@ -13,6 +13,7 @@ function onOpen() {
     .addItem('Open progress sidebar', 'dl_showProgressSidebar')
     .addSeparator()
     .addItem('Upload Campaign Deputy Export', 'cd_uploadDialog')
+    .addItem('Match Donors to Campaign Deputy', 'cd_prepareMatchingJob_')
     .addToUi();
     // onOpen
 SpreadsheetApp.getActive().toast(
