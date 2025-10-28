@@ -2772,48 +2772,59 @@ function cd_validateToken_(token) {
 }
 
 /**
- * Receives matching results and creates CD_To_Upload sheet
+ * Receives matching results and creates/appends to CD_To_Upload sheet
+ * Supports batched uploads to handle large datasets
  */
 function cd_receiveResults_(body) {
   try {
     const ss = SpreadsheetApp.getActive();
-    
+    const batchNum = body.batch_num || 1;
+    const totalBatches = body.total_batches || 1;
+
     // Get or create CD_To_Upload sheet
     let uploadSheet = ss.getSheetByName('CD_To_Upload');
     if (!uploadSheet) {
       uploadSheet = ss.insertSheet('CD_To_Upload');
-    } else {
-      uploadSheet.clear();
     }
-    
-    // Write header
+
+    // Define header
     const header = [
       'PersonID', 'NameFirst', 'NameLast', 'Address', 'City', 'State', 'Zip',
       'TotalAmount', 'TotalWeighted', 'Occupation', 'Employer', 'Notes'
     ];
-    uploadSheet.getRange(1, 1, 1, header.length).setValues([header]);
-    uploadSheet.getRange(1, 1, 1, header.length).setFontWeight('bold').setBackground('#4285f4').setFontColor('#ffffff');
-    uploadSheet.setFrozenRows(1);
-    
-    // Write data
+
+    // First batch: Clear sheet and write header
+    if (batchNum === 1) {
+      uploadSheet.clear();
+      uploadSheet.getRange(1, 1, 1, header.length).setValues([header]);
+      uploadSheet.getRange(1, 1, 1, header.length).setFontWeight('bold').setBackground('#4285f4').setFontColor('#ffffff');
+      uploadSheet.setFrozenRows(1);
+    }
+
+    // Write data (append to existing data)
     const rows = body.upload_rows || [];
     if (rows.length > 0) {
-      uploadSheet.getRange(2, 1, rows.length, header.length).setValues(rows);
+      const nextRow = uploadSheet.getLastRow() + 1;
+      uploadSheet.getRange(nextRow, 1, rows.length, header.length).setValues(rows);
     }
-    
-    // Auto-resize columns
-    for (let i = 1; i <= header.length; i++) {
-      uploadSheet.autoResizeColumn(i);
+
+    // Auto-resize columns on last batch
+    if (batchNum === totalBatches) {
+      for (let i = 1; i <= header.length; i++) {
+        uploadSheet.autoResizeColumn(i);
+      }
     }
-    
-    Logger.log('CD_To_Upload sheet created with ' + rows.length + ' rows');
-    
+
+    const totalRows = uploadSheet.getLastRow() - 1; // Minus header
+    Logger.log(`CD_To_Upload batch ${batchNum}/${totalBatches}: Added ${rows.length} rows (total: ${totalRows})`);
+
     return {
       success: true,
-      message: 'Created CD_To_Upload sheet',
-      rowCount: rows.length
+      message: `Batch ${batchNum}/${totalBatches} uploaded`,
+      batchRows: rows.length,
+      totalRows: totalRows
     };
-    
+
   } catch (error) {
     Logger.log('Error creating CD_To_Upload: ' + error.message);
     throw new Error('Failed to create upload sheet: ' + error.message);
@@ -3190,7 +3201,7 @@ function cd_getMatcherScript_() {
     '    # Sort by date (newest first)',
     '    dated_records = []',
     '    for rec in records:',
-    '        dt = parse_date(rec.get("Date", ""))',
+    '        dt = parse_date(rec.get("ReceiptDate", ""))',
     '        dated_records.append((dt if dt else datetime(1900, 1, 1), rec))',
     '    dated_records.sort(key=lambda x: x[0], reverse=True)',
     '    sorted_records = [r for _, r in dated_records]',
@@ -3260,11 +3271,36 @@ function cd_getMatcherScript_() {
     '',
     'print(f"Generated {len(upload_rows)} rows for upload")',
     '',
-    '# Post results',
+    '# Sort by weighted score (highest first)',
+    'print("\\nSorting by weighted score...")',
+    'def get_weighted_value(row):',
+    '    try:',
+    '        # Extract numeric value from "$123.45" format (index 8)',
+    '        weighted_str = str(row[8]).replace("$", "").replace(",", "")',
+    '        return float(weighted_str)',
+    '    except:',
+    '        return 0.0',
+    '',
+    'upload_rows.sort(key=get_weighted_value, reverse=True)',
+    'print(f"Sorted {len(upload_rows)} rows by weighted score")',
+    '',
+    '# Post results in batches to avoid HTTP 500 errors',
     'print("\\nPosting results to Google Sheets...")',
-    'payload = {"upload_rows": upload_rows}',
-    'response = http_post(args.result, payload)',
-    'print("Done! Check the CD_To_Upload sheet.")',
+    'batch_size = 1000',
+    'total_rows = len(upload_rows)',
+    'num_batches = (total_rows + batch_size - 1) // batch_size  # Ceiling division',
+    '',
+    'for batch_num in range(num_batches):',
+    '    start_idx = batch_num * batch_size',
+    '    end_idx = min(start_idx + batch_size, total_rows)',
+    '    batch = upload_rows[start_idx:end_idx]',
+    '    ',
+    '    print(f"  Posting batch {batch_num + 1}/{num_batches} ({len(batch)} rows)...")',
+    '    payload = {"upload_rows": batch, "batch_num": batch_num + 1, "total_batches": num_batches}',
+    '    response = http_post(args.result, payload)',
+    '    print(f"  Batch {batch_num + 1} posted successfully")',
+    '',
+    'print(f"\\nDone! Posted {total_rows} rows in {num_batches} batch(es). Check the CD_To_Upload sheet.")',
   ].join('\n');
 
   return ContentService.createTextOutput(py).setMimeType(ContentService.MimeType.TEXT);
