@@ -522,41 +522,26 @@ function findProximityMatch_(addr, cache) {
  */
 function matchAddressesToDistricts() {
   const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+
   const uploadSheet = ss.getSheetByName('CD_To_Upload');
 
   if (!uploadSheet) {
-    SpreadsheetApp.getUi().alert(
+    ui.alert(
       'Error',
       'CD_To_Upload sheet not found. Please create Campaign Deputy matches first.',
-      SpreadsheetApp.getUi().ButtonSet.OK
+      ui.ButtonSet.OK
     );
     return;
   }
 
-  const ui = SpreadsheetApp.getUi();
-  const response = ui.alert(
-    'Match Addresses to Districts',
-    'This will:\n' +
-    '1. Geocode up to 1,500 addresses (using Google Maps API)\n' +
-    '2. Match addresses to districts using your GeoJSON shapefiles\n' +
-    '3. Add Federal District, State Senate District, State House District, and County columns\n\n' +
-    'This function does as much work as possible in one run.\n' +
-    'Run it multiple times to continue geocoding more addresses.\n\n' +
-    'Continue?',
-    ui.ButtonSet.YES_NO
-  );
-
-  if (response !== ui.Button.YES) {
-    return;
-  }
-
   try {
-    // Step 1: FIRST ensure folder structure exists - don't proceed without it
+    // STEP 1: ALWAYS CHECK FOLDERS FIRST - BEFORE ANY OTHER DIALOGS
     ss.toast('Checking district folders...', 'District Matching', 3);
     let mainFolder = getDistrictMainFolder_();
 
     if (!mainFolder) {
-      // Folder structure missing - create it now
+      // Folder structure missing - create it now BEFORE showing any other dialogs
       ss.toast('Creating district folders...', 'Setup', -1); // -1 = stays until dismissed
       Logger.log('District folder structure missing, creating now...');
 
@@ -591,6 +576,23 @@ function matchAddressesToDistricts() {
       }
     } else {
       Logger.log('District folder structure verified: ' + mainFolder.getName());
+    }
+
+    // STEP 2: NOW show the main confirmation dialog
+    const response = ui.alert(
+      'Match Addresses to Districts',
+      'This will:\n' +
+      '1. Geocode up to 1,500 addresses (using Google Maps API)\n' +
+      '2. Match addresses to districts using your GeoJSON shapefiles\n' +
+      '3. Add Federal District, State Senate District, State House District, and County columns\n\n' +
+      'This function does as much work as possible in one run.\n' +
+      'Run it multiple times to continue geocoding more addresses.\n\n' +
+      'Continue?',
+      ui.ButtonSet.YES_NO
+    );
+
+    if (response !== ui.Button.YES) {
+      return;
     }
 
     // Step 2: Geocode addresses (up to 1,500 new ones)
