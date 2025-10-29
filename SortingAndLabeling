@@ -231,21 +231,26 @@ function getStateFolder_(stateCode) {
  */
 
 /**
- * Background function to improve geocode cache
- * Can be called by time-based trigger or manually from menu
- * Prioritizes: 1) Pending addresses, 2) Approximate addresses, 3) New addresses
+ * Core geocoding function - processes addresses from CD_To_Upload
+ * Can be called independently or as part of district matching
+ * @param {boolean} showToast - Whether to show toast notifications
+ * @returns {Object} Results with counts of exact, approximate, failed geocoding
+ * @private
  */
-function improveGeocodeCache() {
+function geocodeAddresses_(showToast = false) {
   const ss = SpreadsheetApp.getActive();
   const uploadSheet = ss.getSheetByName('CD_To_Upload');
 
   if (!uploadSheet) {
-    Logger.log('CD_To_Upload sheet not found, skipping geocode improvement');
-    return;
+    Logger.log('CD_To_Upload sheet not found, skipping geocoding');
+    return { exact: 0, approximate: 0, failed: 0, newEntries: [] };
   }
 
   try {
-    Logger.log('Starting geocode cache improvement...');
+    if (showToast) {
+      ss.toast('Geocoding addresses...', 'Geocoding', 3);
+    }
+    Logger.log('Starting geocoding...');
 
     // Get or create cache sheet
     const cacheSheet = getOrCreateGeocodeCache_();
@@ -258,7 +263,7 @@ function improveGeocodeCache() {
     const uploadData = uploadSheet.getDataRange().getValues();
     if (uploadData.length <= 1) {
       Logger.log('No data in CD_To_Upload');
-      return;
+      return { exact: 0, approximate: 0, failed: 0, newEntries: [] };
     }
 
     const header = uploadData[0];
@@ -269,7 +274,7 @@ function improveGeocodeCache() {
 
     if (addressIdx === -1 || cityIdx === -1 || stateIdx === -1 || zipIdx === -1) {
       Logger.log('Required address columns not found');
-      return;
+      return { exact: 0, approximate: 0, failed: 0, newEntries: [] };
     }
 
     // Collect unique addresses from CD_To_Upload
@@ -315,9 +320,43 @@ function improveGeocodeCache() {
 
     Logger.log(`Geocoding complete: ${results.exact} exact, ${results.approximate} approximate, ${results.failed} failed`);
 
+    return results;
+
+  } catch (error) {
+    Logger.log('Error in geocoding: ' + error.message);
+    Logger.log(error.stack);
+    return { exact: 0, approximate: 0, failed: 0, newEntries: [] };
+  }
+}
+
+/**
+ * Background function to improve geocode cache
+ * Can be called by time-based trigger or manually from menu
+ * Prioritizes: 1) Pending addresses, 2) Approximate addresses, 3) New addresses
+ */
+function improveGeocodeCache() {
+  const ss = SpreadsheetApp.getActive();
+
+  try {
+    ss.toast('Improving geocode cache...', 'Geocoding', 3);
+
+    // Call the core geocoding function
+    const results = geocodeAddresses_(true);
+
+    // Show results to user
+    const ui = SpreadsheetApp.getUi();
+    let message = `Geocoding complete!\n\n`;
+    message += `Exact geocodes: ${results.exact}\n`;
+    message += `Approximate matches: ${results.approximate}\n`;
+    message += `Failed/Pending: ${results.failed}\n`;
+
+    ui.alert('Geocoding Complete', message, ui.ButtonSet.OK);
+    ss.toast('Geocoding complete!', 'Success', 3);
+
   } catch (error) {
     Logger.log('Error in improveGeocodeCache: ' + error.message);
     Logger.log(error.stack);
+    SpreadsheetApp.getUi().alert('Error', 'Failed to geocode addresses:\n\n' + error.message, SpreadsheetApp.getUi().ButtonSet.OK);
   }
 }
 
@@ -483,8 +522,12 @@ function matchAddressesToDistricts() {
   const ui = SpreadsheetApp.getUi();
   const response = ui.alert(
     'Match Addresses to Districts',
-    'This will add Federal District, State Senate District, State House District, and County columns to CD_To_Upload.\n\n' +
-    'The process uses cached geocoding data and GeoJSON shapefiles from your District Shapefiles folder.\n\n' +
+    'This will:\n' +
+    '1. Geocode up to 1,500 addresses (using Google Maps API)\n' +
+    '2. Match addresses to districts using your GeoJSON shapefiles\n' +
+    '3. Add Federal District, State Senate District, State House District, and County columns\n\n' +
+    'This function does as much work as possible in one run.\n' +
+    'Run it multiple times to continue geocoding more addresses.\n\n' +
     'Continue?',
     ui.ButtonSet.YES_NO
   );
@@ -494,9 +537,13 @@ function matchAddressesToDistricts() {
   }
 
   try {
-    ss.toast('Matching addresses to districts...', 'District Matching', 3);
+    // Step 1: Geocode addresses first (silently, using cached results + new geocoding)
+    ss.toast('Geocoding addresses...', 'District Matching', 3);
+    const geocodeResults = geocodeAddresses_(false); // false = no additional toasts
+    Logger.log(`Geocoding results: ${geocodeResults.exact} exact, ${geocodeResults.approximate} approximate, ${geocodeResults.failed} failed`);
 
-    // Ensure folder structure exists
+    // Step 2: Ensure folder structure exists
+    ss.toast('Checking district folders...', 'District Matching', 2);
     let mainFolder = getDistrictMainFolder_();
     if (!mainFolder) {
       ss.toast('Setting up district folders...', 'Setup', 2);
@@ -508,7 +555,8 @@ function matchAddressesToDistricts() {
       }
     }
 
-    // Get or create cache
+    // Step 3: Load cache (now updated with new geocoding)
+    ss.toast('Matching addresses to districts...', 'District Matching', 3);
     const cacheSheet = getOrCreateGeocodeCache_();
     const cache = loadGeocodeCache_(cacheSheet);
     Logger.log(`Loaded geocode cache with ${Object.keys(cache).length} entries`);
@@ -630,28 +678,37 @@ function matchAddressesToDistricts() {
     // Show results
     const totalProcessed = uploadData.length - 1; // minus header
     let message = `District matching complete!\n\n`;
-    message += `Total addresses: ${totalProcessed}\n`;
-    message += `Matched to districts: ${stats.matched}\n`;
-    message += `Pending geocoding: ${stats.pending}\n`;
-    message += `Failed: ${stats.failed}\n\n`;
 
+    // Geocoding stats
+    message += `GEOCODING:\n`;
+    message += `• New exact geocodes: ${geocodeResults.exact}\n`;
+    message += `• New approximate: ${geocodeResults.approximate}\n`;
+    if (geocodeResults.failed > 0) {
+      message += `• Failed to geocode: ${geocodeResults.failed}\n`;
+    }
+    message += `\n`;
+
+    // District matching stats
+    message += `DISTRICT MATCHING:\n`;
+    message += `• Total addresses: ${totalProcessed}\n`;
+    message += `• Matched to districts: ${stats.matched}\n`;
+    message += `• Still pending geocoding: ${stats.pending}\n`;
+    message += `• Failed matching: ${stats.failed}\n\n`;
+
+    // Tips based on results
     if (stats.pending > 0) {
-      message += `${stats.pending} addresses need geocoding.\n`;
-      message += `Run "Improve Geocode Cache" from menu to geocode them.\n\n`;
-    }
-
-    if (stats.failed > 0) {
-      message += `${stats.failed} addresses failed (check logs for details).\n\n`;
-    }
-
-    if (stats.matched === 0 && stats.pending > 0) {
-      message += `TIP: You need to geocode addresses before matching to districts.\n`;
-      message += `Run "Improve Geocode Cache" first, then run this again.`;
+      message += `TIP: ${stats.pending} addresses still need geocoding.\n`;
+      message += `Run this function again or use "Improve Geocode Cache"\n`;
+      message += `to continue geocoding (processes 1,500 per run).\n\n`;
     }
 
     if (stats.matched === 0 && stats.failed > 0 && stats.pending === 0) {
-      message += `TIP: Make sure you've uploaded GeoJSON shapefiles to your\n`;
-      message += `District Shapefiles folder for each state.`;
+      message += `TIP: Make sure you've uploaded GeoJSON shapefiles to:\n`;
+      message += `District Shapefiles/[STATE]/[Federal/Senate/House/Counties]/\n\n`;
+    }
+
+    if (stats.matched > 0) {
+      message += `SUCCESS: ${stats.matched} addresses matched to districts!`;
     }
 
     ui.alert('District Matching Complete', message, ui.ButtonSet.OK);
