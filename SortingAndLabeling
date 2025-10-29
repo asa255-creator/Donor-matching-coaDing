@@ -18,6 +18,7 @@ const US_STATES = [
 const DISTRICT_SUBFOLDER_NAMES = [
   'Federal Districts',
   'State Senate Districts',
+  'State House Districts',
   'Counties'
 ];
 
@@ -70,9 +71,10 @@ function setupDistrictMatching() {
       message = `✓ Created folder structure for all 51 states\n\n`;
       message += `Main folder: "${mainFolder.getName()}"\n`;
       message += `Location: ${mainFolder.getUrl()}\n\n`;
-      message += `Each state folder (AL, AK, AZ, etc.) has 3 subfolders:\n`;
+      message += `Each state folder (AL, AK, AZ, etc.) has 4 subfolders:\n`;
       message += `• Federal Districts\n`;
       message += `• State Senate Districts\n`;
+      message += `• State House Districts\n`;
       message += `• Counties\n\n`;
       message += `You can now add shapefiles to these folders.`;
     } else {
@@ -471,7 +473,7 @@ function matchAddressesToDistricts() {
   const ui = SpreadsheetApp.getUi();
   const response = ui.alert(
     'Match Addresses to Districts',
-    'This will add Federal District, State Senate District, and County columns to CD_To_Upload.\n\n' +
+    'This will add Federal District, State Senate District, State House District, and County columns to CD_To_Upload.\n\n' +
     'The process uses cached geocoding data and GeoJSON shapefiles from your District Shapefiles folder.\n\n' +
     'Continue?',
     ui.ButtonSet.YES_NO
@@ -507,6 +509,7 @@ function matchAddressesToDistricts() {
     // Find or add district columns
     let fedDistIdx = header.indexOf('Federal District');
     let stateSenateIdx = header.indexOf('State Senate District');
+    let stateHouseIdx = header.indexOf('State House District');
     let countyIdx = header.indexOf('County');
 
     if (fedDistIdx === -1) {
@@ -516,6 +519,10 @@ function matchAddressesToDistricts() {
     if (stateSenateIdx === -1) {
       header.push('State Senate District');
       stateSenateIdx = header.length - 1;
+    }
+    if (stateHouseIdx === -1) {
+      header.push('State House District');
+      stateHouseIdx = header.length - 1;
     }
     if (countyIdx === -1) {
       header.push('County');
@@ -579,7 +586,7 @@ function matchAddressesToDistricts() {
         }
 
         const shapes = stateShapefiles[state];
-        if (!shapes.federal && !shapes.senate && !shapes.county) {
+        if (!shapes.federal && !shapes.senate && !shapes.house && !shapes.county) {
           Logger.log(`No shapefiles found for ${state}`);
           stats.failed++;
           continue;
@@ -590,6 +597,7 @@ function matchAddressesToDistricts() {
 
         row[fedDistIdx] = districts.federal || '';
         row[stateSenateIdx] = districts.senate || '';
+        row[stateHouseIdx] = districts.house || '';
         row[countyIdx] = districts.county || '';
 
         stats.matched++;
@@ -635,12 +643,13 @@ function loadStateShapefiles_(stateCode) {
   const stateFolder = getStateFolder_(stateCode);
   if (!stateFolder) {
     Logger.log(`State folder not found for ${stateCode}`);
-    return { federal: null, senate: null, county: null };
+    return { federal: null, senate: null, house: null, county: null };
   }
 
   const shapes = {
     federal: null,
     senate: null,
+    house: null,
     county: null
   };
 
@@ -656,6 +665,8 @@ function loadStateShapefiles_(stateCode) {
       districtType = 'federal';
     } else if (folderName.includes('senate')) {
       districtType = 'senate';
+    } else if (folderName.includes('house')) {
+      districtType = 'house';
     } else if (folderName.includes('count')) {
       districtType = 'county';
     }
@@ -693,6 +704,7 @@ function matchPointToDistricts_(lat, lng, shapes) {
   const districts = {
     federal: null,
     senate: null,
+    house: null,
     county: null
   };
 
@@ -704,6 +716,11 @@ function matchPointToDistricts_(lat, lng, shapes) {
   // Check state senate districts
   if (shapes.senate) {
     districts.senate = findContainingFeature_(lat, lng, shapes.senate);
+  }
+
+  // Check state house districts
+  if (shapes.house) {
+    districts.house = findContainingFeature_(lat, lng, shapes.house);
   }
 
   // Check counties

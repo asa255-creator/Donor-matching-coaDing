@@ -1,4 +1,7 @@
 function onOpen() {
+  // Initialize all required sheets before showing menus
+  initializeRequiredSheets_();
+
   const ui = SpreadsheetApp.getUi();
 
   // KREF menu stays the same
@@ -24,4 +27,100 @@ SpreadsheetApp.getActive().toast(
   'Info', 5
 );
 
+}
+
+/**
+ * Initialize all required sheets with proper headers
+ * Called automatically on spreadsheet open
+ * @private
+ */
+function initializeRequiredSheets_() {
+  const ss = SpreadsheetApp.getActive();
+
+  // Define all required sheets with their headers
+  const sheetsConfig = {
+    'KREF_Exports': {
+      header: ['Recipient','DonorFirst','DonorLast','Address1','Address2','City','State','Zip','Amount','WeightedAmount','ReceiptDate','Occupation','Employer','DonationID'],
+      format: '@' // Text format for all columns
+    },
+    'FEC_Exports': {
+      header: ['Recipient','DonorFirst','DonorLast','Address1','Address2','City','State','Zip','Amount','WeightedAmount','ReceiptDate','Occupation','Employer','DonationID'],
+      format: '@'
+    },
+    'Training': {
+      header: ['Label', 'sheet_a','row_a','first_a','last_a','addr_a','city_a','state_a','zip_a','employer_a','occupation_a', 'sheet_b','row_b','first_b','last_b','addr_b','city_b','state_b','zip_b','employer_b','occupation_b'],
+      frozenRows: 1
+    },
+    'Merge output': {
+      header: ['Recipient', 'DonorFirst', 'DonorLast', 'Address1', 'Address2', 'City', 'State', 'Zip', 'Amount', 'WeightedAmount', 'ReceiptDate', 'Occupation', 'Employer', 'DonationID', 'DonorID', 'Confidence'],
+      frozenRows: 1
+    },
+    'Options': {
+      header: ['MinAmount', 'MaxAmount', 'MinDate', 'MaxDate', 'ContributionTypes', '', '', 'PercentLossPerYear', '', 'MatchThreshold'],
+      defaultRow: [1, 249, '2018-07-01', '', 'INDIVIDUAL', '', '', '0', '', '0.7'],
+      frozenRows: 1
+    },
+    'Candidates': {
+      header: ['FirstName', 'LastName', 'Multiplier'],
+      frozenRows: 1
+    },
+    'Organizations': {
+      header: ['OrganizationName', 'Multiplier'],
+      frozenRows: 1
+    },
+    '_GeocodeCache': {
+      header: ['NormalizedAddress', 'Latitude', 'Longitude', 'Status', 'Source', 'DateAdded'],
+      frozenRows: 1,
+      hidden: true
+    }
+  };
+
+  // Check and create each sheet
+  for (const [sheetName, config] of Object.entries(sheetsConfig)) {
+    let sheet = ss.getSheetByName(sheetName);
+
+    if (!sheet) {
+      // Create new sheet
+      sheet = ss.insertSheet(sheetName);
+      Logger.log(`Created sheet: ${sheetName}`);
+    }
+
+    // Check if header exists (check if row 1 is empty or doesn't match)
+    const existingHeader = sheet.getRange(1, 1, 1, config.header.length).getValues()[0];
+    const headerExists = existingHeader.some(cell => cell !== '');
+
+    if (!headerExists) {
+      // Ensure enough columns
+      const neededCols = config.header.length;
+      if (sheet.getMaxColumns() < neededCols) {
+        sheet.insertColumnsAfter(sheet.getMaxColumns(), neededCols - sheet.getMaxColumns());
+      }
+
+      // Write header
+      sheet.getRange(1, 1, 1, config.header.length).setValues([config.header]);
+      sheet.getRange(1, 1, 1, config.header.length).setFontWeight('bold').setBackground('#4285f4').setFontColor('#ffffff');
+      Logger.log(`Added header to sheet: ${sheetName}`);
+
+      // Add default row if specified (e.g., Options sheet)
+      if (config.defaultRow) {
+        sheet.getRange(2, 1, 1, config.defaultRow.length).setValues([config.defaultRow]);
+      }
+    }
+
+    // Apply formatting
+    if (config.format) {
+      const lastRow = Math.max(sheet.getLastRow(), 2);
+      sheet.getRange(1, 1, lastRow, config.header.length).setNumberFormat(config.format);
+    }
+
+    // Freeze rows if specified
+    if (config.frozenRows && sheet.getFrozenRows() === 0) {
+      sheet.setFrozenRows(config.frozenRows);
+    }
+
+    // Hide sheet if specified
+    if (config.hidden && !sheet.isSheetHidden()) {
+      sheet.hideSheet();
+    }
+  }
 }
