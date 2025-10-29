@@ -42,7 +42,9 @@ function setupDistrictMatching() {
         mainFolder = DriveApp.getFolderById(mainFolderId);
         Logger.log('Found existing main folder: ' + mainFolder.getName());
       } catch (e) {
-        Logger.log('Stored folder ID invalid, creating new structure');
+        Logger.log('Stored folder ID invalid, clearing and creating new structure');
+        // Clear the invalid ID
+        props.deleteProperty('district_main_folder_id');
         mainFolder = null;
       }
     }
@@ -58,6 +60,14 @@ function setupDistrictMatching() {
       mainFolder = parentFolder.createFolder('District Shapefiles');
       props.setProperty('district_main_folder_id', mainFolder.getId());
       Logger.log('Created main folder: District Shapefiles');
+
+      // Clear all old state folder IDs since we're starting fresh
+      if (isNewSetup) {
+        US_STATES.forEach(state => {
+          props.deleteProperty('district_state_' + state.toLowerCase());
+        });
+        Logger.log('Cleared all old state folder IDs for fresh setup');
+      }
     }
 
     // Set up or verify all state folders
@@ -487,15 +497,21 @@ function matchAddressesToDistricts() {
     ss.toast('Matching addresses to districts...', 'District Matching', 3);
 
     // Ensure folder structure exists
-    const mainFolder = getDistrictMainFolder_();
+    let mainFolder = getDistrictMainFolder_();
     if (!mainFolder) {
       ss.toast('Setting up district folders...', 'Setup', 2);
       setupDistrictMatching();
+      // Re-fetch after setup
+      mainFolder = getDistrictMainFolder_();
+      if (!mainFolder) {
+        throw new Error('Failed to set up district folders. Please try running "Set up District Matching" manually from the menu.');
+      }
     }
 
     // Get or create cache
     const cacheSheet = getOrCreateGeocodeCache_();
     const cache = loadGeocodeCache_(cacheSheet);
+    Logger.log(`Loaded geocode cache with ${Object.keys(cache).length} entries`);
 
     // Get upload data
     const uploadData = uploadSheet.getDataRange().getValues();
@@ -612,13 +628,30 @@ function matchAddressesToDistricts() {
     uploadSheet.getRange(1, 1, uploadData.length, header.length).setValues(uploadData);
 
     // Show results
+    const totalProcessed = uploadData.length - 1; // minus header
     let message = `District matching complete!\n\n`;
-    message += `Matched: ${stats.matched}\n`;
+    message += `Total addresses: ${totalProcessed}\n`;
+    message += `Matched to districts: ${stats.matched}\n`;
     message += `Pending geocoding: ${stats.pending}\n`;
     message += `Failed: ${stats.failed}\n\n`;
 
     if (stats.pending > 0) {
-      message += `Run "Improve Geocode Cache" from menu or set up a trigger to geocode pending addresses.`;
+      message += `${stats.pending} addresses need geocoding.\n`;
+      message += `Run "Improve Geocode Cache" from menu to geocode them.\n\n`;
+    }
+
+    if (stats.failed > 0) {
+      message += `${stats.failed} addresses failed (check logs for details).\n\n`;
+    }
+
+    if (stats.matched === 0 && stats.pending > 0) {
+      message += `TIP: You need to geocode addresses before matching to districts.\n`;
+      message += `Run "Improve Geocode Cache" first, then run this again.`;
+    }
+
+    if (stats.matched === 0 && stats.failed > 0 && stats.pending === 0) {
+      message += `TIP: Make sure you've uploaded GeoJSON shapefiles to your\n`;
+      message += `District Shapefiles folder for each state.`;
     }
 
     ui.alert('District Matching Complete', message, ui.ButtonSet.OK);
