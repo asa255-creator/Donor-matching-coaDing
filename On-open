@@ -78,18 +78,17 @@ function initializeRequiredSheets_() {
   // Check and create each sheet
   for (const [sheetName, config] of Object.entries(sheetsConfig)) {
     let sheet = ss.getSheetByName(sheetName);
+    let isNewSheet = false;
 
     if (!sheet) {
       // Create new sheet
       sheet = ss.insertSheet(sheetName);
+      isNewSheet = true;
       Logger.log(`Created sheet: ${sheetName}`);
     }
 
-    // Check if header exists (check if row 1 is empty or doesn't match)
-    const existingHeader = sheet.getRange(1, 1, 1, config.header.length).getValues()[0];
-    const headerExists = existingHeader.some(cell => cell !== '');
-
-    if (!headerExists) {
+    // ONLY configure newly created sheets - never touch existing sheets
+    if (isNewSheet) {
       // Ensure enough columns
       const neededCols = config.header.length;
       if (sheet.getMaxColumns() < neededCols) {
@@ -105,22 +104,22 @@ function initializeRequiredSheets_() {
       if (config.defaultRow) {
         sheet.getRange(2, 1, 1, config.defaultRow.length).setValues([config.defaultRow]);
       }
-    }
 
-    // Apply formatting
-    if (config.format) {
-      const lastRow = Math.max(sheet.getLastRow(), 2);
-      sheet.getRange(1, 1, lastRow, config.header.length).setNumberFormat(config.format);
-    }
+      // Apply formatting to new sheet only
+      if (config.format) {
+        const lastRow = Math.max(sheet.getLastRow(), 2);
+        sheet.getRange(1, 1, lastRow, config.header.length).setNumberFormat(config.format);
+      }
 
-    // Freeze rows if specified
-    if (config.frozenRows && sheet.getFrozenRows() === 0) {
-      sheet.setFrozenRows(config.frozenRows);
-    }
+      // Freeze rows on new sheet only
+      if (config.frozenRows) {
+        sheet.setFrozenRows(config.frozenRows);
+      }
 
-    // Hide sheet if specified
-    if (config.hidden && !sheet.isSheetHidden()) {
-      sheet.hideSheet();
+      // Hide sheet if specified (new sheet only)
+      if (config.hidden) {
+        sheet.hideSheet();
+      }
     }
   }
 }
