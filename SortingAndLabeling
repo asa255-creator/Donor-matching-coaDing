@@ -30,57 +30,16 @@ function setupDistrictMatching() {
   try {
     SpreadsheetApp.getActive().toast('Setting up district matching folders...', 'District Matching', 3);
 
-    const props = PropertiesService.getDocumentProperties();
-    const mainFolderId = props.getProperty('district_main_folder_id');
-
-    let mainFolder;
-    let isNewSetup = false;
-
-    // Check if main folder exists
-    if (mainFolderId) {
-      try {
-        mainFolder = DriveApp.getFolderById(mainFolderId);
-        Logger.log('Found existing main folder: ' + mainFolder.getName());
-      } catch (e) {
-        Logger.log('Stored folder ID invalid, clearing and creating new structure');
-        // Clear the invalid ID
-        props.deleteProperty('district_main_folder_id');
-        mainFolder = null;
-      }
-    }
-
-    // Create main folder if it doesn't exist
-    if (!mainFolder) {
-      isNewSetup = true;
-      const spreadsheetFile = DriveApp.getFileById(SpreadsheetApp.getActive().getId());
-      const parentFolder = spreadsheetFile.getParents().hasNext()
-        ? spreadsheetFile.getParents().next()
-        : DriveApp.getRootFolder();
-
-      mainFolder = parentFolder.createFolder('District Shapefiles');
-      props.setProperty('district_main_folder_id', mainFolder.getId());
-      Logger.log('Created main folder: District Shapefiles');
-
-      // Clear all old state folder IDs since we're starting fresh
-      if (isNewSetup) {
-        US_STATES.forEach(state => {
-          props.deleteProperty('district_state_' + state.toLowerCase());
-        });
-        Logger.log('Cleared all old state folder IDs for fresh setup');
-      }
-    }
-
-    // Set up or verify all state folders
-    const results = setupStateFolders_(mainFolder, props, isNewSetup);
+    const result = setupDistrictMatchingSilent_();
 
     // Show results to user
     const ui = SpreadsheetApp.getUi();
     let message = '';
 
-    if (isNewSetup) {
+    if (result.isNewSetup) {
       message = `✓ Created folder structure for all 51 states\n\n`;
-      message += `Main folder: "${mainFolder.getName()}"\n`;
-      message += `Location: ${mainFolder.getUrl()}\n\n`;
+      message += `Main folder: "${result.mainFolder.getName()}"\n`;
+      message += `Location: ${result.mainFolder.getUrl()}\n\n`;
       message += `Each state folder (AL, AK, AZ, etc.) has 4 subfolders:\n`;
       message += `• Federal Districts\n`;
       message += `• State Senate Districts\n`;
@@ -89,15 +48,15 @@ function setupDistrictMatching() {
       message += `You can now add shapefiles to these folders.`;
     } else {
       message = `✓ Verified all district folders\n\n`;
-      message += `State codes checked: ${results.verified}\n`;
-      message += `Folders created: ${results.created}\n`;
-      message += `Folders repaired: ${results.repaired}\n\n`;
+      message += `State codes checked: ${result.results.verified}\n`;
+      message += `Folders created: ${result.results.created}\n`;
+      message += `Folders repaired: ${result.results.repaired}\n\n`;
 
-      if (results.created > 0 || results.repaired > 0) {
+      if (result.results.created > 0 || result.results.repaired > 0) {
         message += `Some folders were missing and have been recreated.\n\n`;
       }
 
-      message += `Main folder: ${mainFolder.getUrl()}`;
+      message += `Main folder: ${result.mainFolder.getUrl()}`;
     }
 
     ui.alert('District Matching Setup Complete', message, ui.ButtonSet.OK);
@@ -111,6 +70,61 @@ function setupDistrictMatching() {
       SpreadsheetApp.getUi().ButtonSet.OK
     );
   }
+}
+
+/**
+ * Silent version of setup - no UI dialogs, returns result object
+ * Used internally by district matching function
+ * @returns {Object} {mainFolder, isNewSetup, results}
+ * @private
+ */
+function setupDistrictMatchingSilent_() {
+  const props = PropertiesService.getDocumentProperties();
+  const mainFolderId = props.getProperty('district_main_folder_id');
+
+  let mainFolder;
+  let isNewSetup = false;
+
+  // Check if main folder exists
+  if (mainFolderId) {
+    try {
+      mainFolder = DriveApp.getFolderById(mainFolderId);
+      Logger.log('Found existing main folder: ' + mainFolder.getName());
+    } catch (e) {
+      Logger.log('Stored folder ID invalid, clearing and creating new structure');
+      // Clear the invalid ID
+      props.deleteProperty('district_main_folder_id');
+      mainFolder = null;
+    }
+  }
+
+  // Create main folder if it doesn't exist
+  if (!mainFolder) {
+    isNewSetup = true;
+    const spreadsheetFile = DriveApp.getFileById(SpreadsheetApp.getActive().getId());
+    const parentFolder = spreadsheetFile.getParents().hasNext()
+      ? spreadsheetFile.getParents().next()
+      : DriveApp.getRootFolder();
+
+    mainFolder = parentFolder.createFolder('District Shapefiles');
+    props.setProperty('district_main_folder_id', mainFolder.getId());
+    Logger.log('Created main folder: District Shapefiles');
+
+    // Clear all old state folder IDs since we're starting fresh
+    US_STATES.forEach(state => {
+      props.deleteProperty('district_state_' + state.toLowerCase());
+    });
+    Logger.log('Cleared all old state folder IDs for fresh setup');
+  }
+
+  // Set up or verify all state folders
+  const results = setupStateFolders_(mainFolder, props, isNewSetup);
+
+  return {
+    mainFolder: mainFolder,
+    isNewSetup: isNewSetup,
+    results: results
+  };
 }
 
 /**
@@ -537,23 +551,52 @@ function matchAddressesToDistricts() {
   }
 
   try {
-    // Step 1: Geocode addresses first (silently, using cached results + new geocoding)
+    // Step 1: FIRST ensure folder structure exists - don't proceed without it
+    ss.toast('Checking district folders...', 'District Matching', 3);
+    let mainFolder = getDistrictMainFolder_();
+
+    if (!mainFolder) {
+      // Folder structure missing - create it now
+      ss.toast('Creating district folders...', 'Setup', -1); // -1 = stays until dismissed
+      Logger.log('District folder structure missing, creating now...');
+
+      const setupResult = setupDistrictMatchingSilent_();
+      mainFolder = setupResult.mainFolder;
+
+      if (!mainFolder) {
+        throw new Error('Failed to create district folder structure. Check logs for details.');
+      }
+
+      Logger.log(`Created folder structure: ${setupResult.results.created} states created, ${setupResult.results.repaired} repaired`);
+      ss.toast('District folders created!', 'Setup', 2);
+
+      // Alert user to upload shapefiles before continuing
+      const continueResponse = ui.alert(
+        'Folder Structure Created',
+        `Created District Shapefiles folder structure for all 51 states.\n\n` +
+        `Location: ${mainFolder.getUrl()}\n\n` +
+        `IMPORTANT: Upload your GeoJSON shapefiles to the state folders before continuing.\n` +
+        `Each state needs shapefiles in:\n` +
+        `• Federal Districts\n` +
+        `• State Senate Districts\n` +
+        `• State House Districts\n` +
+        `• Counties\n\n` +
+        `Continue with geocoding and matching now?`,
+        ui.ButtonSet.YES_NO
+      );
+
+      if (continueResponse !== ui.Button.YES) {
+        ss.toast('Folder setup complete. Run again when shapefiles are uploaded.', 'District Matching', 5);
+        return;
+      }
+    } else {
+      Logger.log('District folder structure verified: ' + mainFolder.getName());
+    }
+
+    // Step 2: Geocode addresses (up to 1,500 new ones)
     ss.toast('Geocoding addresses...', 'District Matching', 3);
     const geocodeResults = geocodeAddresses_(false); // false = no additional toasts
     Logger.log(`Geocoding results: ${geocodeResults.exact} exact, ${geocodeResults.approximate} approximate, ${geocodeResults.failed} failed`);
-
-    // Step 2: Ensure folder structure exists
-    ss.toast('Checking district folders...', 'District Matching', 2);
-    let mainFolder = getDistrictMainFolder_();
-    if (!mainFolder) {
-      ss.toast('Setting up district folders...', 'Setup', 2);
-      setupDistrictMatching();
-      // Re-fetch after setup
-      mainFolder = getDistrictMainFolder_();
-      if (!mainFolder) {
-        throw new Error('Failed to set up district folders. Please try running "Set up District Matching" manually from the menu.');
-      }
-    }
 
     // Step 3: Load cache (now updated with new geocoding)
     ss.toast('Matching addresses to districts...', 'District Matching', 3);
