@@ -219,10 +219,243 @@ function getStateFolder_(stateCode) {
  */
 
 /**
- * Main function to geocode addresses in CD_To_Upload sheet
- * Called from menu: Extensions → Donor Tools → Geocode Addresses
+ * Background function to improve geocode cache
+ * Can be called by time-based trigger or manually from menu
+ * Prioritizes: 1) Pending addresses, 2) Approximate addresses, 3) New addresses
  */
-function geocodeUploadAddresses() {
+function improveGeocodeCache() {
+  const ss = SpreadsheetApp.getActive();
+  const uploadSheet = ss.getSheetByName('CD_To_Upload');
+
+  if (!uploadSheet) {
+    Logger.log('CD_To_Upload sheet not found, skipping geocode improvement');
+    return;
+  }
+
+  try {
+    Logger.log('Starting geocode cache improvement...');
+
+    // Get or create cache sheet
+    const cacheSheet = getOrCreateGeocodeCache_();
+
+    // Load existing cache
+    const cache = loadGeocodeCache_(cacheSheet);
+    Logger.log(`Loaded ${Object.keys(cache).length} cached addresses`);
+
+    // Get all unique addresses from CD_To_Upload
+    const uploadData = uploadSheet.getDataRange().getValues();
+    if (uploadData.length <= 1) {
+      Logger.log('No data in CD_To_Upload');
+      return;
+    }
+
+    const header = uploadData[0];
+    const addressIdx = header.indexOf('Address');
+    const cityIdx = header.indexOf('City');
+    const stateIdx = header.indexOf('State');
+    const zipIdx = header.indexOf('Zip');
+
+    if (addressIdx === -1 || cityIdx === -1 || stateIdx === -1 || zipIdx === -1) {
+      Logger.log('Required address columns not found');
+      return;
+    }
+
+    // Collect unique addresses from CD_To_Upload
+    const addressList = [];
+    for (let i = 1; i < uploadData.length; i++) {
+      const row = uploadData[i];
+      const address = String(row[addressIdx] || '').trim();
+      const city = String(row[cityIdx] || '').trim();
+      const state = String(row[stateIdx] || '').trim();
+      const zip = String(row[zipIdx] || '').trim();
+
+      if (address && city && state) {
+        addressList.push({ address, city, state, zip });
+      }
+    }
+
+    // Categorize addresses by status
+    const pending = [];
+    const approximate = [];
+    const newAddresses = [];
+
+    addressList.forEach(addr => {
+      const key = normalizeAddressKey_(addr.address, addr.city, addr.state, addr.zip);
+      if (!cache[key]) {
+        newAddresses.push({ ...addr, key });
+      } else if (cache[key].status === 'pending') {
+        pending.push({ ...addr, key });
+      } else if (cache[key].status === 'approximate') {
+        approximate.push({ ...addr, key });
+      }
+    });
+
+    Logger.log(`Found: ${pending.length} pending, ${approximate.length} approximate, ${newAddresses.length} new`);
+
+    // Process in priority order
+    const toProcess = [...pending, ...approximate, ...newAddresses];
+    const results = processGeocoding_(toProcess, cache);
+
+    // Save new cache entries
+    if (results.newEntries.length > 0) {
+      saveGeocodeCache_(cacheSheet, results.newEntries);
+    }
+
+    Logger.log(`Geocoding complete: ${results.exact} exact, ${results.approximate} approximate, ${results.failed} failed`);
+
+  } catch (error) {
+    Logger.log('Error in improveGeocodeCache: ' + error.message);
+    Logger.log(error.stack);
+  }
+}
+
+/**
+ * Process geocoding with priority: exact geocoding first, then proximity matching
+ * @private
+ */
+function processGeocoding_(addressList, cache) {
+  const geocoder = Maps.newGeocoder();
+  const BATCH_LIMIT = 1500;
+
+  const results = {
+    exact: 0,
+    approximate: 0,
+    failed: 0,
+    newEntries: []
+  };
+
+  let quotaUsed = 0;
+
+  for (const addr of addressList) {
+    // Skip if we've exhausted quota
+    if (quotaUsed >= BATCH_LIMIT) {
+      break;
+    }
+
+    // Try exact geocoding first
+    try {
+      const fullAddress = `${addr.address}, ${addr.city}, ${addr.state} ${addr.zip}`;
+      const location = geocoder.geocode(fullAddress);
+
+      quotaUsed++;
+
+      if (location && location.results && location.results.length > 0) {
+        const result = location.results[0];
+        const lat = result.geometry.location.lat;
+        const lng = result.geometry.location.lng;
+
+        results.newEntries.push({
+          key: addr.key,
+          lat: lat,
+          lng: lng,
+          status: 'exact',
+          source: '-',
+          date: new Date().toISOString().split('T')[0]
+        });
+
+        results.exact++;
+        Logger.log(`Exact geocode: ${fullAddress} -> ${lat}, ${lng}`);
+        continue;
+      }
+    } catch (error) {
+      Logger.log(`Geocoding error for ${addr.address}: ${error.message}`);
+
+      // If we hit quota limit, stop
+      if (error.message.includes('limit') || error.message.includes('quota')) {
+        break;
+      }
+    }
+
+    // If exact geocoding failed or no quota, try proximity match
+    const proximityMatch = findProximityMatch_(addr, cache);
+    if (proximityMatch) {
+      results.newEntries.push({
+        key: addr.key,
+        lat: proximityMatch.lat,
+        lng: proximityMatch.lng,
+        status: 'approximate',
+        source: proximityMatch.source,
+        date: new Date().toISOString().split('T')[0]
+      });
+
+      results.approximate++;
+      Logger.log(`Proximity match: ${addr.address} -> ${proximityMatch.source}`);
+    } else {
+      // Mark as pending for future processing
+      results.newEntries.push({
+        key: addr.key,
+        lat: '',
+        lng: '',
+        status: 'pending',
+        source: '-',
+        date: new Date().toISOString().split('T')[0]
+      });
+
+      results.failed++;
+    }
+
+    // Small delay to avoid rate limiting
+    if (quotaUsed % 50 === 0) {
+      Utilities.sleep(100);
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Find a nearby address on the same street (±25 numbers)
+ * @private
+ */
+function findProximityMatch_(addr, cache) {
+  // Extract street number from address
+  const streetNumMatch = addr.address.match(/^(\d+)/);
+  if (!streetNumMatch) return null;
+
+  const targetNum = parseInt(streetNumMatch[1]);
+  const streetWithoutNum = addr.address.replace(/^\d+\s*/, '').trim().toUpperCase();
+
+  // Search cache for matching street within ±25 numbers
+  for (const [cacheKey, cacheEntry] of Object.entries(cache)) {
+    // Only use exact matches as sources (not approximate or pending)
+    if (cacheEntry.status !== 'exact') continue;
+
+    // Parse cache key: ADDRESS|CITY|STATE|ZIP
+    const parts = cacheKey.split('|');
+    if (parts.length < 4) continue;
+
+    const [cachedAddr, cachedCity, cachedState] = parts;
+
+    // Must match city and state
+    if (cachedCity !== addr.city.toUpperCase() || cachedState !== addr.state.toUpperCase()) {
+      continue;
+    }
+
+    // Extract street number and name from cached address
+    const cachedNumMatch = cachedAddr.match(/^(\d+)/);
+    if (!cachedNumMatch) continue;
+
+    const cachedNum = parseInt(cachedNumMatch[1]);
+    const cachedStreet = cachedAddr.replace(/^\d+\s*/, '').trim();
+
+    // Check if street names match and numbers are within ±25
+    if (cachedStreet === streetWithoutNum && Math.abs(cachedNum - targetNum) <= 25) {
+      return {
+        lat: cacheEntry.lat,
+        lng: cacheEntry.lng,
+        source: cachedAddr
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Main user-facing function to match addresses to districts
+ * Called from menu: Extensions → Donor Tools → Match Addresses to Districts
+ */
+function matchAddressesToDistricts() {
   const ss = SpreadsheetApp.getActive();
   const uploadSheet = ss.getSheetByName('CD_To_Upload');
 
@@ -237,10 +470,9 @@ function geocodeUploadAddresses() {
 
   const ui = SpreadsheetApp.getUi();
   const response = ui.alert(
-    'Geocode Addresses',
-    'This will add Latitude and Longitude columns to CD_To_Upload.\n\n' +
-    'The process uses Google\'s free geocoding service (limit ~1,500 requests per run).\n\n' +
-    'Already-geocoded addresses are cached and won\'t be re-processed.\n\n' +
+    'Match Addresses to Districts',
+    'This will add Federal District, State Senate District, and County columns to CD_To_Upload.\n\n' +
+    'The process uses cached geocoding data and GeoJSON shapefiles from your District Shapefiles folder.\n\n' +
     'Continue?',
     ui.ButtonSet.YES_NO
   );
@@ -250,38 +482,47 @@ function geocodeUploadAddresses() {
   }
 
   try {
-    ss.toast('Starting geocoding process...', 'Geocoding', 3);
+    ss.toast('Matching addresses to districts...', 'District Matching', 3);
 
-    // Get or create cache sheet
+    // Ensure folder structure exists
+    const mainFolder = getDistrictMainFolder_();
+    if (!mainFolder) {
+      ss.toast('Setting up district folders...', 'Setup', 2);
+      setupDistrictMatching();
+    }
+
+    // Get or create cache
     const cacheSheet = getOrCreateGeocodeCache_();
-
-    // Load existing cache
     const cache = loadGeocodeCache_(cacheSheet);
-    Logger.log(`Loaded ${Object.keys(cache).length} cached addresses`);
 
     // Get upload data
     const uploadData = uploadSheet.getDataRange().getValues();
     if (uploadData.length <= 1) {
-      ui.alert('No data to geocode in CD_To_Upload');
+      ui.alert('No data to process in CD_To_Upload');
       return;
     }
 
     const header = uploadData[0];
 
-    // Find or add Latitude and Longitude columns
-    let latColIdx = header.indexOf('Latitude');
-    let lngColIdx = header.indexOf('Longitude');
+    // Find or add district columns
+    let fedDistIdx = header.indexOf('Federal District');
+    let stateSenateIdx = header.indexOf('State Senate District');
+    let countyIdx = header.indexOf('County');
 
-    if (latColIdx === -1) {
-      header.push('Latitude');
-      latColIdx = header.length - 1;
+    if (fedDistIdx === -1) {
+      header.push('Federal District');
+      fedDistIdx = header.length - 1;
     }
-    if (lngColIdx === -1) {
-      header.push('Longitude');
-      lngColIdx = header.length - 1;
+    if (stateSenateIdx === -1) {
+      header.push('State Senate District');
+      stateSenateIdx = header.length - 1;
+    }
+    if (countyIdx === -1) {
+      header.push('County');
+      countyIdx = header.length - 1;
     }
 
-    // Update header if columns were added
+    // Update header
     uploadSheet.getRange(1, 1, 1, header.length).setValues([header]);
 
     // Find address column indices
@@ -294,171 +535,247 @@ function geocodeUploadAddresses() {
       throw new Error('Required address columns not found (Address, City, State, Zip)');
     }
 
-    // Process addresses with quota management
-    const results = geocodeBatch_(uploadData, header, cache, {
-      addressIdx, cityIdx, stateIdx, zipIdx, latColIdx, lngColIdx
-    });
+    // Process each row
+    const stats = {
+      matched: 0,
+      pending: 0,
+      failed: 0
+    };
+
+    const stateShapefiles = {}; // Cache loaded shapefiles per state
+
+    for (let i = 1; i < uploadData.length; i++) {
+      const row = uploadData[i];
+
+      // Ensure row has enough columns
+      while (row.length < header.length) {
+        row.push('');
+      }
+
+      const address = String(row[addressIdx] || '').trim();
+      const city = String(row[cityIdx] || '').trim();
+      const state = String(row[stateIdx] || '').trim();
+      const zip = String(row[zipIdx] || '').trim();
+
+      if (!address || !city || !state) {
+        stats.failed++;
+        continue;
+      }
+
+      // Get coordinates from cache
+      const normalizedKey = normalizeAddressKey_(address, city, state, zip);
+      const cached = cache[normalizedKey];
+
+      if (!cached || cached.status === 'pending' || !cached.lat || !cached.lng) {
+        stats.pending++;
+        continue;
+      }
+
+      // Have coordinates - match to districts
+      try {
+        // Load shapefiles for this state if not already loaded
+        if (!stateShapefiles[state]) {
+          stateShapefiles[state] = loadStateShapefiles_(state);
+        }
+
+        const shapes = stateShapefiles[state];
+        if (!shapes.federal && !shapes.senate && !shapes.county) {
+          Logger.log(`No shapefiles found for ${state}`);
+          stats.failed++;
+          continue;
+        }
+
+        // Match point to districts
+        const districts = matchPointToDistricts_(cached.lat, cached.lng, shapes);
+
+        row[fedDistIdx] = districts.federal || '';
+        row[stateSenateIdx] = districts.senate || '';
+        row[countyIdx] = districts.county || '';
+
+        stats.matched++;
+
+      } catch (error) {
+        Logger.log(`Error matching row ${i + 1}: ${error.message}`);
+        stats.failed++;
+      }
+    }
 
     // Write results back to sheet
-    if (results.updated.length > 0) {
-      results.updated.forEach(update => {
-        const rowIdx = update.row;
-        // Ensure row has enough columns
-        while (uploadData[rowIdx].length < header.length) {
-          uploadData[rowIdx].push('');
-        }
-        uploadData[rowIdx][latColIdx] = update.lat;
-        uploadData[rowIdx][lngColIdx] = update.lng;
-      });
-
-      uploadSheet.getRange(1, 1, uploadData.length, header.length).setValues(uploadData);
-    }
-
-    // Save new cache entries
-    saveGeocodeCache_(cacheSheet, results.newCacheEntries);
+    uploadSheet.getRange(1, 1, uploadData.length, header.length).setValues(uploadData);
 
     // Show results
-    let message = `Geocoding complete!\n\n`;
-    message += `Processed: ${results.processed}\n`;
-    message += `From cache: ${results.fromCache}\n`;
-    message += `Newly geocoded: ${results.geocoded}\n`;
-    message += `Failed: ${results.failed}\n`;
+    let message = `District matching complete!\n\n`;
+    message += `Matched: ${stats.matched}\n`;
+    message += `Pending geocoding: ${stats.pending}\n`;
+    message += `Failed: ${stats.failed}\n\n`;
 
-    if (results.remaining > 0) {
-      message += `\nRemaining: ${results.remaining} addresses\n`;
-      message += `(Run again to continue - cached results are preserved)`;
+    if (stats.pending > 0) {
+      message += `Run "Improve Geocode Cache" from menu or set up a trigger to geocode pending addresses.`;
     }
 
-    ui.alert('Geocoding Complete', message, ui.ButtonSet.OK);
-    ss.toast('Geocoding complete!', 'Success', 3);
+    ui.alert('District Matching Complete', message, ui.ButtonSet.OK);
+    ss.toast('Matching complete!', 'Success', 3);
 
   } catch (error) {
-    Logger.log('Error in geocodeUploadAddresses: ' + error.message);
+    Logger.log('Error in matchAddressesToDistricts: ' + error.message);
     Logger.log(error.stack);
     ui.alert(
       'Error',
-      'Failed to geocode addresses:\n\n' + error.message,
+      'Failed to match addresses to districts:\n\n' + error.message,
       ui.ButtonSet.OK
     );
   }
 }
 
 /**
- * Process addresses in batches with quota management
+ * Load GeoJSON shapefiles for a state
  * @private
  */
-function geocodeBatch_(uploadData, header, cache, indices) {
-  const geocoder = Maps.newGeocoder();
-  const BATCH_LIMIT = 1500; // Conservative limit per run
+function loadStateShapefiles_(stateCode) {
+  const stateFolder = getStateFolder_(stateCode);
+  if (!stateFolder) {
+    Logger.log(`State folder not found for ${stateCode}`);
+    return { federal: null, senate: null, county: null };
+  }
 
-  const results = {
-    processed: 0,
-    fromCache: 0,
-    geocoded: 0,
-    failed: 0,
-    remaining: 0,
-    updated: [],
-    newCacheEntries: []
+  const shapes = {
+    federal: null,
+    senate: null,
+    county: null
   };
 
-  let quotaUsed = 0;
+  // Look for GeoJSON files in each subfolder
+  const subfolders = stateFolder.getFolders();
+  while (subfolders.hasNext()) {
+    const subfolder = subfolders.next();
+    const folderName = subfolder.getName().toLowerCase();
 
-  // Start from row 1 (skip header)
-  for (let i = 1; i < uploadData.length; i++) {
-    const row = uploadData[i];
-
-    // Skip if already has coordinates
-    if (row[indices.latColIdx] && row[indices.lngColIdx]) {
-      continue;
+    // Determine which type of district
+    let districtType = null;
+    if (folderName.includes('federal')) {
+      districtType = 'federal';
+    } else if (folderName.includes('senate')) {
+      districtType = 'senate';
+    } else if (folderName.includes('count')) {
+      districtType = 'county';
     }
 
-    results.processed++;
+    if (!districtType) continue;
 
-    // Build address components
-    const address = String(row[indices.addressIdx] || '').trim();
-    const city = String(row[indices.cityIdx] || '').trim();
-    const state = String(row[indices.stateIdx] || '').trim();
-    const zip = String(row[indices.zipIdx] || '').trim();
+    // Find GeoJSON file in this subfolder
+    const files = subfolder.getFilesByType(MimeType.PLAIN_TEXT);
+    while (files.hasNext()) {
+      const file = files.next();
+      const fileName = file.getName().toLowerCase();
 
-    // Skip if insufficient address data
-    if (!address || !city || !state) {
-      results.failed++;
-      continue;
-    }
-
-    // Normalize address for cache key
-    const normalizedKey = normalizeAddressKey_(address, city, state, zip);
-
-    // Check cache first
-    if (cache[normalizedKey]) {
-      const cached = cache[normalizedKey];
-      results.updated.push({
-        row: i,
-        lat: cached.lat,
-        lng: cached.lng
-      });
-      results.fromCache++;
-      continue;
-    }
-
-    // Check quota limit
-    if (quotaUsed >= BATCH_LIMIT) {
-      results.remaining = uploadData.length - i - 1;
-      break;
-    }
-
-    // Geocode address
-    try {
-      const fullAddress = `${address}, ${city}, ${state} ${zip}`;
-      const location = geocoder.geocode(fullAddress);
-
-      quotaUsed++;
-
-      if (location && location.results && location.results.length > 0) {
-        const result = location.results[0];
-        const lat = result.geometry.location.lat;
-        const lng = result.geometry.location.lng;
-
-        // Update row
-        results.updated.push({
-          row: i,
-          lat: lat,
-          lng: lng
-        });
-
-        // Add to cache
-        results.newCacheEntries.push({
-          key: normalizedKey,
-          lat: lat,
-          lng: lng
-        });
-
-        results.geocoded++;
-
-        Logger.log(`Geocoded: ${fullAddress} -> ${lat}, ${lng}`);
-      } else {
-        Logger.log(`No results for: ${fullAddress}`);
-        results.failed++;
-      }
-
-      // Small delay to avoid rate limiting
-      if (quotaUsed % 50 === 0) {
-        Utilities.sleep(100);
-      }
-
-    } catch (error) {
-      Logger.log(`Geocoding error for row ${i + 1}: ${error.message}`);
-      results.failed++;
-
-      // If we hit quota limit, stop
-      if (error.message.includes('limit') || error.message.includes('quota')) {
-        results.remaining = uploadData.length - i - 1;
-        break;
+      if (fileName.endsWith('.geojson') || fileName.endsWith('.json')) {
+        try {
+          const content = file.getBlob().getDataAsString();
+          const geoJson = JSON.parse(content);
+          shapes[districtType] = geoJson;
+          Logger.log(`Loaded ${districtType} shapefile for ${stateCode}: ${file.getName()}`);
+          break; // Only load first GeoJSON file found
+        } catch (error) {
+          Logger.log(`Error parsing GeoJSON file ${file.getName()}: ${error.message}`);
+        }
       }
     }
   }
 
-  return results;
+  return shapes;
+}
+
+/**
+ * Match a point (lat/lng) to districts using GeoJSON polygons
+ * @private
+ */
+function matchPointToDistricts_(lat, lng, shapes) {
+  const districts = {
+    federal: null,
+    senate: null,
+    county: null
+  };
+
+  // Check federal districts
+  if (shapes.federal) {
+    districts.federal = findContainingFeature_(lat, lng, shapes.federal);
+  }
+
+  // Check state senate districts
+  if (shapes.senate) {
+    districts.senate = findContainingFeature_(lat, lng, shapes.senate);
+  }
+
+  // Check counties
+  if (shapes.county) {
+    districts.county = findContainingFeature_(lat, lng, shapes.county);
+  }
+
+  return districts;
+}
+
+/**
+ * Find which GeoJSON feature contains a point
+ * @private
+ */
+function findContainingFeature_(lat, lng, geoJson) {
+  if (!geoJson || !geoJson.features) return null;
+
+  for (const feature of geoJson.features) {
+    if (isPointInFeature_(lat, lng, feature)) {
+      // Try to extract district name from properties
+      const props = feature.properties || {};
+      return props.name || props.NAME || props.district || props.DISTRICT || props.GEOID || 'Unknown';
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Check if a point is inside a GeoJSON feature
+ * @private
+ */
+function isPointInFeature_(lat, lng, feature) {
+  if (!feature.geometry) return false;
+
+  const geomType = feature.geometry.type;
+
+  if (geomType === 'Polygon') {
+    return isPointInPolygon_(lat, lng, feature.geometry.coordinates);
+  } else if (geomType === 'MultiPolygon') {
+    for (const polygon of feature.geometry.coordinates) {
+      if (isPointInPolygon_(lat, lng, polygon)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Ray casting algorithm to check if point is in polygon
+ * @private
+ */
+function isPointInPolygon_(lat, lng, rings) {
+  // rings[0] is the outer boundary
+  const ring = rings[0];
+  let inside = false;
+
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0]; // longitude
+    const yi = ring[i][1]; // latitude
+    const xj = ring[j][0];
+    const yj = ring[j][1];
+
+    const intersect = ((yi > lat) !== (yj > lat)) &&
+                     (lng < (xj - xi) * (lat - yi) / (yj - yi) + xi);
+
+    if (intersect) inside = !inside;
+  }
+
+  return inside;
 }
 
 /**
@@ -487,7 +804,7 @@ function getOrCreateGeocodeCache_() {
 
   if (!cacheSheet) {
     cacheSheet = ss.insertSheet('_GeocodeCache');
-    cacheSheet.getRange(1, 1, 1, 3).setValues([['NormalizedAddress', 'Latitude', 'Longitude']]);
+    cacheSheet.getRange(1, 1, 1, 6).setValues([['NormalizedAddress', 'Latitude', 'Longitude', 'Status', 'Source', 'DateAdded']]);
     cacheSheet.setFrozenRows(1);
     Logger.log('Created _GeocodeCache sheet');
   }
@@ -509,9 +826,16 @@ function loadGeocodeCache_(cacheSheet) {
     const key = row[0];
     const lat = row[1];
     const lng = row[2];
+    const status = row[3] || 'exact';
+    const source = row[4] || '-';
 
-    if (key && lat && lng) {
-      cache[key] = { lat: lat, lng: lng };
+    if (key) {
+      cache[key] = {
+        lat: lat,
+        lng: lng,
+        status: status,
+        source: source
+      };
     }
   }
 
@@ -525,10 +849,18 @@ function loadGeocodeCache_(cacheSheet) {
 function saveGeocodeCache_(cacheSheet, newEntries) {
   if (newEntries.length === 0) return;
 
-  const newRows = newEntries.map(entry => [entry.key, entry.lat, entry.lng]);
+  const newRows = newEntries.map(entry => [
+    entry.key,
+    entry.lat || '',
+    entry.lng || '',
+    entry.status || 'exact',
+    entry.source || '-',
+    entry.date || new Date().toISOString().split('T')[0]
+  ]);
+
   const nextRow = cacheSheet.getLastRow() + 1;
 
-  cacheSheet.getRange(nextRow, 1, newRows.length, 3).setValues(newRows);
+  cacheSheet.getRange(nextRow, 1, newRows.length, 6).setValues(newRows);
   Logger.log(`Saved ${newRows.length} new cache entries`);
 }
 
