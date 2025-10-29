@@ -16,6 +16,7 @@ function onOpen() {
     .addItem('Match Donors to Campaign Deputy', 'cd_prepareMatchingJob_')
     .addSeparator()
     .addItem('Set up District Matching', 'setupDistrictMatching')
+    .addItem('Geocode Addresses', 'geocodeUploadAddresses')
     .addToUi();
     // onOpen
 SpreadsheetApp.getActive().toast(

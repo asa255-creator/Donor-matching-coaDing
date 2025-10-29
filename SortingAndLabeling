@@ -214,7 +214,324 @@ function getStateFolder_(stateCode) {
   }
 }
 
+/**
+ * GEOCODING FUNCTIONS
+ */
+
+/**
+ * Main function to geocode addresses in CD_To_Upload sheet
+ * Called from menu: Extensions → Donor Tools → Geocode Addresses
+ */
+function geocodeUploadAddresses() {
+  const ss = SpreadsheetApp.getActive();
+  const uploadSheet = ss.getSheetByName('CD_To_Upload');
+
+  if (!uploadSheet) {
+    SpreadsheetApp.getUi().alert(
+      'Error',
+      'CD_To_Upload sheet not found. Please create Campaign Deputy matches first.',
+      SpreadsheetApp.getUi().ButtonSet.OK
+    );
+    return;
+  }
+
+  const ui = SpreadsheetApp.getUi();
+  const response = ui.alert(
+    'Geocode Addresses',
+    'This will add Latitude and Longitude columns to CD_To_Upload.\n\n' +
+    'The process uses Google\'s free geocoding service (limit ~1,500 requests per run).\n\n' +
+    'Already-geocoded addresses are cached and won\'t be re-processed.\n\n' +
+    'Continue?',
+    ui.ButtonSet.YES_NO
+  );
+
+  if (response !== ui.Button.YES) {
+    return;
+  }
+
+  try {
+    ss.toast('Starting geocoding process...', 'Geocoding', 3);
+
+    // Get or create cache sheet
+    const cacheSheet = getOrCreateGeocodeCache_();
+
+    // Load existing cache
+    const cache = loadGeocodeCache_(cacheSheet);
+    Logger.log(`Loaded ${Object.keys(cache).length} cached addresses`);
+
+    // Get upload data
+    const uploadData = uploadSheet.getDataRange().getValues();
+    if (uploadData.length <= 1) {
+      ui.alert('No data to geocode in CD_To_Upload');
+      return;
+    }
+
+    const header = uploadData[0];
+
+    // Find or add Latitude and Longitude columns
+    let latColIdx = header.indexOf('Latitude');
+    let lngColIdx = header.indexOf('Longitude');
+
+    if (latColIdx === -1) {
+      header.push('Latitude');
+      latColIdx = header.length - 1;
+    }
+    if (lngColIdx === -1) {
+      header.push('Longitude');
+      lngColIdx = header.length - 1;
+    }
+
+    // Update header if columns were added
+    uploadSheet.getRange(1, 1, 1, header.length).setValues([header]);
+
+    // Find address column indices
+    const addressIdx = header.indexOf('Address');
+    const cityIdx = header.indexOf('City');
+    const stateIdx = header.indexOf('State');
+    const zipIdx = header.indexOf('Zip');
+
+    if (addressIdx === -1 || cityIdx === -1 || stateIdx === -1 || zipIdx === -1) {
+      throw new Error('Required address columns not found (Address, City, State, Zip)');
+    }
+
+    // Process addresses with quota management
+    const results = geocodeBatch_(uploadData, header, cache, {
+      addressIdx, cityIdx, stateIdx, zipIdx, latColIdx, lngColIdx
+    });
+
+    // Write results back to sheet
+    if (results.updated.length > 0) {
+      results.updated.forEach(update => {
+        const rowIdx = update.row;
+        // Ensure row has enough columns
+        while (uploadData[rowIdx].length < header.length) {
+          uploadData[rowIdx].push('');
+        }
+        uploadData[rowIdx][latColIdx] = update.lat;
+        uploadData[rowIdx][lngColIdx] = update.lng;
+      });
+
+      uploadSheet.getRange(1, 1, uploadData.length, header.length).setValues(uploadData);
+    }
+
+    // Save new cache entries
+    saveGeocodeCache_(cacheSheet, results.newCacheEntries);
+
+    // Show results
+    let message = `Geocoding complete!\n\n`;
+    message += `Processed: ${results.processed}\n`;
+    message += `From cache: ${results.fromCache}\n`;
+    message += `Newly geocoded: ${results.geocoded}\n`;
+    message += `Failed: ${results.failed}\n`;
+
+    if (results.remaining > 0) {
+      message += `\nRemaining: ${results.remaining} addresses\n`;
+      message += `(Run again to continue - cached results are preserved)`;
+    }
+
+    ui.alert('Geocoding Complete', message, ui.ButtonSet.OK);
+    ss.toast('Geocoding complete!', 'Success', 3);
+
+  } catch (error) {
+    Logger.log('Error in geocodeUploadAddresses: ' + error.message);
+    Logger.log(error.stack);
+    ui.alert(
+      'Error',
+      'Failed to geocode addresses:\n\n' + error.message,
+      ui.ButtonSet.OK
+    );
+  }
+}
+
+/**
+ * Process addresses in batches with quota management
+ * @private
+ */
+function geocodeBatch_(uploadData, header, cache, indices) {
+  const geocoder = Maps.newGeocoder();
+  const BATCH_LIMIT = 1500; // Conservative limit per run
+
+  const results = {
+    processed: 0,
+    fromCache: 0,
+    geocoded: 0,
+    failed: 0,
+    remaining: 0,
+    updated: [],
+    newCacheEntries: []
+  };
+
+  let quotaUsed = 0;
+
+  // Start from row 1 (skip header)
+  for (let i = 1; i < uploadData.length; i++) {
+    const row = uploadData[i];
+
+    // Skip if already has coordinates
+    if (row[indices.latColIdx] && row[indices.lngColIdx]) {
+      continue;
+    }
+
+    results.processed++;
+
+    // Build address components
+    const address = String(row[indices.addressIdx] || '').trim();
+    const city = String(row[indices.cityIdx] || '').trim();
+    const state = String(row[indices.stateIdx] || '').trim();
+    const zip = String(row[indices.zipIdx] || '').trim();
+
+    // Skip if insufficient address data
+    if (!address || !city || !state) {
+      results.failed++;
+      continue;
+    }
+
+    // Normalize address for cache key
+    const normalizedKey = normalizeAddressKey_(address, city, state, zip);
+
+    // Check cache first
+    if (cache[normalizedKey]) {
+      const cached = cache[normalizedKey];
+      results.updated.push({
+        row: i,
+        lat: cached.lat,
+        lng: cached.lng
+      });
+      results.fromCache++;
+      continue;
+    }
+
+    // Check quota limit
+    if (quotaUsed >= BATCH_LIMIT) {
+      results.remaining = uploadData.length - i - 1;
+      break;
+    }
+
+    // Geocode address
+    try {
+      const fullAddress = `${address}, ${city}, ${state} ${zip}`;
+      const location = geocoder.geocode(fullAddress);
+
+      quotaUsed++;
+
+      if (location && location.results && location.results.length > 0) {
+        const result = location.results[0];
+        const lat = result.geometry.location.lat;
+        const lng = result.geometry.location.lng;
+
+        // Update row
+        results.updated.push({
+          row: i,
+          lat: lat,
+          lng: lng
+        });
+
+        // Add to cache
+        results.newCacheEntries.push({
+          key: normalizedKey,
+          lat: lat,
+          lng: lng
+        });
+
+        results.geocoded++;
+
+        Logger.log(`Geocoded: ${fullAddress} -> ${lat}, ${lng}`);
+      } else {
+        Logger.log(`No results for: ${fullAddress}`);
+        results.failed++;
+      }
+
+      // Small delay to avoid rate limiting
+      if (quotaUsed % 50 === 0) {
+        Utilities.sleep(100);
+      }
+
+    } catch (error) {
+      Logger.log(`Geocoding error for row ${i + 1}: ${error.message}`);
+      results.failed++;
+
+      // If we hit quota limit, stop
+      if (error.message.includes('limit') || error.message.includes('quota')) {
+        results.remaining = uploadData.length - i - 1;
+        break;
+      }
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Normalize address components into a cache key
+ * @private
+ */
+function normalizeAddressKey_(address, city, state, zip) {
+  // Remove common abbreviations and punctuation
+  const normalized = [address, city, state, zip]
+    .map(s => String(s).trim().toUpperCase())
+    .map(s => s.replace(/\bAPT\b|\bSTE\b|\bUNIT\b|\b#\b/g, ''))
+    .map(s => s.replace(/[^\w\s]/g, ''))
+    .map(s => s.replace(/\s+/g, ' '))
+    .join('|');
+
+  return normalized;
+}
+
+/**
+ * Get or create the geocode cache sheet
+ * @private
+ */
+function getOrCreateGeocodeCache_() {
+  const ss = SpreadsheetApp.getActive();
+  let cacheSheet = ss.getSheetByName('_GeocodeCache');
+
+  if (!cacheSheet) {
+    cacheSheet = ss.insertSheet('_GeocodeCache');
+    cacheSheet.getRange(1, 1, 1, 3).setValues([['NormalizedAddress', 'Latitude', 'Longitude']]);
+    cacheSheet.setFrozenRows(1);
+    Logger.log('Created _GeocodeCache sheet');
+  }
+
+  return cacheSheet;
+}
+
+/**
+ * Load geocode cache into memory
+ * @private
+ */
+function loadGeocodeCache_(cacheSheet) {
+  const cache = {};
+  const data = cacheSheet.getDataRange().getValues();
+
+  // Skip header row
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i];
+    const key = row[0];
+    const lat = row[1];
+    const lng = row[2];
+
+    if (key && lat && lng) {
+      cache[key] = { lat: lat, lng: lng };
+    }
+  }
+
+  return cache;
+}
+
+/**
+ * Save new cache entries to cache sheet
+ * @private
+ */
+function saveGeocodeCache_(cacheSheet, newEntries) {
+  if (newEntries.length === 0) return;
+
+  const newRows = newEntries.map(entry => [entry.key, entry.lat, entry.lng]);
+  const nextRow = cacheSheet.getLastRow() + 1;
+
+  cacheSheet.getRange(nextRow, 1, newRows.length, 3).setValues(newRows);
+  Logger.log(`Saved ${newRows.length} new cache entries`);
+}
+
 // Future functions will go here:
-// - geocodeAddress_(address, city, state, zip)
 // - matchToDistricts_(latitude, longitude, state)
 // - addDistrictColumnsToUpload_()
