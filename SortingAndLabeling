@@ -535,15 +535,37 @@ function matchAddressesToDistricts() {
     return;
   }
 
+  // STEP 1: BLOCKING FOLDER VERIFICATION - MUST COMPLETE BEFORE ANYTHING ELSE
+  let mainFolder;
   try {
-    // STEP 1: ALWAYS CHECK FOLDERS FIRST - BEFORE ANY OTHER DIALOGS
-    ss.toast('Checking district folders...', 'District Matching', 3);
-    let mainFolder = getDistrictMainFolder_();
+    // Show BLOCKING dialog while checking
+    const checkResult = ui.alert(
+      'Folder Verification',
+      'Checking if District Shapefiles folder structure exists...\n\n' +
+      'This is required before geocoding can begin.\n\n' +
+      'Click OK to verify folders.',
+      ui.ButtonSet.OK_CANCEL
+    );
+
+    if (checkResult !== ui.Button.OK) {
+      return;
+    }
+
+    // NOW do the actual check
+    Logger.log('Starting folder verification...');
+    mainFolder = getDistrictMainFolder_();
 
     if (!mainFolder) {
-      // Folder structure missing - create it now BEFORE showing any other dialogs
-      ss.toast('Creating district folders...', 'Setup', -1); // -1 = stays until dismissed
+      // Folder structure missing - create it now
       Logger.log('District folder structure missing, creating now...');
+
+      ui.alert(
+        'Creating Folder Structure',
+        'District Shapefiles folder not found.\n\n' +
+        'Creating folder structure for all 51 states now...\n\n' +
+        'This may take a moment.',
+        ui.ButtonSet.OK
+      );
 
       const setupResult = setupDistrictMatchingSilent_();
       mainFolder = setupResult.mainFolder;
@@ -553,40 +575,56 @@ function matchAddressesToDistricts() {
       }
 
       Logger.log(`Created folder structure: ${setupResult.results.created} states created, ${setupResult.results.repaired} repaired`);
-      ss.toast('District folders created!', 'Setup', 2);
 
       // Alert user to upload shapefiles before continuing
       const continueResponse = ui.alert(
         'Folder Structure Created',
-        `Created District Shapefiles folder structure for all 51 states.\n\n` +
+        `✓ Created District Shapefiles folder structure for all 51 states.\n\n` +
         `Location: ${mainFolder.getUrl()}\n\n` +
-        `IMPORTANT: Upload your GeoJSON shapefiles to the state folders before continuing.\n` +
-        `Each state needs shapefiles in:\n` +
+        `Each state folder has 4 subfolders:\n` +
         `• Federal Districts\n` +
         `• State Senate Districts\n` +
         `• State House Districts\n` +
         `• Counties\n\n` +
+        `IMPORTANT: Upload your GeoJSON shapefiles to these folders.\n\n` +
         `Continue with geocoding and matching now?`,
         ui.ButtonSet.YES_NO
       );
 
       if (continueResponse !== ui.Button.YES) {
-        ss.toast('Folder setup complete. Run again when shapefiles are uploaded.', 'District Matching', 5);
         return;
       }
     } else {
+      // Folders exist - show confirmation
       Logger.log('District folder structure verified: ' + mainFolder.getName());
+
+      ui.alert(
+        'Folder Verification Complete',
+        `✓ District Shapefiles folder found.\n\n` +
+        `Location: ${mainFolder.getUrl()}\n\n` +
+        `Ready to proceed with geocoding and matching.`,
+        ui.ButtonSet.OK
+      );
     }
 
-    // STEP 2: NOW show the main confirmation dialog
+  } catch (error) {
+    Logger.log('Error during folder verification: ' + error.message);
+    ui.alert(
+      'Error',
+      'Failed to verify/create folder structure:\n\n' + error.message,
+      ui.ButtonSet.OK
+    );
+    return;
+  }
+
+  // STEP 2: NOW show the main confirmation dialog
+  try {
     const response = ui.alert(
       'Match Addresses to Districts',
-      'This will:\n' +
+      'Folders verified. Ready to:\n\n' +
       '1. Geocode up to 1,500 addresses (using Google Maps API)\n' +
       '2. Match addresses to districts using your GeoJSON shapefiles\n' +
       '3. Add Federal District, State Senate District, State House District, and County columns\n\n' +
-      'This function does as much work as possible in one run.\n' +
-      'Run it multiple times to continue geocoding more addresses.\n\n' +
       'Continue?',
       ui.ButtonSet.YES_NO
     );
