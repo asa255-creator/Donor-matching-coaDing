@@ -1054,10 +1054,23 @@ function doGet(e) {
       '    zip_str = str(zip_code).strip()[:3]',
       '    return ZIP_TO_STATE.get(zip_str, "")',
       '',
+      '# Valid US state abbreviations (50 states + DC + territories)',
+      'VALID_US_STATES = {',
+      '    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",',
+      '    "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",',
+      '    "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",',
+      '    "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC",',
+      '    "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",',
+      '    "DC", "PR", "VI", "GU", "AS", "MP"',
+      '}',
+      '',
       'def is_broken_value(val):',
       '    if not val: return True',
       '    s = str(val).strip().upper()',
-      '    return s in ["", "NA", "N/A", "UNKNOWN", "NULL"]',
+      '    # Check if empty, NA, or other broken values',
+      '    if s in ["", "NA", "N/A", "UNKNOWN", "NULL"]: return True',
+      '    # Also check if it\'s not a valid US state',
+      '    return s not in VALID_US_STATES',
       '',
       'def row_as_obj(header, row):',
       '    m = dict(zip(header, row))',
@@ -1900,6 +1913,40 @@ function donor_applyResult_donorAssignments_(assignments) {
   return result;
 }
 
+/**
+ * Format a date value to simple M/D/YYYY string
+ * Handles Date objects, strings, and other values
+ */
+function donor_formatDate_(val) {
+  if (!val) return '';
+
+  // If it's already a string and not a Date object toString, return as-is
+  if (typeof val === 'string') return val;
+
+  // If it's a Date object, format it simply
+  if (val instanceof Date && !isNaN(val.getTime())) {
+    const month = val.getMonth() + 1;  // 0-indexed
+    const day = val.getDate();
+    const year = val.getFullYear();
+    return `${month}/${day}/${year}`;
+  }
+
+  // Try to parse as date if it's a number or other type
+  try {
+    const d = new Date(val);
+    if (!isNaN(d.getTime())) {
+      const month = d.getMonth() + 1;
+      const day = d.getDate();
+      const year = d.getFullYear();
+      return `${month}/${day}/${year}`;
+    }
+  } catch (e) {
+    // Ignore parse errors
+  }
+
+  return String(val);
+}
+
 function donor_buildDonorIdList(assignments) {
   const ss = SpreadsheetApp.getActive();
 
@@ -1983,7 +2030,7 @@ function donor_buildDonorIdList(assignments) {
             row[colZip] || '',
             row[colAmount] || '',
             row[colWeightedAmount] || '',
-            row[colReceiptDate] || '',
+            donor_formatDate_(row[colReceiptDate]),
             row[colOccupation] || '',
             row[colEmployer] || '',
             key,
@@ -2030,7 +2077,7 @@ function donor_buildDonorIdList(assignments) {
             row[colZip] || '',
             row[colAmount] || '',
             row[colWeightedAmount] || '',
-            row[colReceiptDate] || '',
+            donor_formatDate_(row[colReceiptDate]),
             row[colOccupation] || '',
             row[colEmployer] || '',
             key,
@@ -2052,6 +2099,11 @@ function donor_buildDonorIdList(assignments) {
 
     mergeSheet.getRange(1, 1, outputRows.length, outputHeader.length).setValues(outputRows);
     mergeSheet.setFrozenRows(1);
+
+    // Force ReceiptDate column (column 11) to be formatted as plain text
+    // This prevents Google Sheets from auto-converting date strings back to Date objects
+    const receiptDateCol = 11; // 'ReceiptDate' is the 11th column
+    mergeSheet.getRange(1, receiptDateCol, outputRows.length, 1).setNumberFormat('@');
 
     Logger.log('Merge output sheet populated successfully with ' + (outputRows.length - 1) + ' data rows');
     SpreadsheetApp.getActive().toast('Donor ID list built successfully! Check the "Merge output" sheet.', 'Success', 5);
@@ -2115,7 +2167,21 @@ function dl_exportSheetAsCsv_(sheetName) {
   const lastRow = sh.getLastRow();
   const lastCol = sh.getLastColumn();
   if (lastRow < 1 || lastCol < 1) return { file: null, folder: null };
-  const values = sh.getRange(1, 1, lastRow, lastCol).getDisplayValues();
+
+  // Use getValues() instead of getDisplayValues() to get raw values
+  const rawValues = sh.getRange(1, 1, lastRow, lastCol).getValues();
+
+  // Convert any Date objects to simple M/D/YYYY strings
+  const values = rawValues.map(row => row.map(cell => {
+    if (cell instanceof Date && !isNaN(cell.getTime())) {
+      const month = cell.getMonth() + 1;
+      const day = cell.getDate();
+      const year = cell.getFullYear();
+      return `${month}/${day}/${year}`;
+    }
+    return cell;
+  }));
+
   const csv = dl_sheetToCsv_(values);
   const folder = dl_getOrCreateStagingFolder_();
   const blob = Utilities.newBlob(csv, 'text/csv', sheetName + '.csv');
@@ -2529,12 +2595,27 @@ function cd_lookupStateFromZip_(zipCode) {
 }
 
 /**
- * Check if value is broken/missing
+ * Valid US state abbreviations (50 states + DC + territories)
+ */
+const CD_VALID_US_STATES = new Set([
+  'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA',
+  'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD',
+  'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ',
+  'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC',
+  'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY',
+  'DC', 'PR', 'VI', 'GU', 'AS', 'MP'
+]);
+
+/**
+ * Check if value is broken/missing or not a valid US state
  */
 function cd_isBrokenValue_(val) {
   if (!val) return true;
   const s = String(val).trim().toUpperCase();
-  return s === '' || s === 'NA' || s === 'N/A' || s === 'UNKNOWN' || s === 'NULL';
+  // Check if empty, NA, or other broken values
+  if (s === '' || s === 'NA' || s === 'N/A' || s === 'UNKNOWN' || s === 'NULL') return true;
+  // Also check if it's not a valid US state
+  return !CD_VALID_US_STATES.has(s);
 }
 
 /**
@@ -2699,13 +2780,21 @@ function cd_prepareMatchingJob_() {
  */
 function cd_createTempCsv_(data, name) {
   const csvContent = data.map(row => row.map(cell => {
+    // Convert Date objects to simple M/D/YYYY format
+    if (cell instanceof Date && !isNaN(cell.getTime())) {
+      const month = cell.getMonth() + 1;
+      const day = cell.getDate();
+      const year = cell.getFullYear();
+      cell = `${month}/${day}/${year}`;
+    }
+
     const str = String(cell || '');
     if (str.includes(',') || str.includes('"') || str.includes('\n')) {
       return '"' + str.replace(/"/g, '""') + '"';
     }
     return str;
   }).join(',')).join('\n');
-  
+
   const folder = DriveApp.getRootFolder();
   const file = folder.createFile(name + '_' + Date.now() + '.csv', csvContent, MimeType.CSV);
   return file;
@@ -2744,48 +2833,59 @@ function cd_validateToken_(token) {
 }
 
 /**
- * Receives matching results and creates CD_To_Upload sheet
+ * Receives matching results and creates/appends to CD_To_Upload sheet
+ * Supports batched uploads to handle large datasets
  */
 function cd_receiveResults_(body) {
   try {
     const ss = SpreadsheetApp.getActive();
-    
+    const batchNum = body.batch_num || 1;
+    const totalBatches = body.total_batches || 1;
+
     // Get or create CD_To_Upload sheet
     let uploadSheet = ss.getSheetByName('CD_To_Upload');
     if (!uploadSheet) {
       uploadSheet = ss.insertSheet('CD_To_Upload');
-    } else {
-      uploadSheet.clear();
     }
-    
-    // Write header
+
+    // Define header
     const header = [
       'PersonID', 'NameFirst', 'NameLast', 'Address', 'City', 'State', 'Zip',
       'TotalAmount', 'TotalWeighted', 'Occupation', 'Employer', 'Notes'
     ];
-    uploadSheet.getRange(1, 1, 1, header.length).setValues([header]);
-    uploadSheet.getRange(1, 1, 1, header.length).setFontWeight('bold').setBackground('#4285f4').setFontColor('#ffffff');
-    uploadSheet.setFrozenRows(1);
-    
-    // Write data
+
+    // First batch: Clear sheet and write header
+    if (batchNum === 1) {
+      uploadSheet.clear();
+      uploadSheet.getRange(1, 1, 1, header.length).setValues([header]);
+      uploadSheet.getRange(1, 1, 1, header.length).setFontWeight('bold').setBackground('#4285f4').setFontColor('#ffffff');
+      uploadSheet.setFrozenRows(1);
+    }
+
+    // Write data (append to existing data)
     const rows = body.upload_rows || [];
     if (rows.length > 0) {
-      uploadSheet.getRange(2, 1, rows.length, header.length).setValues(rows);
+      const nextRow = uploadSheet.getLastRow() + 1;
+      uploadSheet.getRange(nextRow, 1, rows.length, header.length).setValues(rows);
     }
-    
-    // Auto-resize columns
-    for (let i = 1; i <= header.length; i++) {
-      uploadSheet.autoResizeColumn(i);
+
+    // Auto-resize columns on last batch
+    if (batchNum === totalBatches) {
+      for (let i = 1; i <= header.length; i++) {
+        uploadSheet.autoResizeColumn(i);
+      }
     }
-    
-    Logger.log('CD_To_Upload sheet created with ' + rows.length + ' rows');
-    
+
+    const totalRows = uploadSheet.getLastRow() - 1; // Minus header
+    Logger.log(`CD_To_Upload batch ${batchNum}/${totalBatches}: Added ${rows.length} rows (total: ${totalRows})`);
+
     return {
       success: true,
-      message: 'Created CD_To_Upload sheet',
-      rowCount: rows.length
+      message: `Batch ${batchNum}/${totalBatches} uploaded`,
+      batchRows: rows.length,
+      totalRows: totalRows
     };
-    
+
   } catch (error) {
     Logger.log('Error creating CD_To_Upload: ' + error.message);
     throw new Error('Failed to create upload sheet: ' + error.message);
@@ -3077,11 +3177,30 @@ function cd_getMatcherScript_() {
     'print(f"Total matched: {total_matched} DonorIDs to PersonIDs ({100*total_matched/len(donor_groups):.1f}%)")',
     'print(f"Total unmatched: {total_unmatched} DonorIDs ({100*total_unmatched/len(donor_groups):.1f}%)")',
     '',
-    '# Helper to check if value is "broken"',
+    '# Helper to check if value is "broken" (empty or NA)',
     'def is_broken(val):',
     '    if not val: return True',
     '    s = str(val).strip().upper()',
     '    return s in ["", "NA", "N/A", "UNKNOWN", "NULL"]',
+    '',
+    '# Valid US state abbreviations (50 states + DC + territories)',
+    'VALID_US_STATES = {',
+    '    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",',
+    '    "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",',
+    '    "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",',
+    '    "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC",',
+    '    "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",',
+    '    "DC", "PR", "VI", "GU", "AS", "MP"',
+    '}',
+    '',
+    '# Check if a state value is broken or invalid',
+    'def is_broken_state(val):',
+    '    if not val: return True',
+    '    s = str(val).strip().upper()',
+    '    # Check if empty, NA, or other broken values',
+    '    if s in ["", "NA", "N/A", "UNKNOWN", "NULL"]: return True',
+    '    # Also check if it\'s not a valid US state',
+    '    return s not in VALID_US_STATES',
     '',
     '# ZIP prefix to State lookup (covers most common ZIP ranges)',
     'ZIP_TO_STATE = {',
@@ -3129,12 +3248,34 @@ function cd_getMatcherScript_() {
     '    zip_str = str(zip_code).strip()[:3]',
     '    return ZIP_TO_STATE.get(zip_str, "")',
     '',
-    '# Parse date',
+    '# Parse date with flexible formats',
     'def parse_date(date_str):',
     '    if not date_str: return None',
+    '    s = str(date_str).strip()',
+    '    if not s: return None',
     '    try:',
-    '        for fmt in ["%m/%d/%Y", "%Y-%m-%d", "%m-%d-%Y"]:',
-    '            try: return datetime.strptime(str(date_str).strip(), fmt)',
+    '        # Try multiple formats to handle various date inputs',
+    '        # Handles both "5/15/2018" and "05/15/2018"',
+    '        for fmt in [',
+    '            "%m/%d/%Y",    # 05/15/2018',
+    '            "%-m/%-d/%Y",  # 5/15/2018 (Unix/Mac)',
+    '            "%#m/%#d/%Y",  # 5/15/2018 (Windows)',
+    '            "%Y-%m-%d",    # 2018-05-15',
+    '            "%m-%d-%Y",    # 05-15-2018',
+    '            "%-m-%-d-%Y",  # 5-15-2018',
+    '        ]:',
+    '            try: return datetime.strptime(s, fmt)',
+    '            except: pass',
+    '        ',
+    '        # Fallback: try to handle single-digit dates manually',
+    '        parts = s.replace("-", "/").split("/")',
+    '        if len(parts) == 3:',
+    '            try:',
+    '                m, d, y = int(parts[0]), int(parts[1]), int(parts[2])',
+    '                # Handle 2-digit years',
+    '                if y < 100:',
+    '                    y += 2000 if y < 50 else 1900',
+    '                return datetime(y, m, d)',
     '            except: pass',
     '    except: pass',
     '    return None',
@@ -3146,13 +3287,15 @@ function cd_getMatcherScript_() {
     'for donor_id, records in donor_groups.items():',
     '    person_id = donor_to_person.get(donor_id, "")',
     '    ',
-    '    # Sort by date (newest first)',
+    '    # Sort by date (newest first), preserve original date strings',
     '    dated_records = []',
     '    for rec in records:',
-    '        dt = parse_date(rec.get("Date", ""))',
-    '        dated_records.append((dt if dt else datetime(1900, 1, 1), rec))',
+    '        date_str = rec.get("ReceiptDate", "")',
+    '        dt = parse_date(date_str)',
+    '        # Store: (parsed_date, original_string, record)',
+    '        dated_records.append((dt if dt else datetime(1900, 1, 1), date_str, rec))',
     '    dated_records.sort(key=lambda x: x[0], reverse=True)',
-    '    sorted_records = [r for _, r in dated_records]',
+    '    sorted_records = [r for _, _, r in dated_records]',
     '    ',
     '    # Smart field selection (most recent non-broken)',
     '    def pick_field(field_name):',
@@ -3167,8 +3310,8 @@ function cd_getMatcherScript_() {
     '    address = pick_field("Address1")',
     '    city = pick_field("City")',
     '    state = pick_field("State")',
-    '    # Fallback to ZIP lookup if state is missing',
-    '    if not state or is_broken(state):',
+    '    # Fallback to ZIP lookup if state is missing or invalid',
+    '    if not state or is_broken_state(state):',
     '        zip_code = pick_field("Zip")',
     '        state = lookup_state_from_zip(zip_code)',
     '    else:',
@@ -3186,21 +3329,19 @@ function cd_getMatcherScript_() {
     '        except: pass',
     '    ',
     '    # Build notes - Option 2 format: $amount to recipient on date',
-    '    # Find oldest valid date for summary',
-    '    oldest_date = min((dt for dt, _ in dated_records if dt.year > 1900), default=None)',
-    '    oldest_str = oldest_date.strftime("%m/%d/%Y") if oldest_date else "unknown date"',
+    '    # Find oldest valid date for summary (use original string)',
+    '    oldest_info = min(((dt, date_str) for dt, date_str, _ in dated_records if dt.year > 1900), default=(None, ""))',
+    '    oldest_str = oldest_info[1] if oldest_info[0] and oldest_info[1] else "unknown date"',
     '    ',
     '    notes = f"Donor gave ${total_amount:.2f} since {oldest_str} with a weighted score of {total_weighted:.0f}."',
     '    ',
-    '    # Add all donations with amounts and recipients (always show, even if date missing)',
-    '    for dt, rec in dated_records:',
+    '    # Add all donations with amounts and recipients (use original date strings)',
+    '    for dt, date_str, rec in dated_records:',
     '        amt = rec.get("Amount", "")',
     '        recipient = rec.get("Recipient", "Unknown")',
-    '        if dt.year > 1900:',
-    '            date_str = dt.strftime("%m/%d/%Y")',
-    '        else:',
-    '            date_str = "unknown date"',
-    '        notes += f"\\n${amt} to {recipient} on {date_str}"',
+    '        # Use original date string if available, otherwise "unknown date"',
+    '        display_date = date_str.strip() if date_str and str(date_str).strip() else "unknown date"',
+    '        notes += f"\\n${amt} to {recipient} on {display_date}"',
     '    ',
     '    upload_rows.append([',
     '        person_id,',
@@ -3219,11 +3360,36 @@ function cd_getMatcherScript_() {
     '',
     'print(f"Generated {len(upload_rows)} rows for upload")',
     '',
-    '# Post results',
+    '# Sort by weighted score (highest first)',
+    'print("\\nSorting by weighted score...")',
+    'def get_weighted_value(row):',
+    '    try:',
+    '        # Extract numeric value from "$123.45" format (index 8)',
+    '        weighted_str = str(row[8]).replace("$", "").replace(",", "")',
+    '        return float(weighted_str)',
+    '    except:',
+    '        return 0.0',
+    '',
+    'upload_rows.sort(key=get_weighted_value, reverse=True)',
+    'print(f"Sorted {len(upload_rows)} rows by weighted score")',
+    '',
+    '# Post results in batches to avoid HTTP 500 errors',
     'print("\\nPosting results to Google Sheets...")',
-    'payload = {"upload_rows": upload_rows}',
-    'response = http_post(args.result, payload)',
-    'print("Done! Check the CD_To_Upload sheet.")',
+    'batch_size = 1000',
+    'total_rows = len(upload_rows)',
+    'num_batches = (total_rows + batch_size - 1) // batch_size  # Ceiling division',
+    '',
+    'for batch_num in range(num_batches):',
+    '    start_idx = batch_num * batch_size',
+    '    end_idx = min(start_idx + batch_size, total_rows)',
+    '    batch = upload_rows[start_idx:end_idx]',
+    '    ',
+    '    print(f"  Posting batch {batch_num + 1}/{num_batches} ({len(batch)} rows)...")',
+    '    payload = {"upload_rows": batch, "batch_num": batch_num + 1, "total_batches": num_batches}',
+    '    response = http_post(args.result, payload)',
+    '    print(f"  Batch {batch_num + 1} posted successfully")',
+    '',
+    'print(f"\\nDone! Posted {total_rows} rows in {num_batches} batch(es). Check the CD_To_Upload sheet.")',
   ].join('\n');
 
   return ContentService.createTextOutput(py).setMimeType(ContentService.MimeType.TEXT);

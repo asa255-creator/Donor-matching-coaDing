@@ -152,6 +152,10 @@ function appendReducedCsv_(url, outSheet, multiplier) {
 
     if (!recipient && !donorFirst && !donorLast && !amountStr && !receiptStr) continue;
 
+    const rawState = safeGet_(r, idx.state);
+    const rawZip = safeGet_(r, idx.zip);
+    const validState = getValidState_(rawState, rawZip);
+
     mapped.push([
       recipient,                       // A Recipient
       donorFirst,                      // B DonorFirst
@@ -159,8 +163,8 @@ function appendReducedCsv_(url, outSheet, multiplier) {
       safeGet_(r, idx.addr1),          // D Address1
       safeGet_(r, idx.addr2),          // E Address2
       safeGet_(r, idx.city),           // F City
-      safeGet_(r, idx.state),          // G State
-      normalizeZip_(safeGet_(r, idx.zip)), // H Zip
+      validState,                      // G State (validated or from ZIP lookup)
+      normalizeZip_(rawZip),           // H Zip
       amountStr,                       // I Amount
       weighted,                        // J WeightedAmount
       receiptStr,                      // K ReceiptDate
@@ -277,6 +281,10 @@ function appendUploadedFecCsvBatch(files) {
 
         if (!recipient && !donorFirst && !donorLast && !amountStr) continue;
 
+        const rawState = safeGet_(r, idx.state);
+        const rawZip = safeGet_(r, idx.zip);
+        const validState = getValidState_(rawState, rawZip);
+
         mapped.push([
           recipient,                           // Recipient
           donorFirst,                          // DonorFirst
@@ -284,8 +292,8 @@ function appendUploadedFecCsvBatch(files) {
           safeGet_(r, idx.addr1),              // Address1
           safeGet_(r, idx.addr2),              // Address2
           safeGet_(r, idx.city),               // City
-          safeGet_(r, idx.state),              // State
-          normalizeZip_(safeGet_(r, idx.zip)), // Zip
+          validState,                          // State (validated or from ZIP lookup)
+          normalizeZip_(rawZip),               // Zip
           amountStr,                           // Amount
           weighted,                            // WeightedAmount
           receiptStr,                          // ReceiptDate
@@ -576,4 +584,81 @@ function lookupFedWeight_(fedMap, recipient) {
   const key = String(recipient || '').trim().toLowerCase();
   if (!key) return 1;
   return fedMap[key] || 1;
+}
+
+// Valid US state abbreviations (50 states + DC + territories)
+const VALID_US_STATES_ = new Set([
+  'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA',
+  'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD',
+  'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ',
+  'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC',
+  'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY',
+  'DC', 'PR', 'VI', 'GU', 'AS', 'MP'
+]);
+
+// ZIP prefix to State lookup (covers most common ZIP ranges)
+const ZIP_TO_STATE_ = {
+  '900': 'CA', '901': 'CA', '902': 'CA', '903': 'CA', '904': 'CA', '905': 'CA', '906': 'CA', '907': 'CA', '908': 'CA',
+  '910': 'CA', '911': 'CA', '912': 'CA', '913': 'CA', '914': 'CA', '915': 'CA', '916': 'CA', '917': 'CA', '918': 'CA',
+  '919': 'CA', '920': 'CA', '921': 'CA', '922': 'CA', '923': 'CA', '924': 'CA', '925': 'CA', '926': 'CA', '927': 'CA',
+  '928': 'CA', '930': 'CA', '931': 'CA', '932': 'CA', '933': 'CA', '934': 'CA', '935': 'CA', '936': 'CA', '937': 'CA',
+  '938': 'CA', '939': 'CA', '940': 'CA', '941': 'CA', '942': 'CA', '943': 'CA', '944': 'CA', '945': 'CA', '946': 'CA',
+  '947': 'CA', '948': 'CA', '949': 'CA', '950': 'CA', '951': 'CA', '952': 'CA', '953': 'CA', '954': 'CA', '955': 'CA',
+  '956': 'CA', '957': 'CA', '958': 'CA', '959': 'CA', '960': 'CA', '961': 'CA',
+  '100': 'NY', '101': 'NY', '102': 'NY', '103': 'NY', '104': 'NY', '105': 'NY', '106': 'NY', '107': 'NY', '108': 'NY',
+  '109': 'NY', '110': 'NY', '111': 'NY', '112': 'NY', '113': 'NY', '114': 'NY', '115': 'NY', '116': 'NY', '117': 'NY',
+  '118': 'NY', '119': 'NY', '120': 'NY', '121': 'NY', '122': 'NY', '123': 'NY', '124': 'NY', '125': 'NY', '126': 'NY',
+  '127': 'NY', '128': 'NY', '129': 'NY', '130': 'NY', '131': 'NY', '132': 'NY', '133': 'NY', '134': 'NY', '135': 'NY',
+  '136': 'NY', '137': 'NY', '138': 'NY', '139': 'NY', '140': 'NY', '141': 'NY', '142': 'NY', '143': 'NY', '144': 'NY',
+  '145': 'NY', '146': 'NY', '147': 'NY', '148': 'NY', '149': 'NY',
+  '600': 'IL', '601': 'IL', '602': 'IL', '603': 'IL', '604': 'IL', '605': 'IL', '606': 'IL', '607': 'IL', '608': 'IL',
+  '609': 'IL', '610': 'IL', '611': 'IL', '612': 'IL', '613': 'IL', '614': 'IL', '615': 'IL', '616': 'IL', '617': 'IL',
+  '618': 'IL', '619': 'IL', '620': 'IL', '622': 'IL', '623': 'IL', '624': 'IL', '625': 'IL', '626': 'IL', '627': 'IL',
+  '628': 'IL', '629': 'IL',
+  '700': 'LA', '701': 'LA', '702': 'LA', '703': 'LA', '704': 'LA', '705': 'LA', '706': 'LA', '707': 'LA', '708': 'LA',
+  '710': 'LA', '711': 'LA', '712': 'LA', '713': 'LA', '714': 'LA',
+  '750': 'TX', '751': 'TX', '752': 'TX', '753': 'TX', '754': 'TX', '755': 'TX', '756': 'TX', '757': 'TX', '758': 'TX',
+  '759': 'TX', '760': 'TX', '761': 'TX', '762': 'TX', '763': 'TX', '764': 'TX', '765': 'TX', '766': 'TX', '767': 'TX',
+  '768': 'TX', '769': 'TX', '770': 'TX', '771': 'TX', '772': 'TX', '773': 'TX', '774': 'TX', '775': 'TX', '776': 'TX',
+  '777': 'TX', '778': 'TX', '779': 'TX', '780': 'TX', '781': 'TX', '782': 'TX', '783': 'TX', '784': 'TX', '785': 'TX',
+  '786': 'TX', '787': 'TX', '788': 'TX', '789': 'TX', '790': 'TX', '791': 'TX', '792': 'TX', '793': 'TX', '794': 'TX',
+  '795': 'TX', '796': 'TX', '797': 'TX', '798': 'TX', '799': 'TX',
+  '300': 'FL', '301': 'FL', '302': 'FL', '303': 'FL', '304': 'FL', '305': 'FL', '306': 'FL', '307': 'FL', '308': 'FL',
+  '309': 'FL', '310': 'FL', '311': 'FL', '312': 'FL', '313': 'FL', '314': 'FL', '315': 'FL', '316': 'FL', '317': 'FL',
+  '318': 'FL', '319': 'FL', '320': 'FL', '321': 'FL', '322': 'FL', '323': 'FL', '324': 'FL', '325': 'FL', '326': 'FL',
+  '327': 'FL', '328': 'FL', '329': 'FL', '330': 'FL', '331': 'FL', '332': 'FL', '333': 'FL', '334': 'FL', '335': 'FL',
+  '336': 'FL', '337': 'FL', '338': 'FL', '339': 'FL',
+  '150': 'PA', '151': 'PA', '152': 'PA', '153': 'PA', '154': 'PA', '155': 'PA', '156': 'PA', '157': 'PA', '158': 'PA',
+  '159': 'PA', '160': 'PA', '161': 'PA', '162': 'PA', '163': 'PA', '164': 'PA', '165': 'PA', '166': 'PA', '167': 'PA',
+  '168': 'PA', '169': 'PA', '170': 'PA', '171': 'PA', '172': 'PA', '173': 'PA', '174': 'PA', '175': 'PA', '176': 'PA',
+  '177': 'PA', '178': 'PA', '179': 'PA', '180': 'PA', '181': 'PA', '182': 'PA', '183': 'PA', '184': 'PA', '185': 'PA',
+  '186': 'PA', '187': 'PA', '188': 'PA', '189': 'PA', '190': 'PA', '191': 'PA', '192': 'PA', '193': 'PA', '194': 'PA',
+  '195': 'PA', '196': 'PA'
+};
+
+// Lookup state from ZIP code prefix
+function lookupStateFromZip_(zipCode) {
+  if (!zipCode) return '';
+  const zipStr = String(zipCode).trim().substring(0, 3);
+  return ZIP_TO_STATE_[zipStr] || '';
+}
+
+// Check if value is broken/missing or not a valid US state
+function isBrokenState_(val) {
+  if (!val) return true;
+  const s = String(val).trim().toUpperCase();
+  // Check if empty, NA, or other broken values
+  if (s === '' || s === 'NA' || s === 'N/A' || s === 'UNKNOWN' || s === 'NULL') return true;
+  // Also check if it's not a valid US state
+  return !VALID_US_STATES_.has(s);
+}
+
+// Get valid state - either from the value itself or from ZIP lookup
+function getValidState_(stateVal, zipVal) {
+  if (!isBrokenState_(stateVal)) {
+    // State is valid, return it normalized to uppercase
+    return String(stateVal).trim().toUpperCase();
+  }
+  // State is broken/invalid, try ZIP lookup
+  return lookupStateFromZip_(zipVal);
 }
