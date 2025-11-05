@@ -547,7 +547,8 @@ function scanShapefileAvailability_() {
       if (!districtType) continue;
 
       // Check if subfolder has any .json or .geojson files
-      const files = subfolder.getFilesByType(MimeType.PLAIN_TEXT);
+      // Use getFiles() instead of getFilesByType() to catch all MIME types
+      const files = subfolder.getFiles();
       while (files.hasNext()) {
         const file = files.next();
         const fileName = file.getName().toLowerCase();
@@ -1321,7 +1322,8 @@ function loadStateShapefiles_(stateCode) {
     if (!districtType) continue;
 
     // Find GeoJSON file in this subfolder
-    const files = subfolder.getFilesByType(MimeType.PLAIN_TEXT);
+    // Use getFiles() instead of getFilesByType() to catch all MIME types
+    const files = subfolder.getFiles();
     while (files.hasNext()) {
       const file = files.next();
       const fileName = file.getName().toLowerCase();
