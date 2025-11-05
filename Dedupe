@@ -1838,20 +1838,61 @@ function doPost(e) {
     Logger.log('Received donor_assignments with ' + Object.keys(body.donor_assignments).length + ' entries');
     Logger.log('First 5 keys: ' + Object.keys(body.donor_assignments).slice(0, 5).join(', '));
 
-    const mergeResult = donor_applyResult_donorAssignments_(body.donor_assignments);
+    // Accumulate batches in PropertiesService
+    const props = PropertiesService.getDocumentProperties();
+    const accumulatedRaw = props.getProperty('donor_assignments_accumulator') || '{}';
+    let accumulated = {};
 
-    if (mergeResult.success) {
+    try {
+      accumulated = JSON.parse(accumulatedRaw);
+    } catch (e) {
+      Logger.log('Could not parse accumulated assignments, starting fresh');
+      accumulated = {};
+    }
+
+    // Merge this batch into accumulated
+    Object.keys(body.donor_assignments).forEach(key => {
+      accumulated[key] = body.donor_assignments[key];
+    });
+
+    const totalAccumulated = Object.keys(accumulated).length;
+    Logger.log('Total accumulated assignments: ' + totalAccumulated);
+
+    // Check if this is the final batch (phase = "Complete")
+    const isComplete = body.progress && body.progress.phase === 'Complete';
+
+    if (isComplete) {
+      Logger.log('Final batch detected - building merge output with all ' + totalAccumulated + ' assignments');
+
+      // Build the final merge output with ALL accumulated assignments
+      const mergeResult = donor_applyResult_donorAssignments_(accumulated);
+
+      // Clear the accumulator
+      props.deleteProperty('donor_assignments_accumulator');
+
+      if (mergeResult.success) {
+        responseData.merge_output = {
+          success: true,
+          rows: mergeResult.rowCount,
+          assignments: mergeResult.assignmentCount,
+          message: mergeResult.message
+        };
+      } else {
+        responseData.ok = false;
+        responseData.merge_output = {
+          success: false,
+          error: mergeResult.error
+        };
+      }
+    } else {
+      // Not the final batch - just save and acknowledge
+      props.setProperty('donor_assignments_accumulator', JSON.stringify(accumulated));
+      Logger.log('Batch accumulated. Waiting for final batch.');
+
       responseData.merge_output = {
         success: true,
-        rows: mergeResult.rowCount,
-        assignments: mergeResult.assignmentCount,
-        message: mergeResult.message
-      };
-    } else {
-      responseData.ok = false;
-      responseData.merge_output = {
-        success: false,
-        error: mergeResult.error
+        accumulated: totalAccumulated,
+        message: 'Batch received (' + totalAccumulated + ' assignments accumulated so far)'
       };
     }
   }
