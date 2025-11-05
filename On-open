@@ -21,6 +21,9 @@ function onOpen() {
     .addItem('Match Addresses to Districts', 'matchAddressesToDistricts')
     .addItem('Improve Geocode Cache', 'improveGeocodeCache')
     .addItem('Reset District Property Mappings', 'resetPropertyMappings')
+    .addSeparator()
+    .addItem('🔍 Show Sheet Diagnostics', 'troubleshoot_showSheetDiagnostics')
+    .addItem('🔍 Unhide All Sheets', 'troubleshoot_unhideAllSheets')
     .addToUi();
     // onOpen
 SpreadsheetApp.getActive().toast(

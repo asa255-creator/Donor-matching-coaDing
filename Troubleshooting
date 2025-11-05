@@ -1,0 +1,171 @@
+/****************************************************
+ * Troubleshooting Utilities
+ * Diagnostic tools for debugging sheet and data issues
+ ****************************************************/
+
+/**
+ * Get detailed information about all sheets in the spreadsheet
+ * Returns an array of sheet metadata objects
+ */
+function troubleshoot_getAllSheetInfo() {
+  const ss = SpreadsheetApp.getActive();
+  const sheets = ss.getSheets();
+
+  const sheetInfo = sheets.map(sheet => {
+    const lastRow = sheet.getLastRow();
+    const lastCol = sheet.getLastColumn();
+
+    return {
+      name: sheet.getName(),
+      sheetId: sheet.getSheetId(),
+      index: sheet.getIndex(),
+      isHidden: sheet.isSheetHidden(),
+      rowCount: sheet.getMaxRows(),
+      columnCount: sheet.getMaxColumns(),
+      lastRow: lastRow,
+      lastColumn: lastCol,
+      dataRows: lastRow > 0 ? lastRow - 1 : 0, // Exclude header
+      hasData: lastRow > 0,
+      url: ss.getUrl() + '#gid=' + sheet.getSheetId()
+    };
+  });
+
+  return sheetInfo;
+}
+
+/**
+ * Display sheet diagnostics in a sidebar
+ */
+function troubleshoot_showSheetDiagnostics() {
+  const sheetInfo = troubleshoot_getAllSheetInfo();
+
+  // Build HTML output
+  let html = '<style>';
+  html += 'body { font-family: Arial, sans-serif; font-size: 12px; margin: 10px; }';
+  html += 'h2 { color: #1a73e8; font-size: 16px; margin-top: 0; }';
+  html += '.sheet { border: 1px solid #ddd; padding: 10px; margin-bottom: 10px; border-radius: 4px; }';
+  html += '.sheet.hidden { background-color: #fff3cd; }';
+  html += '.sheet-name { font-weight: bold; font-size: 14px; margin-bottom: 5px; }';
+  html += '.sheet-detail { margin: 3px 0; color: #555; }';
+  html += '.label { font-weight: 600; color: #333; }';
+  html += '.warning { color: #856404; font-weight: bold; }';
+  html += '.link { color: #1a73e8; text-decoration: none; font-size: 11px; }';
+  html += '</style>';
+
+  html += '<h2>Sheet Diagnostics</h2>';
+  html += '<div style="margin-bottom: 10px; color: #666;">Total sheets: ' + sheetInfo.length + '</div>';
+
+  sheetInfo.forEach(info => {
+    html += '<div class="sheet' + (info.isHidden ? ' hidden' : '') + '">';
+    html += '<div class="sheet-name">' + info.name + '</div>';
+
+    if (info.isHidden) {
+      html += '<div class="sheet-detail warning">⚠️ HIDDEN SHEET</div>';
+    }
+
+    html += '<div class="sheet-detail"><span class="label">Sheet ID:</span> ' + info.sheetId + '</div>';
+    html += '<div class="sheet-detail"><span class="label">Index:</span> ' + info.index + '</div>';
+    html += '<div class="sheet-detail"><span class="label">Last row with data:</span> ' + info.lastRow + '</div>';
+    html += '<div class="sheet-detail"><span class="label">Data rows (excluding header):</span> ' + info.dataRows + '</div>';
+    html += '<div class="sheet-detail"><span class="label">Last column:</span> ' + info.lastColumn + '</div>';
+    html += '<div class="sheet-detail"><a class="link" href="' + info.url + '" target="_blank">Open sheet →</a></div>';
+
+    html += '</div>';
+  });
+
+  const htmlOutput = HtmlService.createHtmlOutput(html)
+    .setTitle('Sheet Diagnostics')
+    .setWidth(350);
+
+  SpreadsheetApp.getUi().showSidebar(htmlOutput);
+}
+
+/**
+ * Log all sheet information to the console (for script execution logs)
+ */
+function troubleshoot_logAllSheetInfo() {
+  const sheetInfo = troubleshoot_getAllSheetInfo();
+
+  Logger.log('=== SHEET DIAGNOSTICS ===');
+  Logger.log('Total sheets: ' + sheetInfo.length);
+  Logger.log('');
+
+  sheetInfo.forEach(info => {
+    Logger.log('Sheet: ' + info.name);
+    Logger.log('  Sheet ID: ' + info.sheetId);
+    Logger.log('  Hidden: ' + info.isHidden);
+    Logger.log('  Index: ' + info.index);
+    Logger.log('  Last row: ' + info.lastRow);
+    Logger.log('  Data rows: ' + info.dataRows);
+    Logger.log('  Last column: ' + info.lastColumn);
+    Logger.log('  URL: ' + info.url);
+    Logger.log('');
+  });
+
+  return sheetInfo;
+}
+
+/**
+ * Find sheets by name pattern (supports partial matching)
+ */
+function troubleshoot_findSheetsByPattern(pattern) {
+  const sheetInfo = troubleshoot_getAllSheetInfo();
+  const regex = new RegExp(pattern, 'i'); // Case-insensitive
+
+  const matches = sheetInfo.filter(info => regex.test(info.name));
+
+  Logger.log('Found ' + matches.length + ' sheets matching pattern: ' + pattern);
+  matches.forEach(info => {
+    Logger.log('  - ' + info.name + ' (ID: ' + info.sheetId + ', Hidden: ' + info.isHidden + ', Rows: ' + info.dataRows + ')');
+  });
+
+  return matches;
+}
+
+/**
+ * Unhide all hidden sheets
+ */
+function troubleshoot_unhideAllSheets() {
+  const ss = SpreadsheetApp.getActive();
+  const sheets = ss.getSheets();
+  let count = 0;
+
+  sheets.forEach(sheet => {
+    if (sheet.isSheetHidden()) {
+      sheet.showSheet();
+      count++;
+      Logger.log('Unhidden: ' + sheet.getName());
+    }
+  });
+
+  SpreadsheetApp.getUi().alert('Unhidden ' + count + ' sheet(s)');
+  return count;
+}
+
+/**
+ * Find and report on specific sheet
+ */
+function troubleshoot_findSheet(sheetName) {
+  const ss = SpreadsheetApp.getActive();
+  const sheet = ss.getSheetByName(sheetName);
+
+  if (!sheet) {
+    Logger.log('Sheet not found: ' + sheetName);
+    return null;
+  }
+
+  const info = {
+    name: sheet.getName(),
+    sheetId: sheet.getSheetId(),
+    index: sheet.getIndex(),
+    isHidden: sheet.isSheetHidden(),
+    lastRow: sheet.getLastRow(),
+    lastColumn: sheet.getLastColumn(),
+    url: ss.getUrl() + '#gid=' + sheet.getSheetId()
+  };
+
+  Logger.log('=== SHEET INFO: ' + sheetName + ' ===');
+  Logger.log(JSON.stringify(info, null, 2));
+
+  return info;
+}
