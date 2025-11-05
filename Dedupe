@@ -1665,8 +1665,8 @@ function doGet(e) {
       'print(f"  - Merge rows: {len(merge_rows)}")',
       'print(f"  - Model weights: {len(w)}")',
       '',
-      '# Send in batches of 1000 rows',
-      'batch_size = 1000',
+      '# Send in batches of 5000 rows',
+      'batch_size = 5000',
       'num_batches = math.ceil(len(merge_rows) / batch_size) if merge_rows else 1',
       '',
       'print(f"\\nSending in {num_batches} batch(es)...")',
@@ -1684,6 +1684,7 @@ function doGet(e) {
       '            "done": end,',
       '            "total": len(merge_rows)',
       '        },',
+      '        "batch_index": batch_idx,',
       '        "merge_rows": batch_rows',
       '    }',
       '    ',
@@ -1910,7 +1911,8 @@ function doPost(e) {
   // Handle new merge_rows format (Python builds complete rows)
   if (Array.isArray(body.merge_rows) && body.merge_rows.length) {
     const batchSize = body.merge_rows.length;
-    Logger.log('Received batch with ' + batchSize + ' merge rows');
+    const batchIndex = typeof body.batch_index === 'number' ? body.batch_index : -1;
+    Logger.log('Received batch ' + batchIndex + ' with ' + batchSize + ' merge rows');
 
     const ss = SpreadsheetApp.getActive();
     const mergeSheet = donor_getOrCreateSheet_('Merge output');
@@ -1922,13 +1924,20 @@ function doPost(e) {
       'Occupation', 'Employer', 'DonationID', 'DonorID', 'Confidence'
     ];
 
-    // Check if this is the first batch (sheet is empty or only has header)
-    const isFirstBatch = mergeSheet.getLastRow() <= 1;
+    // Clear sheet on first batch of new run
+    const isFirstBatch = batchIndex === 0;
 
     if (isFirstBatch) {
-      // Clear sheet and write header
+      // Clear sheet completely
       mergeSheet.clear();
+      Logger.log('Cleared Merge output sheet for new run');
+
+      // Write header
       mergeSheet.getRange(1, 1, 1, outputHeader.length).setValues([outputHeader]);
+      mergeSheet.getRange(1, 1, 1, outputHeader.length)
+        .setFontWeight('bold')
+        .setBackground('#4285f4')
+        .setFontColor('#ffffff');
       mergeSheet.setFrozenRows(1);
       Logger.log('Initialized Merge output sheet with header');
     }
@@ -1941,10 +1950,19 @@ function doPost(e) {
     const totalRows = mergeSheet.getLastRow() - 1; // Exclude header
     Logger.log('Wrote ' + batchSize + ' rows. Total in sheet: ' + totalRows);
 
+    // Unhide all rows and columns to ensure data is visible
+    if (mergeSheet.getMaxRows() > 0) {
+      mergeSheet.showRows(1, mergeSheet.getMaxRows());
+    }
+    if (mergeSheet.getMaxColumns() > 0) {
+      mergeSheet.showColumns(1, mergeSheet.getMaxColumns());
+    }
+
     responseData.merge_output = {
       success: true,
       rows_in_batch: batchSize,
       total_rows: totalRows,
+      batch_index: batchIndex,
       message: 'Batch written to Merge output'
     };
   }
