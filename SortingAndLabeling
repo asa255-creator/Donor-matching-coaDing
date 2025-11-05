@@ -241,6 +241,431 @@ function getStateFolder_(stateCode) {
 }
 
 /**
+ * SHAPEFILE PROPERTY MAPPING FUNCTIONS
+ * These handle the interactive configuration of which property to use from shapefiles
+ */
+
+/**
+ * Get or prompt for the property name to use for a shapefile
+ * Stores the result for future use
+ * @param {string} fileId - Drive file ID
+ * @param {string} fileName - File name for display
+ * @param {Object} geoJson - Parsed GeoJSON object
+ * @param {string} stateCode - 2-letter state code
+ * @param {string} districtType - 'federal', 'senate', 'house', or 'county'
+ * @returns {string} The property name to use, or null if user cancels
+ * @private
+ */
+function getShapefilePropertyMapping_(fileId, fileName, geoJson, stateCode, districtType) {
+  const props = PropertiesService.getDocumentProperties();
+  const mappingKey = 'shapefile_property_' + fileId;
+
+  // Check if we already have a mapping for this file
+  const storedProperty = props.getProperty(mappingKey);
+  if (storedProperty) {
+    Logger.log(`Using stored property mapping for ${fileName}: ${storedProperty}`);
+    return storedProperty;
+  }
+
+  // No stored mapping - prompt user
+  Logger.log(`No mapping found for ${fileName}, prompting user...`);
+  const selectedProperty = promptUserForPropertySelection_(geoJson, fileName, stateCode, districtType);
+
+  if (selectedProperty) {
+    // Store for future use
+    props.setProperty(mappingKey, selectedProperty);
+    Logger.log(`Stored property mapping for ${fileName}: ${selectedProperty}`);
+  }
+
+  return selectedProperty;
+}
+
+/**
+ * Show interactive dialog to let user select which property contains district identifier
+ * @private
+ */
+function promptUserForPropertySelection_(geoJson, fileName, stateCode, districtType) {
+  // Get first feature to examine properties
+  if (!geoJson.features || geoJson.features.length === 0) {
+    Logger.log('No features found in GeoJSON');
+    return null;
+  }
+
+  const firstFeature = geoJson.features[0];
+  const properties = firstFeature.properties || {};
+  const propertyKeys = Object.keys(properties);
+
+  if (propertyKeys.length === 0) {
+    Logger.log('No properties found in first feature');
+    return null;
+  }
+
+  // Build property preview
+  const propertyPreview = propertyKeys.map(key => {
+    const value = properties[key];
+    return `• ${key}: "${value}"`;
+  }).join('\n');
+
+  // Create HTML dialog
+  const html = HtmlService.createHtmlOutput(`
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 16px;
+      margin: 0;
+    }
+    h3 {
+      color: #1a73e8;
+      margin-top: 0;
+    }
+    .info {
+      background: #f1f3f4;
+      padding: 12px;
+      border-radius: 4px;
+      margin: 12px 0;
+    }
+    .preview {
+      background: #fff;
+      border: 1px solid #dadce0;
+      padding: 12px;
+      border-radius: 4px;
+      margin: 12px 0;
+      font-family: monospace;
+      font-size: 12px;
+      max-height: 200px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }
+    select {
+      width: 100%;
+      padding: 8px;
+      font-size: 14px;
+      border: 1px solid #dadce0;
+      border-radius: 4px;
+      margin: 8px 0;
+    }
+    button {
+      background: #1a73e8;
+      color: white;
+      border: none;
+      padding: 10px 24px;
+      font-size: 14px;
+      border-radius: 4px;
+      cursor: pointer;
+      margin-top: 12px;
+    }
+    button:hover {
+      background: #1765cc;
+    }
+    .cancel {
+      background: #fff;
+      color: #5f6368;
+      border: 1px solid #dadce0;
+      margin-left: 8px;
+    }
+    .cancel:hover {
+      background: #f8f9fa;
+    }
+  </style>
+</head>
+<body>
+  <h3>Configure Shapefile Property</h3>
+
+  <div class="info">
+    <strong>State:</strong> ${stateCode}<br>
+    <strong>Type:</strong> ${districtType.charAt(0).toUpperCase() + districtType.slice(1)} Districts<br>
+    <strong>File:</strong> ${fileName}
+  </div>
+
+  <p><strong>Which property contains the district identifier?</strong></p>
+
+  <select id="propertySelect">
+    ${propertyKeys.map(key => `<option value="${key}">${key}</option>`).join('\n')}
+  </select>
+
+  <p><strong>Preview from first feature:</strong></p>
+  <div class="preview">${propertyPreview}</div>
+
+  <button onclick="confirmSelection()">Use This Property</button>
+  <button class="cancel" onclick="cancel()">Cancel</button>
+
+  <script>
+    function confirmSelection() {
+      const select = document.getElementById('propertySelect');
+      const selectedValue = select.value;
+      google.script.host.setWidth(0);
+      google.script.host.setHeight(0);
+      google.script.run
+        .withSuccessHandler(() => google.script.host.close())
+        .storePropertySelection(selectedValue);
+    }
+
+    function cancel() {
+      google.script.host.setWidth(0);
+      google.script.host.setHeight(0);
+      google.script.run
+        .withSuccessHandler(() => google.script.host.close())
+        .storePropertySelection(null);
+    }
+  </script>
+</body>
+</html>
+  `).setWidth(500).setHeight(550);
+
+  SpreadsheetApp.getUi().showModalDialog(html, 'Shapefile Property Configuration');
+
+  // Wait for user selection (stored in temporary property)
+  const tempKey = 'temp_property_selection';
+  props.setProperty(tempKey, 'WAITING');
+
+  // Poll for result (up to 5 minutes)
+  const maxWait = 300; // 5 minutes
+  let waited = 0;
+  while (waited < maxWait) {
+    Utilities.sleep(1000);
+    waited++;
+
+    const result = props.getProperty(tempKey);
+    if (result !== 'WAITING') {
+      props.deleteProperty(tempKey);
+      return result === 'CANCELLED' ? null : result;
+    }
+  }
+
+  // Timeout
+  props.deleteProperty(tempKey);
+  Logger.log('Property selection timed out');
+  return null;
+}
+
+/**
+ * Callback function to store user's property selection
+ * Called from the HTML dialog
+ */
+function storePropertySelection(propertyName) {
+  const props = PropertiesService.getDocumentProperties();
+  const tempKey = 'temp_property_selection';
+
+  if (propertyName) {
+    props.setProperty(tempKey, propertyName);
+  } else {
+    props.setProperty(tempKey, 'CANCELLED');
+  }
+}
+
+/**
+ * Reset all stored property mappings
+ * Called from menu: Donor Tools → Reset District Property Mappings
+ */
+function resetPropertyMappings() {
+  const ui = SpreadsheetApp.getUi();
+
+  const response = ui.alert(
+    'Reset Property Mappings',
+    'This will clear all stored shapefile property mappings.\n\n' +
+    'You will be prompted to reconfigure each shapefile the next time you run district matching.\n\n' +
+    'Continue?',
+    ui.ButtonSet.YES_NO
+  );
+
+  if (response !== ui.Button.YES) {
+    return;
+  }
+
+  const props = PropertiesService.getDocumentProperties();
+  const allProps = props.getProperties();
+  let count = 0;
+
+  // Delete all properties that start with 'shapefile_property_'
+  for (const key in allProps) {
+    if (key.startsWith('shapefile_property_')) {
+      props.deleteProperty(key);
+      count++;
+    }
+  }
+
+  Logger.log(`Cleared ${count} property mappings`);
+  ui.alert(
+    'Property Mappings Reset',
+    `Cleared ${count} shapefile property mapping(s).\n\n` +
+    'You will be prompted to reconfigure each shapefile the next time you run district matching.',
+    ui.ButtonSet.OK
+  );
+}
+
+/**
+ * SHAPEFILE AVAILABILITY SCANNING
+ */
+
+/**
+ * Scan all state folders to check which shapefiles are available
+ * Returns a map of states with availability info
+ * @returns {Object} Map of state codes to availability info
+ * @private
+ */
+function scanShapefileAvailability_() {
+  const availability = {};
+
+  for (const stateCode of US_STATES) {
+    availability[stateCode] = {
+      federal: false,
+      senate: false,
+      house: false,
+      county: false,
+      hasFolders: false
+    };
+
+    const stateFolder = getStateFolder_(stateCode);
+    if (!stateFolder) {
+      Logger.log(`State folder not found for ${stateCode}`);
+      continue;
+    }
+
+    availability[stateCode].hasFolders = true;
+
+    // Check each subfolder for files
+    const subfolders = stateFolder.getFolders();
+    while (subfolders.hasNext()) {
+      const subfolder = subfolders.next();
+      const folderName = subfolder.getName().toLowerCase();
+
+      // Determine which type of district
+      let districtType = null;
+      if (folderName.includes('federal')) {
+        districtType = 'federal';
+      } else if (folderName.includes('senate')) {
+        districtType = 'senate';
+      } else if (folderName.includes('house')) {
+        districtType = 'house';
+      } else if (folderName.includes('count')) {
+        districtType = 'county';
+      }
+
+      if (!districtType) continue;
+
+      // Check if subfolder has any .json or .geojson files
+      const files = subfolder.getFilesByType(MimeType.PLAIN_TEXT);
+      while (files.hasNext()) {
+        const file = files.next();
+        const fileName = file.getName().toLowerCase();
+
+        if (fileName.endsWith('.geojson') || fileName.endsWith('.json')) {
+          availability[stateCode][districtType] = true;
+          Logger.log(`Found ${districtType} shapefile for ${stateCode}: ${file.getName()}`);
+          break; // Only need to find one file
+        }
+      }
+    }
+  }
+
+  return availability;
+}
+
+/**
+ * Show shapefile availability report to user
+ * @param {Object} availability - Map from scanShapefileAvailability_
+ * @private
+ */
+function showShapefileReport_(availability) {
+  // Count states with complete coverage
+  let completeStates = 0;
+  let partialStates = 0;
+  let emptyStates = 0;
+
+  const statesWithData = [];
+
+  for (const stateCode of US_STATES) {
+    const info = availability[stateCode];
+    if (!info.hasFolders) {
+      emptyStates++;
+      continue;
+    }
+
+    const count = [info.federal, info.senate, info.house, info.county].filter(Boolean).length;
+
+    if (count === 4) {
+      completeStates++;
+      statesWithData.push(stateCode);
+    } else if (count > 0) {
+      partialStates++;
+      statesWithData.push(stateCode);
+    } else {
+      emptyStates++;
+    }
+  }
+
+  // Build report message
+  let message = 'SHAPEFILE AVAILABILITY REPORT\n\n';
+  message += `States with all 4 shapefiles: ${completeStates}\n`;
+  message += `States with some shapefiles: ${partialStates}\n`;
+  message += `States with no shapefiles: ${emptyStates}\n\n`;
+
+  if (statesWithData.length > 0) {
+    message += `States ready for matching:\n${statesWithData.join(', ')}\n\n`;
+  }
+
+  if (emptyStates === 51) {
+    message += 'WARNING: No shapefiles found in any state folder!\n';
+    message += 'Please upload GeoJSON files to the state folders.';
+  } else if (emptyStates > 0) {
+    message += `TIP: ${emptyStates} states have no shapefiles yet.\n`;
+    message += 'Addresses in those states will be marked as "Missing shapefile".';
+  }
+
+  const ui = SpreadsheetApp.getUi();
+  ui.alert('Shapefile Availability', message, ui.ButtonSet.OK);
+}
+
+/**
+ * GROUP ADDRESSES BY STATE
+ */
+
+/**
+ * Group addresses from CD_To_Upload by state
+ * @param {Array} uploadData - Data from CD_To_Upload sheet
+ * @param {Array} header - Header row
+ * @returns {Object} Map of state codes to address info arrays
+ * @private
+ */
+function groupAddressesByState_(uploadData, header) {
+  const addressIdx = header.indexOf('Address');
+  const cityIdx = header.indexOf('City');
+  const stateIdx = header.indexOf('State');
+  const zipIdx = header.indexOf('Zip');
+
+  const grouped = {};
+
+  for (let i = 1; i < uploadData.length; i++) {
+    const row = uploadData[i];
+    const address = String(row[addressIdx] || '').trim();
+    const city = String(row[cityIdx] || '').trim();
+    const state = String(row[stateIdx] || '').trim().toUpperCase();
+    const zip = String(row[zipIdx] || '').trim();
+
+    if (!address || !city || !state) {
+      continue;
+    }
+
+    if (!grouped[state]) {
+      grouped[state] = [];
+    }
+
+    grouped[state].push({
+      rowIndex: i,
+      address: address,
+      city: city,
+      state: state,
+      zip: zip
+    });
+  }
+
+  return grouped;
+}
+
+/**
  * GEOCODING FUNCTIONS
  */
 
@@ -519,6 +944,13 @@ function findProximityMatch_(addr, cache) {
 /**
  * Main user-facing function to match addresses to districts
  * Called from menu: Extensions → Donor Tools → Match Addresses to Districts
+ *
+ * NEW BATCHED WORKFLOW:
+ * 1. Verify/create folder structure
+ * 2. Scan all shapefiles and show availability report
+ * 3. Group addresses by state
+ * 4. Geocode addresses
+ * 5. Process state-by-state in batches
  */
 function matchAddressesToDistricts() {
   const ss = SpreadsheetApp.getActive();
@@ -535,10 +967,9 @@ function matchAddressesToDistricts() {
     return;
   }
 
-  // STEP 1: BLOCKING FOLDER VERIFICATION - MUST COMPLETE BEFORE ANYTHING ELSE
+  // STEP 1: BLOCKING FOLDER VERIFICATION
   let mainFolder;
   try {
-    // Show BLOCKING dialog while checking
     const checkResult = ui.alert(
       'Folder Verification',
       'Checking if District Shapefiles folder structure exists...\n\n' +
@@ -551,12 +982,10 @@ function matchAddressesToDistricts() {
       return;
     }
 
-    // NOW do the actual check
     Logger.log('Starting folder verification...');
     mainFolder = getDistrictMainFolder_();
 
     if (!mainFolder) {
-      // Folder structure missing - create it now
       Logger.log('District folder structure missing, creating now...');
 
       ui.alert(
@@ -576,7 +1005,6 @@ function matchAddressesToDistricts() {
 
       Logger.log(`Created folder structure: ${setupResult.results.created} states created, ${setupResult.results.repaired} repaired`);
 
-      // Alert user to upload shapefiles before continuing
       const continueResponse = ui.alert(
         'Folder Structure Created',
         `✓ Created District Shapefiles folder structure for all 51 states.\n\n` +
@@ -595,7 +1023,6 @@ function matchAddressesToDistricts() {
         return;
       }
     } else {
-      // Folders exist - show confirmation
       Logger.log('District folder structure verified: ' + mainFolder.getName());
 
       ui.alert(
@@ -617,32 +1044,29 @@ function matchAddressesToDistricts() {
     return;
   }
 
-  // STEP 2: NOW show the main confirmation dialog
+  // STEP 2: SCAN SHAPEFILE AVAILABILITY
   try {
-    const response = ui.alert(
-      'Match Addresses to Districts',
-      'Folders verified. Ready to:\n\n' +
+    ss.toast('Scanning shapefiles...', 'District Matching', 3);
+    Logger.log('Scanning shapefile availability...');
+
+    const availability = scanShapefileAvailability_();
+    showShapefileReport_(availability);
+
+    // Ask user if they want to continue
+    const continueResponse = ui.alert(
+      'Continue with Matching?',
+      'Shapefile scan complete.\n\n' +
+      'Ready to:\n' +
       '1. Geocode up to 1,500 addresses (using Google Maps API)\n' +
-      '2. Match addresses to districts using your GeoJSON shapefiles\n' +
-      '3. Add Federal District, State Senate District, State House District, and County columns\n\n' +
+      '2. Match addresses to districts using available shapefiles\n' +
+      '3. Process state-by-state in batches for efficiency\n\n' +
       'Continue?',
       ui.ButtonSet.YES_NO
     );
 
-    if (response !== ui.Button.YES) {
+    if (continueResponse !== ui.Button.YES) {
       return;
     }
-
-    // Step 2: Geocode addresses (up to 1,500 new ones)
-    ss.toast('Geocoding addresses...', 'District Matching', 3);
-    const geocodeResults = geocodeAddresses_(false); // false = no additional toasts
-    Logger.log(`Geocoding results: ${geocodeResults.exact} exact, ${geocodeResults.approximate} approximate, ${geocodeResults.failed} failed`);
-
-    // Step 3: Load cache (now updated with new geocoding)
-    ss.toast('Matching addresses to districts...', 'District Matching', 3);
-    const cacheSheet = getOrCreateGeocodeCache_();
-    const cache = loadGeocodeCache_(cacheSheet);
-    Logger.log(`Loaded geocode cache with ${Object.keys(cache).length} entries`);
 
     // Get upload data
     const uploadData = uploadSheet.getDataRange().getValues();
@@ -653,7 +1077,26 @@ function matchAddressesToDistricts() {
 
     const header = uploadData[0];
 
-    // Find or add district columns
+    // STEP 3: GROUP ADDRESSES BY STATE
+    ss.toast('Grouping addresses by state...', 'District Matching', 3);
+    const addressGroups = groupAddressesByState_(uploadData, header);
+    const statesWithAddresses = Object.keys(addressGroups);
+    const totalAddresses = statesWithAddresses.reduce((sum, state) => sum + addressGroups[state].length, 0);
+
+    Logger.log(`Grouped ${totalAddresses} addresses across ${statesWithAddresses.length} states`);
+    Logger.log(`States: ${statesWithAddresses.join(', ')}`);
+
+    // STEP 4: GEOCODE ADDRESSES
+    ss.toast('Geocoding addresses...', 'District Matching', 3);
+    const geocodeResults = geocodeAddresses_(false);
+    Logger.log(`Geocoding results: ${geocodeResults.exact} exact, ${geocodeResults.approximate} approximate, ${geocodeResults.failed} failed`);
+
+    // STEP 5: LOAD GEOCODE CACHE
+    const cacheSheet = getOrCreateGeocodeCache_();
+    const cache = loadGeocodeCache_(cacheSheet);
+    Logger.log(`Loaded geocode cache with ${Object.keys(cache).length} entries`);
+
+    // STEP 6: ENSURE DISTRICT COLUMNS EXIST
     let fedDistIdx = header.indexOf('Federal District');
     let stateSenateIdx = header.indexOf('State Senate District');
     let stateHouseIdx = header.indexOf('State House District');
@@ -676,90 +1119,110 @@ function matchAddressesToDistricts() {
       countyIdx = header.length - 1;
     }
 
-    // Update header
-    uploadSheet.getRange(1, 1, 1, header.length).setValues([header]);
-
-    // Find address column indices
-    const addressIdx = header.indexOf('Address');
-    const cityIdx = header.indexOf('City');
-    const stateIdx = header.indexOf('State');
-    const zipIdx = header.indexOf('Zip');
-
-    if (addressIdx === -1 || cityIdx === -1 || stateIdx === -1 || zipIdx === -1) {
-      throw new Error('Required address columns not found (Address, City, State, Zip)');
-    }
-
-    // Process each row
-    const stats = {
-      matched: 0,
-      pending: 0,
-      failed: 0
-    };
-
-    const stateShapefiles = {}; // Cache loaded shapefiles per state
-
-    for (let i = 1; i < uploadData.length; i++) {
-      const row = uploadData[i];
-
-      // Ensure row has enough columns
+    // Ensure all rows have enough columns
+    for (const row of uploadData) {
       while (row.length < header.length) {
         row.push('');
       }
+    }
 
-      const address = String(row[addressIdx] || '').trim();
-      const city = String(row[cityIdx] || '').trim();
-      const state = String(row[stateIdx] || '').trim();
-      const zip = String(row[zipIdx] || '').trim();
+    // STEP 7: BATCH PROCESS BY STATE
+    const stats = {
+      matched: 0,
+      pending: 0,
+      missingShapefile: 0,
+      failed: 0,
+      stateStats: {}
+    };
 
-      if (!address || !city || !state) {
-        stats.failed++;
-        continue;
+    for (const stateCode of statesWithAddresses) {
+      const addresses = addressGroups[stateCode];
+      Logger.log(`Processing ${stateCode}: ${addresses.length} addresses`);
+      ss.toast(`Processing ${stateCode}: ${addresses.length} addresses...`, 'District Matching', 3);
+
+      stats.stateStats[stateCode] = {
+        matched: 0,
+        pending: 0,
+        missingShapefile: 0,
+        failed: 0
+      };
+
+      // Check if shapefiles are available for this state
+      const stateAvailability = availability[stateCode];
+      const hasAnyShapefiles = stateAvailability && (
+        stateAvailability.federal ||
+        stateAvailability.senate ||
+        stateAvailability.house ||
+        stateAvailability.county
+      );
+
+      // Load shapefiles for this state once
+      let shapes = null;
+      if (hasAnyShapefiles) {
+        try {
+          shapes = loadStateShapefiles_(stateCode);
+          Logger.log(`Loaded shapefiles for ${stateCode}`);
+        } catch (error) {
+          Logger.log(`Error loading shapefiles for ${stateCode}: ${error.message}`);
+        }
       }
 
-      // Get coordinates from cache
-      const normalizedKey = normalizeAddressKey_(address, city, state, zip);
-      const cached = cache[normalizedKey];
+      // Process all addresses for this state
+      for (const addrInfo of addresses) {
+        const rowIndex = addrInfo.rowIndex;
+        const row = uploadData[rowIndex];
 
-      if (!cached || cached.status === 'pending' || !cached.lat || !cached.lng) {
-        stats.pending++;
-        continue;
-      }
+        // Get coordinates from cache
+        const normalizedKey = normalizeAddressKey_(addrInfo.address, addrInfo.city, addrInfo.state, addrInfo.zip);
+        const cached = cache[normalizedKey];
 
-      // Have coordinates - match to districts
-      try {
-        // Load shapefiles for this state if not already loaded
-        if (!stateShapefiles[state]) {
-          stateShapefiles[state] = loadStateShapefiles_(state);
+        if (!cached || cached.status === 'pending' || !cached.lat || !cached.lng) {
+          stats.pending++;
+          stats.stateStats[stateCode].pending++;
+          continue;
         }
 
-        const shapes = stateShapefiles[state];
-        if (!shapes.federal && !shapes.senate && !shapes.house && !shapes.county) {
-          Logger.log(`No shapefiles found for ${state}`);
-          stats.failed++;
+        // Check if we have shapefiles
+        if (!hasAnyShapefiles || !shapes) {
+          row[fedDistIdx] = 'Missing shapefile';
+          row[stateSenateIdx] = 'Missing shapefile';
+          row[stateHouseIdx] = 'Missing shapefile';
+          row[countyIdx] = 'Missing shapefile';
+          stats.missingShapefile++;
+          stats.stateStats[stateCode].missingShapefile++;
           continue;
         }
 
         // Match point to districts
-        const districts = matchPointToDistricts_(cached.lat, cached.lng, shapes);
+        try {
+          const districts = matchPointToDistricts_(cached.lat, cached.lng, shapes);
 
-        row[fedDistIdx] = districts.federal || '';
-        row[stateSenateIdx] = districts.senate || '';
-        row[stateHouseIdx] = districts.house || '';
-        row[countyIdx] = districts.county || '';
+          row[fedDistIdx] = districts.federal || '';
+          row[stateSenateIdx] = districts.senate || '';
+          row[stateHouseIdx] = districts.house || '';
+          row[countyIdx] = districts.county || '';
 
-        stats.matched++;
+          stats.matched++;
+          stats.stateStats[stateCode].matched++;
 
-      } catch (error) {
-        Logger.log(`Error matching row ${i + 1}: ${error.message}`);
-        stats.failed++;
+        } catch (error) {
+          Logger.log(`Error matching row ${rowIndex + 1}: ${error.message}`);
+          stats.failed++;
+          stats.stateStats[stateCode].failed++;
+        }
       }
+
+      // Log state completion
+      Logger.log(`${stateCode} complete: ${stats.stateStats[stateCode].matched} matched, ${stats.stateStats[stateCode].pending} pending, ${stats.stateStats[stateCode].missingShapefile} missing shapefile`);
+
+      // Free memory (garbage collection hint)
+      shapes = null;
     }
 
-    // Write results back to sheet
+    // STEP 8: WRITE RESULTS BACK
     uploadSheet.getRange(1, 1, uploadData.length, header.length).setValues(uploadData);
 
-    // Show results
-    const totalProcessed = uploadData.length - 1; // minus header
+    // STEP 9: SHOW RESULTS
     let message = `District matching complete!\n\n`;
 
     // Geocoding stats
@@ -773,21 +1236,31 @@ function matchAddressesToDistricts() {
 
     // District matching stats
     message += `DISTRICT MATCHING:\n`;
-    message += `• Total addresses: ${totalProcessed}\n`;
+    message += `• Total addresses: ${totalAddresses}\n`;
     message += `• Matched to districts: ${stats.matched}\n`;
     message += `• Still pending geocoding: ${stats.pending}\n`;
+    message += `• Missing shapefiles: ${stats.missingShapefile}\n`;
     message += `• Failed matching: ${stats.failed}\n\n`;
+
+    // Per-state summary
+    if (statesWithAddresses.length <= 10) {
+      message += `BY STATE:\n`;
+      for (const state of statesWithAddresses) {
+        const s = stats.stateStats[state];
+        message += `• ${state}: ${s.matched} matched, ${s.pending} pending, ${s.missingShapefile} missing\n`;
+      }
+      message += `\n`;
+    }
 
     // Tips based on results
     if (stats.pending > 0) {
       message += `TIP: ${stats.pending} addresses still need geocoding.\n`;
-      message += `Run this function again or use "Improve Geocode Cache"\n`;
-      message += `to continue geocoding (processes 1,500 per run).\n\n`;
+      message += `Run this function again or use "Improve Geocode Cache".\n\n`;
     }
 
-    if (stats.matched === 0 && stats.failed > 0 && stats.pending === 0) {
-      message += `TIP: Make sure you've uploaded GeoJSON shapefiles to:\n`;
-      message += `District Shapefiles/[STATE]/[Federal/Senate/House/Counties]/\n\n`;
+    if (stats.missingShapefile > 0) {
+      message += `TIP: ${stats.missingShapefile} addresses need shapefiles.\n`;
+      message += `Upload GeoJSON files to the appropriate state folders.\n\n`;
     }
 
     if (stats.matched > 0) {
@@ -810,6 +1283,7 @@ function matchAddressesToDistricts() {
 
 /**
  * Load GeoJSON shapefiles for a state
+ * Now includes interactive property mapping configuration
  * @private
  */
 function loadStateShapefiles_(stateCode) {
@@ -856,8 +1330,24 @@ function loadStateShapefiles_(stateCode) {
         try {
           const content = file.getBlob().getDataAsString();
           const geoJson = JSON.parse(content);
-          shapes[districtType] = geoJson;
-          Logger.log(`Loaded ${districtType} shapefile for ${stateCode}: ${file.getName()}`);
+
+          // Get or prompt for property mapping
+          const fileId = file.getId();
+          const propertyName = getShapefilePropertyMapping_(fileId, file.getName(), geoJson, stateCode, districtType);
+
+          if (!propertyName) {
+            Logger.log(`No property mapping selected for ${file.getName()}, skipping`);
+            break;
+          }
+
+          // Store the GeoJSON with its property mapping
+          shapes[districtType] = {
+            geoJson: geoJson,
+            propertyName: propertyName,
+            fileName: file.getName()
+          };
+
+          Logger.log(`Loaded ${districtType} shapefile for ${stateCode}: ${file.getName()} (using property: ${propertyName})`);
           break; // Only load first GeoJSON file found
         } catch (error) {
           Logger.log(`Error parsing GeoJSON file ${file.getName()}: ${error.message}`);
@@ -871,6 +1361,7 @@ function loadStateShapefiles_(stateCode) {
 
 /**
  * Match a point (lat/lng) to districts using GeoJSON polygons
+ * Now uses the new shapes structure with property mappings
  * @private
  */
 function matchPointToDistricts_(lat, lng, shapes) {
@@ -883,22 +1374,22 @@ function matchPointToDistricts_(lat, lng, shapes) {
 
   // Check federal districts
   if (shapes.federal) {
-    districts.federal = findContainingFeature_(lat, lng, shapes.federal);
+    districts.federal = findContainingFeature_(lat, lng, shapes.federal.geoJson, shapes.federal.propertyName);
   }
 
   // Check state senate districts
   if (shapes.senate) {
-    districts.senate = findContainingFeature_(lat, lng, shapes.senate);
+    districts.senate = findContainingFeature_(lat, lng, shapes.senate.geoJson, shapes.senate.propertyName);
   }
 
   // Check state house districts
   if (shapes.house) {
-    districts.house = findContainingFeature_(lat, lng, shapes.house);
+    districts.house = findContainingFeature_(lat, lng, shapes.house.geoJson, shapes.house.propertyName);
   }
 
   // Check counties
   if (shapes.county) {
-    districts.county = findContainingFeature_(lat, lng, shapes.county);
+    districts.county = findContainingFeature_(lat, lng, shapes.county.geoJson, shapes.county.propertyName);
   }
 
   return districts;
@@ -906,16 +1397,29 @@ function matchPointToDistricts_(lat, lng, shapes) {
 
 /**
  * Find which GeoJSON feature contains a point
+ * Now uses the configured property name from user mapping
+ * @param {number} lat - Latitude
+ * @param {number} lng - Longitude
+ * @param {Object} geoJson - Parsed GeoJSON object
+ * @param {string} propertyName - The property to extract (configured by user)
  * @private
  */
-function findContainingFeature_(lat, lng, geoJson) {
+function findContainingFeature_(lat, lng, geoJson, propertyName) {
   if (!geoJson || !geoJson.features) return null;
 
   for (const feature of geoJson.features) {
     if (isPointInFeature_(lat, lng, feature)) {
-      // Try to extract district name from properties
+      // Extract the configured property
       const props = feature.properties || {};
-      return props.name || props.NAME || props.district || props.DISTRICT || props.GEOID || 'Unknown';
+      const value = props[propertyName];
+
+      if (value !== null && value !== undefined) {
+        return String(value);
+      }
+
+      // Fallback if property not found
+      Logger.log(`Warning: Property '${propertyName}' not found in feature, returning 'Unknown'`);
+      return 'Unknown';
     }
   }
 

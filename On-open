@@ -20,6 +20,7 @@ function onOpen() {
     .addSeparator()
     .addItem('Match Addresses to Districts', 'matchAddressesToDistricts')
     .addItem('Improve Geocode Cache', 'improveGeocodeCache')
+    .addItem('Reset District Property Mappings', 'resetPropertyMappings')
     .addToUi();
     // onOpen
 SpreadsheetApp.getActive().toast(
@@ -72,6 +73,10 @@ function initializeRequiredSheets_() {
       header: ['NormalizedAddress', 'Latitude', 'Longitude', 'Status', 'Source', 'DateAdded'],
       frozenRows: 1,
       hidden: true
+    },
+    'CD_To_Upload': {
+      header: ['First', 'Last', 'Address', 'City', 'State', 'Zip', 'Federal District', 'State Senate District', 'State House District', 'County'],
+      frozenRows: 1
     }
   };
 
