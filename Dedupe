@@ -1835,40 +1835,50 @@ function doPost(e) {
   }
 
   if (body.donor_assignments && typeof body.donor_assignments === 'object') {
-    Logger.log('Received donor_assignments with ' + Object.keys(body.donor_assignments).length + ' entries');
-    Logger.log('First 5 keys: ' + Object.keys(body.donor_assignments).slice(0, 5).join(', '));
-
-    // Accumulate batches in PropertiesService
-    const props = PropertiesService.getDocumentProperties();
-    const accumulatedRaw = props.getProperty('donor_assignments_accumulator') || '{}';
-    let accumulated = {};
-
-    try {
-      accumulated = JSON.parse(accumulatedRaw);
-    } catch (e) {
-      Logger.log('Could not parse accumulated assignments, starting fresh');
-      accumulated = {};
-    }
-
-    // Merge this batch into accumulated
-    Object.keys(body.donor_assignments).forEach(key => {
-      accumulated[key] = body.donor_assignments[key];
-    });
-
-    const totalAccumulated = Object.keys(accumulated).length;
-    Logger.log('Total accumulated assignments: ' + totalAccumulated);
+    const batchSize = Object.keys(body.donor_assignments).length;
+    Logger.log('Received donor_assignments with ' + batchSize + ' entries');
 
     // Check if this is the final batch (phase = "Complete")
     const isComplete = body.progress && body.progress.phase === 'Complete';
 
-    if (isComplete) {
-      Logger.log('Final batch detected - building merge output with all ' + totalAccumulated + ' assignments');
+    // Get or create temp sheet for accumulating batches
+    const ss = SpreadsheetApp.getActive();
+    let tempSheet = ss.getSheetByName('_DonorBatchTemp');
+    if (!tempSheet) {
+      tempSheet = ss.insertSheet('_DonorBatchTemp');
+      tempSheet.hideSheet();
+    }
 
-      // Build the final merge output with ALL accumulated assignments
+    // Convert batch to rows and append to temp sheet
+    const entries = Object.entries(body.donor_assignments);
+    const rows = entries.map(([key, val]) => [key, val.donorId || '', val.confidence || '']);
+
+    if (rows.length > 0) {
+      const startRow = tempSheet.getLastRow() + 1;
+      tempSheet.getRange(startRow, 1, rows.length, 3).setValues(rows);
+      Logger.log('Appended ' + rows.length + ' assignments to temp sheet');
+    }
+
+    const totalStored = tempSheet.getLastRow();
+
+    if (isComplete) {
+      Logger.log('Final batch - building merge output with ' + totalStored + ' total assignments');
+
+      // Read ALL accumulated data from temp sheet
+      const allData = tempSheet.getRange(1, 1, totalStored, 3).getValues();
+      const accumulated = {};
+      allData.forEach(row => {
+        if (row[0]) {
+          accumulated[row[0]] = { donorId: row[1], confidence: row[2] };
+        }
+      });
+
+      // Build merge output ONCE with ALL assignments
       const mergeResult = donor_applyResult_donorAssignments_(accumulated);
 
-      // Clear the accumulator
-      props.deleteProperty('donor_assignments_accumulator');
+      // Clear temp sheet
+      tempSheet.clearContents();
+      Logger.log('Cleared temp sheet after merge');
 
       if (mergeResult.success) {
         responseData.merge_output = {
@@ -1885,14 +1895,13 @@ function doPost(e) {
         };
       }
     } else {
-      // Not the final batch - just save and acknowledge
-      props.setProperty('donor_assignments_accumulator', JSON.stringify(accumulated));
-      Logger.log('Batch accumulated. Waiting for final batch.');
+      // Intermediate batch - just acknowledge
+      Logger.log('Batch stored. Total: ' + totalStored);
 
       responseData.merge_output = {
         success: true,
-        accumulated: totalAccumulated,
-        message: 'Batch received (' + totalAccumulated + ' assignments accumulated so far)'
+        accumulated: totalStored,
+        message: 'Batch stored (' + totalStored + ' total assignments)'
       };
     }
   }
