@@ -92,8 +92,12 @@ function initializeRequiredSheets_() {
       Logger.log(`Created sheet: ${sheetName}`);
     }
 
-    // ONLY configure newly created sheets - never touch existing sheets
-    if (isNewSheet) {
+    // Check if sheet is empty (no header in row 1)
+    const needsHeader = isNewSheet || (sheet.getLastRow() === 0) ||
+                        (sheet.getRange(1, 1).getValue() === '');
+
+    // ONLY configure newly created sheets OR empty sheets
+    if (needsHeader) {
       // Ensure enough columns
       const neededCols = config.header.length;
       if (sheet.getMaxColumns() < neededCols) {
@@ -110,18 +114,18 @@ function initializeRequiredSheets_() {
         sheet.getRange(2, 1, 1, config.defaultRow.length).setValues([config.defaultRow]);
       }
 
-      // Apply formatting to new sheet only
+      // Apply formatting
       if (config.format) {
         const lastRow = Math.max(sheet.getLastRow(), 2);
         sheet.getRange(1, 1, lastRow, config.header.length).setNumberFormat(config.format);
       }
 
-      // Freeze rows on new sheet only
+      // Freeze rows
       if (config.frozenRows) {
         sheet.setFrozenRows(config.frozenRows);
       }
 
-      // Hide sheet if specified (new sheet only)
+      // Hide sheet if specified
       if (config.hidden) {
         sheet.hideSheet();
       }
