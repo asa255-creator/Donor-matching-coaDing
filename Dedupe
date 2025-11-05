@@ -2162,23 +2162,42 @@ function donor_buildDonorIdList(assignments) {
       }
     }
 
-    // Write to Merge output sheet
+    // Write to Merge output sheet in batches to avoid limits
     const mergeSheet = donor_getOrCreateSheet_('Merge output');
     mergeSheet.clear();
 
-    Logger.log('Writing ' + outputRows.length + ' rows (including header) to Merge output sheet');
+    Logger.log('Writing ' + outputRows.length + ' rows (including header) to Merge output sheet in batches');
     Logger.log('Total assignments: ' + Object.keys(assignments).length);
 
-    mergeSheet.getRange(1, 1, outputRows.length, outputHeader.length).setValues(outputRows);
+    const BATCH_SIZE = 1000;
+    const totalRows = outputRows.length;
+    const numBatches = Math.ceil(totalRows / BATCH_SIZE);
+
+    for (let batchNum = 0; batchNum < numBatches; batchNum++) {
+      const startIdx = batchNum * BATCH_SIZE;
+      const endIdx = Math.min(startIdx + BATCH_SIZE, totalRows);
+      const batchRows = outputRows.slice(startIdx, endIdx);
+
+      const startRow = startIdx + 1; // Sheets are 1-indexed
+      mergeSheet.getRange(startRow, 1, batchRows.length, outputHeader.length).setValues(batchRows);
+
+      Logger.log('Wrote batch ' + (batchNum + 1) + '/' + numBatches + ' (' + batchRows.length + ' rows, rows ' + startRow + '-' + (startRow + batchRows.length - 1) + ')');
+
+      // Small delay between batches to avoid rate limiting
+      if (batchNum < numBatches - 1) {
+        Utilities.sleep(100); // 100ms pause
+      }
+    }
+
     mergeSheet.setFrozenRows(1);
 
     // Force ReceiptDate column (column 11) to be formatted as plain text
     // This prevents Google Sheets from auto-converting date strings back to Date objects
     const receiptDateCol = 11; // 'ReceiptDate' is the 11th column
-    mergeSheet.getRange(1, receiptDateCol, outputRows.length, 1).setNumberFormat('@');
+    mergeSheet.getRange(1, receiptDateCol, totalRows, 1).setNumberFormat('@');
 
-    Logger.log('Merge output sheet populated successfully with ' + (outputRows.length - 1) + ' data rows');
-    SpreadsheetApp.getActive().toast('Donor ID list built successfully! Check the "Merge output" sheet.', 'Success', 5);
+    Logger.log('Merge output sheet populated successfully with ' + (totalRows - 1) + ' data rows');
+    SpreadsheetApp.getActive().toast('✓ All done! Merge output: ' + (totalRows - 1) + ' rows with DonorID and Confidence', 'Success', 5);
 
     return {
       success: true,
