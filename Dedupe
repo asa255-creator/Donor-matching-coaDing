@@ -1586,52 +1586,76 @@ function doGet(e) {
       'print(f"Unique donors with matches: {unique_matched}")',
       'print(f"Solo donors (no matches): {len(components) - unique_matched}")',
       '',
-      '# Final post back to Apps Script',
-      '# Only send NEW training rows (not ones we loaded)',
+      '# Upload results to Apps Script in batches (payload size limits)',
       'new_training_rows = training_rows[loaded_training_count:]',
       'print(f"\\nUploading results to Google Sheets...")',
-      'print(f"  - New training rows: {len(new_training_rows)}")',
-      'print(f"  - Donor assignments: {len(donor_assignments)}")',
+      'print(f"  - Training rows: {len(new_training_rows)}")',
+      'print(f"  - Assignments: {len(donor_assignments)}")',
       'print(f"  - Model weights: {len(w)}")',
       '',
-      'payload = {',
-      '  "progress": {"phase":"Complete","done":len(COMBINED),"total":len(COMBINED),"note":"upload complete"},',
-      '  "training_rows": new_training_rows,',
-      '  "model_weights": w,',
-      '  "donor_assignments": donor_assignments',
-      '}',
+      '# Split assignments into batches to avoid payload size limits',
+      'batch_size = 500',
+      'assignment_items = list(donor_assignments.items())',
+      'num_batches = math.ceil(len(assignment_items) / batch_size) if assignment_items else 1',
       '',
-      'print("\\nSending data to Apps Script...")',
-      'try:',
-      '    response_raw = http_post(job["resultUrl"], payload)',
-      '    response = json.loads(response_raw)',
+      'print(f"\\nSending in {num_batches} batch(es)...")',
+      '',
+      'for batch_idx in range(num_batches):',
+      '    start = batch_idx * batch_size',
+      '    end = min(start + batch_size, len(assignment_items))',
+      '    batch_dict = dict(assignment_items[start:end]) if assignment_items else {}',
       '    ',
-      '    if response.get("ok"):',
-      '        print("\\n✓ Upload successful!")',
+      '    is_final = (batch_idx == num_batches - 1)',
+      '    ',
+      '    payload = {',
+      '        "progress": {',
+      '            "phase": "Complete" if is_final else "Uploading",',
+      '            "done": end,',
+      '            "total": len(assignment_items)',
+      '        },',
+      '        "donor_assignments": batch_dict',
+      '    }',
+      '    ',
+      '    # Include training rows and weights only in first batch',
+      '    if batch_idx == 0:',
+      '        payload["training_rows"] = new_training_rows',
+      '        payload["model_weights"] = w',
+      '    ',
+      '    try:',
+      '        response_raw = http_post(job["resultUrl"], payload)',
+      '        response = json.loads(response_raw)',
       '        ',
-      '        if "merge_output" in response:',
-      '            merge = response["merge_output"]',
-      '            if merge.get("success"):',
-      '                print(f"\\n✓ Merge output created successfully!")',
-      '                print(f"  - Rows written: {merge.get(\'rows\', \'unknown\')}")',
-      '                print(f"  - Assignments: {merge.get(\'assignments\', \'unknown\')}")',
-      '                print(f"  - Message: {merge.get(\'message\', \'\')}")',
-      '            else:',
-      '                print(f"\\n✗ Merge output FAILED: {merge.get(\'error\', \'unknown error\')}")',
+      '        if not response.get("ok"):',
+      '            print(f"\\n✗ Upload failed: {response.get(\'error\', \'unknown\')}")',
+      '            break',
+      '        ',
+      '        # Show progress for intermediate batches',
+      '        if not is_final:',
+      '            if "merge_output" in response:',
+      '                accumulated = response["merge_output"].get("accumulated", end)',
+      '                print(f"  Uploaded {end}/{len(assignment_items)} assignments")',
       '        else:',
-      '            print("Warning: No merge output status in response")',
-      '    else:',
-      '        print(f"\\n✗ ERROR: Apps Script returned failure: {response.get(\'error\', \'unknown\')}")',
-      '        if "merge_output" in response:',
-      '            print(f"  Merge output error: {response[\'merge_output\'].get(\'error\', \'unknown\')}")',
-      'except json.JSONDecodeError:',
-      '    print("\\n✗ ERROR: Apps Script returned invalid JSON")',
-      '    print("This usually means there is a JavaScript error in the script.")',
-      '    print(f"\\nFirst 500 chars of response:\\n{response_raw[:500]}")',
-      'except Exception as e:',
-      '    print(f"\\n✗ ERROR: {e}")',
-      '    import traceback',
-      '    traceback.print_exc()'
+      '            # Final batch - show merge output results',
+      '            print(f"\\n✓ All assignments uploaded")',
+      '            if "merge_output" in response:',
+      '                merge = response["merge_output"]',
+      '                if merge.get("success"):',
+      '                    print(f"\\n✓ Merge output created")',
+      '                    print(f"  - Total rows: {merge.get(\'rows\', \'unknown\')}")',
+      '                else:',
+      '                    print(f"\\n✗ Merge failed: {merge.get(\'error\', \'unknown\')}")',
+      '        ',
+      '        # Small delay between batches',
+      '        if not is_final:',
+      '            time.sleep(0.5)',
+      '            ',
+      '    except json.JSONDecodeError:',
+      '        print(f"\\n✗ Invalid response from server")',
+      '        print(f"First 500 chars: {response_raw[:500]}")',
+      '        break',
+      '    except Exception as e:',
+      '        print(f"\\n✗ Upload error: {e}")',
+      '        break'
     ].join('\n');
 
     return ContentService.createTextOutput(py).setMimeType(ContentService.MimeType.TEXT);
@@ -1816,24 +1840,68 @@ function doPost(e) {
   }
 
   if (body.donor_assignments && typeof body.donor_assignments === 'object') {
-    Logger.log('Received donor_assignments with ' + Object.keys(body.donor_assignments).length + ' entries');
-    Logger.log('First 5 keys: ' + Object.keys(body.donor_assignments).slice(0, 5).join(', '));
+    const batchSize = Object.keys(body.donor_assignments).length;
+    Logger.log('Received batch with ' + batchSize + ' assignments');
 
-    // Build merge output directly with all assignments
-    const mergeResult = donor_applyResult_donorAssignments_(body.donor_assignments);
+    const isComplete = body.progress && body.progress.phase === 'Complete';
 
-    if (mergeResult.success) {
+    // Get or create temp sheet for batch accumulation
+    const ss = SpreadsheetApp.getActive();
+    let tempSheet = ss.getSheetByName('_DonorBatchTemp');
+    if (!tempSheet) {
+      tempSheet = ss.insertSheet('_DonorBatchTemp');
+      tempSheet.hideSheet();
+    }
+
+    // Append this batch to temp sheet
+    const entries = Object.entries(body.donor_assignments);
+    const rows = entries.map(([key, val]) => [key, val.donorId || '', val.confidence || '']);
+
+    if (rows.length > 0) {
+      const startRow = tempSheet.getLastRow() + 1;
+      tempSheet.getRange(startRow, 1, rows.length, 3).setValues(rows);
+    }
+
+    const totalAccumulated = tempSheet.getLastRow();
+    Logger.log('Accumulated total: ' + totalAccumulated + ' assignments');
+
+    if (isComplete) {
+      // Final batch - build merge output with all accumulated data
+      Logger.log('Final batch received - building merge output');
+
+      const allData = tempSheet.getRange(1, 1, totalAccumulated, 3).getValues();
+      const accumulated = {};
+      allData.forEach(row => {
+        if (row[0]) {
+          accumulated[row[0]] = { donorId: row[1], confidence: row[2] };
+        }
+      });
+
+      const mergeResult = donor_applyResult_donorAssignments_(accumulated);
+
+      // Clear temp sheet
+      tempSheet.clearContents();
+
+      if (mergeResult.success) {
+        responseData.merge_output = {
+          success: true,
+          rows: mergeResult.rowCount,
+          assignments: mergeResult.assignmentCount,
+          message: mergeResult.message
+        };
+      } else {
+        responseData.ok = false;
+        responseData.merge_output = {
+          success: false,
+          error: mergeResult.error
+        };
+      }
+    } else {
+      // Intermediate batch - just acknowledge accumulation
       responseData.merge_output = {
         success: true,
-        rows: mergeResult.rowCount,
-        assignments: mergeResult.assignmentCount,
-        message: mergeResult.message
-      };
-    } else {
-      responseData.ok = false;
-      responseData.merge_output = {
-        success: false,
-        error: mergeResult.error
+        accumulated: totalAccumulated,
+        message: 'Batch accumulated'
       };
     }
   }
