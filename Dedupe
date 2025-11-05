@@ -1665,8 +1665,8 @@ function doGet(e) {
       'print(f"  - Merge rows: {len(merge_rows)}")',
       'print(f"  - Model weights: {len(w)}")',
       '',
-      '# Send in batches of 5000 rows',
-      'batch_size = 5000',
+      '# Send in batches of 10000 rows (optimal for Google Sheets API limits)',
+      'batch_size = 10000',
       'num_batches = math.ceil(len(merge_rows) / batch_size) if merge_rows else 1',
       '',
       'print(f"\\nSending in {num_batches} batch(es)...")',
@@ -1928,18 +1928,27 @@ function doPost(e) {
     const isFirstBatch = batchIndex === 0;
 
     if (isFirstBatch) {
-      // Clear sheet completely
-      mergeSheet.clear();
-      Logger.log('Cleared Merge output sheet for new run');
+      // Clear all data rows (row 2 and below), preserve header if it exists
+      const lastRow = mergeSheet.getLastRow();
+      if (lastRow > 1) {
+        mergeSheet.deleteRows(2, lastRow - 1);
+        Logger.log('Cleared data rows (2-' + lastRow + ') from Merge output sheet');
+      }
 
-      // Write header
-      mergeSheet.getRange(1, 1, 1, outputHeader.length).setValues([outputHeader]);
+      // Ensure header exists and is formatted
+      const hasHeader = mergeSheet.getLastRow() >= 1 && mergeSheet.getRange(1, 1).getValue() !== '';
+      if (!hasHeader) {
+        mergeSheet.getRange(1, 1, 1, outputHeader.length).setValues([outputHeader]);
+        Logger.log('Created header row');
+      }
+
+      // Format header
       mergeSheet.getRange(1, 1, 1, outputHeader.length)
         .setFontWeight('bold')
         .setBackground('#4285f4')
         .setFontColor('#ffffff');
       mergeSheet.setFrozenRows(1);
-      Logger.log('Initialized Merge output sheet with header');
+      Logger.log('Prepared Merge output sheet for new run');
     }
 
     // Append rows to Merge output
