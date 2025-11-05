@@ -5,8 +5,8 @@
  * Matches addresses to Federal Districts, State Senate Districts, and Counties.
  */
 
-// All 50 states + DC (using 2-letter codes)
-const US_STATES = [
+// All 50 states + DC (using 2-letter codes) for district matching
+const DISTRICT_US_STATES = [
   'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA',
   'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD',
   'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ',
@@ -111,7 +111,7 @@ function setupDistrictMatchingSilent_() {
     Logger.log('Created main folder: District Shapefiles');
 
     // Clear all old state folder IDs since we're starting fresh
-    US_STATES.forEach(state => {
+    DISTRICT_US_STATES.forEach(state => {
       props.deleteProperty('district_state_' + state.toLowerCase());
     });
     Logger.log('Cleared all old state folder IDs for fresh setup');
@@ -138,7 +138,7 @@ function setupStateFolders_(mainFolder, props, isNewSetup) {
     repaired: 0
   };
 
-  for (const state of US_STATES) {
+  for (const state of DISTRICT_US_STATES) {
     try {
       const stateKey = 'district_state_' + state.toLowerCase();
       let stateFolder = null;
@@ -509,7 +509,7 @@ function resetPropertyMappings() {
 function scanShapefileAvailability_() {
   const availability = {};
 
-  for (const stateCode of US_STATES) {
+  for (const stateCode of DISTRICT_US_STATES) {
     availability[stateCode] = {
       federal: false,
       senate: false,
@@ -578,7 +578,7 @@ function showShapefileReport_(availability) {
 
   const statesWithData = [];
 
-  for (const stateCode of US_STATES) {
+  for (const stateCode of DISTRICT_US_STATES) {
     const info = availability[stateCode];
     if (!info.hasFolders) {
       emptyStates++;
