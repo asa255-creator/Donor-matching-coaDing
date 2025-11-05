@@ -1586,24 +1586,66 @@ function doGet(e) {
       'print(f"Unique donors with matches: {unique_matched}")',
       'print(f"Solo donors (no matches): {len(components) - unique_matched}")',
       '',
-      '# Upload results to Apps Script in batches (payload size limits)',
+      '# Build complete merge output rows locally',
+      'print(f"\\nBuilding merge output rows...")',
+      'merge_rows = []',
+      '',
+      '# Process each donor in COMBINED and build output row',
+      'for donor in COMBINED:',
+      '    origin = donor.get("_origin", "C")',
+      '    rownum = donor.get("_rownum", 0)',
+      '    key = f"{origin}:{rownum}"',
+      '    ',
+      '    # Get assignment for this donor',
+      '    assignment = donor_assignments.get(key, {"donorId": "", "confidence": ""})',
+      '    ',
+      '    # Format date if present',
+      '    receipt_date = donor.get("ReceiptDate", "")',
+      '    if isinstance(receipt_date, str):',
+      '        receipt_date_str = receipt_date',
+      '    else:',
+      '        receipt_date_str = str(receipt_date) if receipt_date else ""',
+      '    ',
+      '    # Build complete row',
+      '    row = [',
+      '        donor.get("Recipient", origin),',
+      '        donor.get("DonorFirst", ""),',
+      '        donor.get("DonorLast", ""),',
+      '        donor.get("Address1", ""),',
+      '        donor.get("Address2", ""),',
+      '        donor.get("City", ""),',
+      '        donor.get("State", ""),',
+      '        donor.get("Zip", ""),',
+      '        donor.get("Amount", ""),',
+      '        donor.get("WeightedAmount", ""),',
+      '        receipt_date_str,',
+      '        donor.get("Occupation", ""),',
+      '        donor.get("Employer", ""),',
+      '        key,',
+      '        assignment["donorId"],',
+      '        assignment["confidence"]',
+      '    ]',
+      '    merge_rows.append(row)',
+      '',
+      'print(f"Built {len(merge_rows)} output rows")',
+      '',
+      '# Upload results to Apps Script',
       'new_training_rows = training_rows[loaded_training_count:]',
-      'print(f"\\nUploading results to Google Sheets...")',
+      'print(f"\\nUploading to Google Sheets...")',
       'print(f"  - Training rows: {len(new_training_rows)}")',
-      'print(f"  - Assignments: {len(donor_assignments)}")',
+      'print(f"  - Merge rows: {len(merge_rows)}")',
       'print(f"  - Model weights: {len(w)}")',
       '',
-      '# Split assignments into batches to avoid payload size limits',
-      'batch_size = 500',
-      'assignment_items = list(donor_assignments.items())',
-      'num_batches = math.ceil(len(assignment_items) / batch_size) if assignment_items else 1',
+      '# Send in batches of 1000 rows',
+      'batch_size = 1000',
+      'num_batches = math.ceil(len(merge_rows) / batch_size) if merge_rows else 1',
       '',
       'print(f"\\nSending in {num_batches} batch(es)...")',
       '',
       'for batch_idx in range(num_batches):',
       '    start = batch_idx * batch_size',
-      '    end = min(start + batch_size, len(assignment_items))',
-      '    batch_dict = dict(assignment_items[start:end]) if assignment_items else {}',
+      '    end = min(start + batch_size, len(merge_rows))',
+      '    batch_rows = merge_rows[start:end]',
       '    ',
       '    is_final = (batch_idx == num_batches - 1)',
       '    ',
@@ -1611,9 +1653,9 @@ function doGet(e) {
       '        "progress": {',
       '            "phase": "Complete" if is_final else "Uploading",',
       '            "done": end,',
-      '            "total": len(assignment_items)',
+      '            "total": len(merge_rows)',
       '        },',
-      '        "donor_assignments": batch_dict',
+      '        "merge_rows": batch_rows',
       '    }',
       '    ',
       '    # Include training rows and weights only in first batch',
@@ -1629,18 +1671,15 @@ function doGet(e) {
       '            print(f"\\n✗ Upload failed: {response.get(\'error\', \'unknown\')}")',
       '            break',
       '        ',
-      '        # Show progress for intermediate batches',
+      '        # Show progress',
       '        if not is_final:',
-      '            if "merge_output" in response:',
-      '                accumulated = response["merge_output"].get("accumulated", end)',
-      '                print(f"  Uploaded {end}/{len(assignment_items)} assignments")',
+      '            print(f"  Uploaded {end}/{len(merge_rows)} rows")',
       '        else:',
-      '            # Final batch - show merge output results',
-      '            print(f"\\n✓ All assignments uploaded")',
+      '            print(f"\\n✓ All rows uploaded")',
       '            if "merge_output" in response:',
       '                merge = response["merge_output"]',
       '                if merge.get("success"):',
-      '                    print(f"\\n✓ Merge output created")',
+      '                    print(f"\\n✓ Merge output complete")',
       '                    print(f"  - Total rows: {merge.get(\'rows\', \'unknown\')}")',
       '                else:',
       '                    print(f"\\n✗ Merge failed: {merge.get(\'error\', \'unknown\')}")',
@@ -1839,71 +1878,46 @@ function doPost(e) {
     donor_applyResult_assignedIds_(body.id_map);
   }
 
-  if (body.donor_assignments && typeof body.donor_assignments === 'object') {
-    const batchSize = Object.keys(body.donor_assignments).length;
-    Logger.log('Received batch with ' + batchSize + ' assignments');
+  // Handle new merge_rows format (Python builds complete rows)
+  if (Array.isArray(body.merge_rows) && body.merge_rows.length) {
+    const batchSize = body.merge_rows.length;
+    Logger.log('Received batch with ' + batchSize + ' merge rows');
 
-    const isComplete = body.progress && body.progress.phase === 'Complete';
-
-    // Get or create temp sheet for batch accumulation
     const ss = SpreadsheetApp.getActive();
-    let tempSheet = ss.getSheetByName('_DonorBatchTemp');
-    if (!tempSheet) {
-      tempSheet = ss.insertSheet('_DonorBatchTemp');
-      tempSheet.hideSheet();
+    const mergeSheet = donor_getOrCreateSheet_('Merge output');
+
+    // Define output header
+    const outputHeader = [
+      'Recipient', 'DonorFirst', 'DonorLast', 'Address1', 'Address2',
+      'City', 'State', 'Zip', 'Amount', 'WeightedAmount', 'ReceiptDate',
+      'Occupation', 'Employer', 'DonationID', 'DonorID', 'Confidence'
+    ];
+
+    // Check if this is the first batch (sheet is empty or only has header)
+    const isFirstBatch = mergeSheet.getLastRow() <= 1;
+
+    if (isFirstBatch) {
+      // Clear sheet and write header
+      mergeSheet.clear();
+      mergeSheet.getRange(1, 1, 1, outputHeader.length).setValues([outputHeader]);
+      mergeSheet.setFrozenRows(1);
+      Logger.log('Initialized Merge output sheet with header');
     }
 
-    // Append this batch to temp sheet
-    const entries = Object.entries(body.donor_assignments);
-    const rows = entries.map(([key, val]) => [key, val.donorId || '', val.confidence || '']);
+    // Append rows to Merge output
+    const startRow = mergeSheet.getLastRow() + 1;
+    mergeSheet.getRange(startRow, 1, body.merge_rows.length, outputHeader.length)
+      .setValues(body.merge_rows);
 
-    if (rows.length > 0) {
-      const startRow = tempSheet.getLastRow() + 1;
-      tempSheet.getRange(startRow, 1, rows.length, 3).setValues(rows);
-    }
+    const totalRows = mergeSheet.getLastRow() - 1; // Exclude header
+    Logger.log('Wrote ' + batchSize + ' rows. Total in sheet: ' + totalRows);
 
-    const totalAccumulated = tempSheet.getLastRow();
-    Logger.log('Accumulated total: ' + totalAccumulated + ' assignments');
-
-    if (isComplete) {
-      // Final batch - build merge output with all accumulated data
-      Logger.log('Final batch received - building merge output');
-
-      const allData = tempSheet.getRange(1, 1, totalAccumulated, 3).getValues();
-      const accumulated = {};
-      allData.forEach(row => {
-        if (row[0]) {
-          accumulated[row[0]] = { donorId: row[1], confidence: row[2] };
-        }
-      });
-
-      const mergeResult = donor_applyResult_donorAssignments_(accumulated);
-
-      // Clear temp sheet
-      tempSheet.clearContents();
-
-      if (mergeResult.success) {
-        responseData.merge_output = {
-          success: true,
-          rows: mergeResult.rowCount,
-          assignments: mergeResult.assignmentCount,
-          message: mergeResult.message
-        };
-      } else {
-        responseData.ok = false;
-        responseData.merge_output = {
-          success: false,
-          error: mergeResult.error
-        };
-      }
-    } else {
-      // Intermediate batch - just acknowledge accumulation
-      responseData.merge_output = {
-        success: true,
-        accumulated: totalAccumulated,
-        message: 'Batch accumulated'
-      };
-    }
+    responseData.merge_output = {
+      success: true,
+      rows_in_batch: batchSize,
+      total_rows: totalRows,
+      message: 'Batch written to Merge output'
+    };
   }
 
   return ContentService.createTextOutput(JSON.stringify(responseData)).setMimeType(ContentService.MimeType.JSON);
