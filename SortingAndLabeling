@@ -697,6 +697,255 @@ function promptUserForPropertySelection_(geoJson, fileName, stateCode, districtT
 }
 
 /**
+ * Show consolidated property selection dialog for all district types in a state
+ * @param {string} stateCode - State code (e.g., "KY")
+ * @param {Array} filesNeedingMapping - Array of {districtType, fileId, fileName, geoJson}
+ * @returns {Object|null} - Object mapping fileId to selected property name, or null if cancelled
+ */
+function promptConsolidatedPropertySelection_(stateCode, filesNeedingMapping) {
+  const props = PropertiesService.getDocumentProperties();
+
+  // Build HTML sections for each district type
+  const districtSections = filesNeedingMapping.map(file => {
+    const { districtType, fileId, fileName, geoJson } = file;
+
+    // Get properties from first feature
+    if (!geoJson.features || geoJson.features.length === 0) {
+      return '';
+    }
+
+    const properties = geoJson.features[0].properties || {};
+    const propertyKeys = Object.keys(properties);
+
+    if (propertyKeys.length === 0) {
+      return '';
+    }
+
+    // Build property preview
+    const propertyPreview = propertyKeys.slice(0, 10).map(key => {
+      const value = properties[key];
+      return `${key}: "${value}"`;
+    }).join('<br>');
+
+    const districtLabel = districtType.charAt(0).toUpperCase() + districtType.slice(1);
+
+    return `
+      <div class="district-section">
+        <h4>${districtLabel} Districts</h4>
+        <div class="file-info">
+          <strong>File:</strong> ${fileName}
+        </div>
+
+        <label for="select_${fileId}"><strong>Select district identifier property:</strong></label>
+        <select id="select_${fileId}" class="property-select" data-fileid="${fileId}">
+          ${propertyKeys.map(key => `<option value="${key}">${key}</option>`).join('\n')}
+        </select>
+
+        <div class="preview">
+          <strong>Properties preview:</strong><br>
+          ${propertyPreview}
+        </div>
+      </div>
+    `;
+  }).filter(section => section !== '').join('\n');
+
+  // Create HTML dialog
+  const html = HtmlService.createHtmlOutput(`
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 16px;
+      margin: 0;
+      max-width: 600px;
+    }
+    h3 {
+      color: #1a73e8;
+      margin-top: 0;
+      margin-bottom: 8px;
+    }
+    .state-info {
+      background: #e8f0fe;
+      padding: 12px;
+      border-radius: 4px;
+      margin-bottom: 16px;
+      font-weight: 500;
+    }
+    .district-section {
+      background: #f8f9fa;
+      border: 1px solid #dadce0;
+      border-radius: 4px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    .district-section h4 {
+      color: #202124;
+      margin-top: 0;
+      margin-bottom: 12px;
+      font-size: 16px;
+    }
+    .file-info {
+      color: #5f6368;
+      font-size: 13px;
+      margin-bottom: 12px;
+    }
+    label {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 14px;
+    }
+    select.property-select {
+      width: 100%;
+      padding: 8px;
+      font-size: 14px;
+      border: 1px solid #dadce0;
+      border-radius: 4px;
+      margin-bottom: 12px;
+      background: white;
+    }
+    .preview {
+      background: #fff;
+      border: 1px solid #dadce0;
+      padding: 12px;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 11px;
+      max-height: 150px;
+      overflow-y: auto;
+      color: #5f6368;
+    }
+    .button-container {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 20px;
+      padding-top: 16px;
+      border-top: 1px solid #dadce0;
+    }
+    button {
+      padding: 10px 24px;
+      font-size: 14px;
+      border-radius: 4px;
+      cursor: pointer;
+      border: none;
+    }
+    button.primary {
+      background: #1a73e8;
+      color: white;
+    }
+    button.primary:hover {
+      background: #1765cc;
+    }
+    button.secondary {
+      background: #fff;
+      color: #5f6368;
+      border: 1px solid #dadce0;
+    }
+    button.secondary:hover {
+      background: #f8f9fa;
+    }
+  </style>
+</head>
+<body>
+  <h3>Configure Shapefile Properties for ${stateCode}</h3>
+
+  <div class="state-info">
+    Configure district identifier properties for all district types in this state
+  </div>
+
+  ${districtSections}
+
+  <div class="button-container">
+    <button class="secondary" onclick="cancel()">Cancel</button>
+    <button class="primary" onclick="confirmSelections()">Confirm All Selections</button>
+  </div>
+
+  <script>
+    function confirmSelections() {
+      // Collect all selections
+      const selects = document.querySelectorAll('.property-select');
+      const selections = {};
+
+      selects.forEach(select => {
+        const fileId = select.getAttribute('data-fileid');
+        const propertyName = select.value;
+        selections[fileId] = propertyName;
+      });
+
+      // Close dialog and send selections
+      google.script.host.setWidth(0);
+      google.script.host.setHeight(0);
+      google.script.run
+        .withSuccessHandler(() => google.script.host.close())
+        .storeConsolidatedPropertySelections(JSON.stringify(selections));
+    }
+
+    function cancel() {
+      google.script.host.setWidth(0);
+      google.script.host.setHeight(0);
+      google.script.run
+        .withSuccessHandler(() => google.script.host.close())
+        .storeConsolidatedPropertySelections(null);
+    }
+  </script>
+</body>
+</html>
+  `).setWidth(650).setHeight(Math.min(700, 300 + filesNeedingMapping.length * 250));
+
+  SpreadsheetApp.getUi().showModalDialog(html, `${stateCode} Shapefile Configuration`);
+
+  // Wait for user selection (stored in temporary property)
+  const tempKey = 'temp_consolidated_property_selection';
+  props.setProperty(tempKey, 'WAITING');
+
+  // Poll for result (up to 5 minutes)
+  const maxWait = 300; // 5 minutes
+  let waited = 0;
+  while (waited < maxWait) {
+    Utilities.sleep(1000);
+    waited++;
+
+    const result = props.getProperty(tempKey);
+    if (result !== 'WAITING') {
+      props.deleteProperty(tempKey);
+      if (result === 'CANCELLED') {
+        return null;
+      }
+      // Parse JSON string back to object
+      try {
+        return JSON.parse(result);
+      } catch (error) {
+        Logger.log('Error parsing property selections: ' + error.message);
+        return null;
+      }
+    }
+  }
+
+  // Timeout
+  props.deleteProperty(tempKey);
+  Logger.log('Consolidated property selection timed out');
+  return null;
+}
+
+/**
+ * Callback function to store user's consolidated property selections
+ * Called from the HTML dialog
+ * @param {string} selectionsJson - JSON string of {fileId: propertyName, ...} or null
+ */
+function storeConsolidatedPropertySelections(selectionsJson) {
+  const props = PropertiesService.getDocumentProperties();
+  const tempKey = 'temp_consolidated_property_selection';
+
+  if (selectionsJson) {
+    props.setProperty(tempKey, selectionsJson);
+  } else {
+    props.setProperty(tempKey, 'CANCELLED');
+  }
+}
+
+/**
  * Callback function to store user's property selection
  * Called from the HTML dialog
  */
@@ -1552,7 +1801,7 @@ function matchAddressesToDistricts() {
 
 /**
  * Load GeoJSON shapefiles for a state
- * Now includes interactive property mapping configuration
+ * Uses consolidated property mapping dialog per state
  * @private
  */
 function loadStateShapefiles_(stateCode) {
@@ -1569,7 +1818,10 @@ function loadStateShapefiles_(stateCode) {
     county: null
   };
 
-  // Look for GeoJSON files in each subfolder
+  // PASS 1: Scan all folders and collect files that need property mapping
+  const filesNeedingMapping = [];
+  const fileData = {}; // Store file info keyed by districtType
+
   const subfolders = stateFolder.getFolders();
   while (subfolders.hasNext()) {
     const subfolder = subfolders.next();
@@ -1590,7 +1842,6 @@ function loadStateShapefiles_(stateCode) {
     if (!districtType) continue;
 
     // Find GeoJSON file in this subfolder
-    // Use getFiles() instead of getFilesByType() to catch all MIME types
     const files = subfolder.getFiles();
     while (files.hasNext()) {
       const file = files.next();
@@ -1600,24 +1851,32 @@ function loadStateShapefiles_(stateCode) {
         try {
           const content = file.getBlob().getDataAsString();
           const geoJson = JSON.parse(content);
-
-          // Get or prompt for property mapping
           const fileId = file.getId();
-          const propertyName = getShapefilePropertyMapping_(fileId, file.getName(), geoJson, stateCode, districtType);
 
-          if (!propertyName) {
-            Logger.log(`No property mapping selected for ${file.getName()}, skipping`);
-            break;
-          }
+          // Check if we already have a mapping for this file
+          const props = PropertiesService.getDocumentProperties();
+          const mappingKey = 'shapefile_property_' + fileId;
+          const storedProperty = props.getProperty(mappingKey);
 
-          // Store the GeoJSON with its property mapping
-          shapes[districtType] = {
+          // Store file data
+          fileData[districtType] = {
+            file: file,
+            fileId: fileId,
+            fileName: file.getName(),
             geoJson: geoJson,
-            propertyName: propertyName,
-            fileName: file.getName()
+            storedProperty: storedProperty
           };
 
-          Logger.log(`Loaded ${districtType} shapefile for ${stateCode}: ${file.getName()} (using property: ${propertyName})`);
+          // Track if it needs mapping
+          if (!storedProperty) {
+            filesNeedingMapping.push({
+              districtType: districtType,
+              fileId: fileId,
+              fileName: file.getName(),
+              geoJson: geoJson
+            });
+          }
+
           break; // Only load first GeoJSON file found
         } catch (error) {
           Logger.log(`Error parsing GeoJSON file ${file.getName()}: ${error.message}`);
@@ -1625,6 +1884,46 @@ function loadStateShapefiles_(stateCode) {
       }
     }
   }
+
+  // If any files need mapping, show consolidated dialog for this state
+  if (filesNeedingMapping.length > 0) {
+    Logger.log(`${filesNeedingMapping.length} shapefile(s) need property mapping for ${stateCode}`);
+    const mappings = promptConsolidatedPropertySelection_(stateCode, filesNeedingMapping);
+
+    if (!mappings) {
+      Logger.log(`User cancelled property selection for ${stateCode}`);
+      return shapes;
+    }
+
+    // Store the mappings
+    const props = PropertiesService.getDocumentProperties();
+    Object.keys(mappings).forEach(fileId => {
+      const mappingKey = 'shapefile_property_' + fileId;
+      props.setProperty(mappingKey, mappings[fileId]);
+      Logger.log(`Stored property mapping for file ${fileId}: ${mappings[fileId]}`);
+    });
+  }
+
+  // PASS 2: Load all shapefiles using stored mappings
+  Object.keys(fileData).forEach(districtType => {
+    const data = fileData[districtType];
+    const props = PropertiesService.getDocumentProperties();
+    const mappingKey = 'shapefile_property_' + data.fileId;
+    const propertyName = props.getProperty(mappingKey);
+
+    if (!propertyName) {
+      Logger.log(`No property mapping found for ${data.fileName}, skipping`);
+      return;
+    }
+
+    shapes[districtType] = {
+      geoJson: data.geoJson,
+      propertyName: propertyName,
+      fileName: data.fileName
+    };
+
+    Logger.log(`Loaded ${districtType} shapefile for ${stateCode}: ${data.fileName} (using property: ${propertyName})`);
+  });
 
   return shapes;
 }
