@@ -1635,6 +1635,9 @@ function improveGeocodeCache() {
     let message = `Geocoding complete!\n\n`;
     message += `Exact geocodes: ${results.exact}\n`;
     message += `Approximate matches: ${results.approximate}\n`;
+    if (results.corrected && results.corrected > 0) {
+      message += `Addresses corrected via normalization: ${results.corrected}\n`;
+    }
     message += `Failed/Pending: ${results.failed}\n`;
 
     ui.alert('Geocoding Complete', message, ui.ButtonSet.OK);
@@ -1648,7 +1651,9 @@ function improveGeocodeCache() {
 }
 
 /**
- * Process geocoding with priority: exact geocoding first, then proximity matching
+ * Process geocoding with 2-phase progressive approach:
+ * Phase 1: Try all addresses once with original format
+ * Phase 2: After all tried once, progressively normalize pending addresses (5 attempts)
  * @private
  */
 function processGeocoding_(addressList, cache) {
@@ -1659,16 +1664,35 @@ function processGeocoding_(addressList, cache) {
     exact: 0,
     approximate: 0,
     failed: 0,
-    newEntries: []
+    newEntries: [],
+    corrected: 0
   };
 
   let quotaUsed = 0;
 
+  // Separate addresses into Phase 1 (never attempted) and Phase 2 (pending after attempt)
+  const phase1Addresses = [];
+  const phase2Addresses = [];
+
   for (const addr of addressList) {
-    // Skip if we've exhausted quota
-    if (quotaUsed >= BATCH_LIMIT) {
-      break;
+    const cached = cache[addr.key];
+    const attemptCount = cached ? (cached.attemptCount || 0) : 0;
+
+    if (attemptCount === 0) {
+      // Phase 1: Never attempted
+      phase1Addresses.push(addr);
+    } else if (cached && cached.status === 'pending' && attemptCount > 0 && attemptCount < 5) {
+      // Phase 2: Previously attempted but still pending, try normalization
+      phase2Addresses.push(addr);
     }
+  }
+
+  Logger.log(`Phase 1: ${phase1Addresses.length} addresses to try as-is`);
+  Logger.log(`Phase 2: ${phase2Addresses.length} addresses to try with normalization`);
+
+  // PHASE 1: Try all addresses with original format
+  for (const addr of phase1Addresses) {
+    if (quotaUsed >= BATCH_LIMIT) break;
 
     // Try exact geocoding first
     try {
@@ -1687,24 +1711,24 @@ function processGeocoding_(addressList, cache) {
           lat: lat,
           lng: lng,
           status: 'exact',
-          source: '-',
-          date: new Date().toISOString().split('T')[0]
+          source: 'original',
+          date: new Date().toISOString().split('T')[0],
+          attemptCount: 1,
+          workingAddress: ''
         });
 
         results.exact++;
-        Logger.log(`Exact geocode: ${fullAddress} -> ${lat}, ${lng}`);
+        Logger.log(`Phase 1 exact: ${fullAddress} -> ${lat}, ${lng}`);
         continue;
       }
     } catch (error) {
-      Logger.log(`Geocoding error for ${addr.address}: ${error.message}`);
-
-      // If we hit quota limit, stop
+      Logger.log(`Phase 1 geocoding error for ${addr.address}: ${error.message}`);
       if (error.message.includes('limit') || error.message.includes('quota')) {
         break;
       }
     }
 
-    // If exact geocoding failed or no quota, try proximity match
+    // If exact geocoding failed, try proximity match
     const proximityMatch = findProximityMatch_(addr, cache);
     if (proximityMatch) {
       results.newEntries.push({
@@ -1713,29 +1737,153 @@ function processGeocoding_(addressList, cache) {
         lng: proximityMatch.lng,
         status: 'approximate',
         source: proximityMatch.source,
-        date: new Date().toISOString().split('T')[0]
+        date: new Date().toISOString().split('T')[0],
+        attemptCount: 1,
+        workingAddress: ''
       });
 
       results.approximate++;
-      Logger.log(`Proximity match: ${addr.address} -> ${proximityMatch.source}`);
+      Logger.log(`Phase 1 proximity: ${addr.address} -> ${proximityMatch.source}`);
     } else {
-      // Mark as pending for future processing
+      // Mark as pending for Phase 2 processing
       results.newEntries.push({
         key: addr.key,
         lat: '',
         lng: '',
         status: 'pending',
         source: '-',
-        date: new Date().toISOString().split('T')[0]
+        date: new Date().toISOString().split('T')[0],
+        attemptCount: 1,
+        workingAddress: ''
       });
 
       results.failed++;
     }
 
-    // Small delay to avoid rate limiting
     if (quotaUsed % 50 === 0) {
       Utilities.sleep(100);
     }
+  }
+
+  // PHASE 2: Progressive normalization for pending addresses
+  for (const addr of phase2Addresses) {
+    if (quotaUsed >= BATCH_LIMIT) break;
+
+    const cached = cache[addr.key];
+    const currentAttempt = cached.attemptCount + 1;
+
+    Logger.log(`Phase 2: Attempting normalization level ${currentAttempt} for ${addr.address}`);
+
+    let normalizedAddress = addr.address;
+    let shouldUpdateSheet = true;
+
+    // Apply appropriate normalization level
+    switch (currentAttempt) {
+      case 2: // Level 1: Remove apt/suite
+        normalizedAddress = normalizeAddressLevel1_(addr.address);
+        break;
+      case 3: // Level 2: Expand abbreviations
+        normalizedAddress = normalizeAddressLevel2_(addr.address);
+        break;
+      case 4: // Level 3: Remove directionals
+        normalizedAddress = normalizeAddressLevel3_(addr.address);
+        break;
+      case 5: // Level 4: Remove street type
+        normalizedAddress = normalizeAddressLevel4_(addr.address);
+        break;
+      case 6: // Level 5: City centroid (last resort)
+        const centroid = getCityCentroid_(addr.city, addr.state);
+        if (centroid) {
+          results.newEntries.push({
+            key: addr.key,
+            lat: centroid.lat,
+            lng: centroid.lng,
+            status: 'city_centroid',
+            source: `centroid of ${addr.city}, ${addr.state}`,
+            date: new Date().toISOString().split('T')[0],
+            attemptCount: 6,
+            workingAddress: ''  // Don't store working address for city centroid
+          });
+
+          results.approximate++;
+          Logger.log(`Phase 2 level 5 (city centroid): ${addr.address} -> ${centroid.lat}, ${centroid.lng}`);
+        } else {
+          // Even city centroid failed, mark as permanently failed
+          results.newEntries.push({
+            key: addr.key,
+            lat: '',
+            lng: '',
+            status: 'pending',
+            source: 'all attempts failed',
+            date: new Date().toISOString().split('T')[0],
+            attemptCount: 6,
+            workingAddress: ''
+          });
+          results.failed++;
+        }
+        continue; // Skip geocoding attempt for level 5
+    }
+
+    // Try geocoding with normalized address (levels 1-4)
+    try {
+      const fullAddress = `${normalizedAddress}, ${addr.city}, ${addr.state} ${addr.zip}`;
+      const location = geocoder.geocode(fullAddress);
+
+      quotaUsed++;
+
+      if (location && location.results && location.results.length > 0) {
+        const result = location.results[0];
+        const lat = result.geometry.location.lat;
+        const lng = result.geometry.location.lng;
+
+        // Success! Store coordinates and update sheet
+        results.newEntries.push({
+          key: addr.key,
+          lat: lat,
+          lng: lng,
+          status: 'exact',
+          source: `normalized_level_${currentAttempt - 1}`,
+          date: new Date().toISOString().split('T')[0],
+          attemptCount: currentAttempt,
+          workingAddress: normalizedAddress
+        });
+
+        results.exact++;
+        results.corrected++;
+        Logger.log(`Phase 2 level ${currentAttempt - 1} success: "${addr.address}" -> "${normalizedAddress}" -> ${lat}, ${lng}`);
+
+        // Update CD_To_Upload sheet with corrected address
+        updateAddressInUploadSheet_(addr.address, normalizedAddress, addr.city, addr.state, addr.zip);
+        continue;
+      }
+    } catch (error) {
+      Logger.log(`Phase 2 level ${currentAttempt - 1} error for ${addr.address}: ${error.message}`);
+      if (error.message.includes('limit') || error.message.includes('quota')) {
+        break;
+      }
+    }
+
+    // Normalization didn't work, increment attempt count and keep as pending
+    results.newEntries.push({
+      key: addr.key,
+      lat: '',
+      lng: '',
+      status: 'pending',
+      source: `-`,
+      date: new Date().toISOString().split('T')[0],
+      attemptCount: currentAttempt,
+      workingAddress: ''
+    });
+
+    results.failed++;
+
+    if (quotaUsed % 50 === 0) {
+      Utilities.sleep(100);
+    }
+  }
+
+  if (results.corrected > 0) {
+    Logger.log(`Phase 2 corrected ${results.corrected} addresses through normalization`);
   }
 
   return results;
@@ -2388,6 +2536,183 @@ function normalizeAddressKey_(address, city, state, zip) {
 }
 
 /**
+ * Progressive address normalization functions for geocoding fallback
+ * Level 1 (Light): Remove apartment/suite/unit numbers
+ * @private
+ */
+function normalizeAddressLevel1_(address) {
+  let normalized = address.trim();
+
+  // Remove apartment, suite, unit numbers and related info
+  normalized = normalized.replace(/\s+(APT|APARTMENT|SUITE|STE|UNIT|#)\s*[A-Z0-9\-]+$/i, '');
+  normalized = normalized.replace(/\s+(APT|APARTMENT|SUITE|STE|UNIT|#)\s*[A-Z0-9\-]+\s+/i, ' ');
+
+  return normalized.trim();
+}
+
+/**
+ * Level 2 (Moderate): Expand common street abbreviations
+ * @private
+ */
+function normalizeAddressLevel2_(address) {
+  let normalized = normalizeAddressLevel1_(address);
+
+  // Expand common abbreviations
+  const abbreviations = {
+    ' ST$': ' STREET',
+    ' ST ': ' STREET ',
+    ' AVE$': ' AVENUE',
+    ' AVE ': ' AVENUE ',
+    ' BLVD$': ' BOULEVARD',
+    ' BLVD ': ' BOULEVARD ',
+    ' RD$': ' ROAD',
+    ' RD ': ' ROAD ',
+    ' DR$': ' DRIVE',
+    ' DR ': ' DRIVE ',
+    ' LN$': ' LANE',
+    ' LN ': ' LANE ',
+    ' CT$': ' COURT',
+    ' CT ': ' COURT ',
+    ' PL$': ' PLACE',
+    ' PL ': ' PLACE ',
+    ' PKWY$': ' PARKWAY',
+    ' PKWY ': ' PARKWAY ',
+    ' CIR$': ' CIRCLE',
+    ' CIR ': ' CIRCLE ',
+    ' TER$': ' TERRACE',
+    ' TER ': ' TERRACE ',
+    ' WAY$': ' WAY',
+    ' HWY$': ' HIGHWAY',
+    ' HWY ': ' HIGHWAY '
+  };
+
+  normalized = normalized.toUpperCase();
+  for (const [abbr, full] of Object.entries(abbreviations)) {
+    const regex = new RegExp(abbr, 'i');
+    normalized = normalized.replace(regex, full);
+  }
+
+  return normalized.trim();
+}
+
+/**
+ * Level 3 (Aggressive): Remove directional prefixes/suffixes
+ * @private
+ */
+function normalizeAddressLevel3_(address) {
+  let normalized = normalizeAddressLevel2_(address);
+
+  // Remove directionals at beginning or end
+  normalized = normalized.replace(/^(NORTH|SOUTH|EAST|WEST|N|S|E|W|NE|NW|SE|SW)\s+/i, '');
+  normalized = normalized.replace(/\s+(NORTH|SOUTH|EAST|WEST|N|S|E|W|NE|NW|SE|SW)$/i, '');
+
+  return normalized.trim();
+}
+
+/**
+ * Level 4 (Very Aggressive): Remove street type entirely
+ * @private
+ */
+function normalizeAddressLevel4_(address) {
+  let normalized = normalizeAddressLevel3_(address);
+
+  // Remove common street types at the end
+  const streetTypes = [
+    'STREET', 'AVENUE', 'BOULEVARD', 'ROAD', 'DRIVE', 'LANE', 'COURT',
+    'PLACE', 'PARKWAY', 'CIRCLE', 'TERRACE', 'WAY', 'HIGHWAY', 'TRAIL',
+    'PATH', 'SQUARE', 'ALLEY', 'PLAZA'
+  ];
+
+  for (const type of streetTypes) {
+    const regex = new RegExp('\\s+' + type + '$', 'i');
+    normalized = normalized.replace(regex, '');
+  }
+
+  return normalized.trim();
+}
+
+/**
+ * Level 5: Get city centroid coordinates (last resort fallback)
+ * @private
+ */
+function getCityCentroid_(city, state) {
+  try {
+    const geocoder = Maps.newGeocoder();
+    const location = geocoder.geocode(`${city}, ${state}, USA`);
+
+    if (location && location.results && location.results.length > 0) {
+      const result = location.results[0];
+      return {
+        lat: result.geometry.location.lat,
+        lng: result.geometry.location.lng
+      };
+    }
+  } catch (error) {
+    Logger.log(`Failed to get city centroid for ${city}, ${state}: ${error.message}`);
+  }
+
+  return null;
+}
+
+/**
+ * Update address in CD_To_Upload sheet when a normalized version successfully geocodes
+ * This is called for normalization levels 1-4 only (NOT level 5 city centroid)
+ * @private
+ */
+function updateAddressInUploadSheet_(originalAddress, correctedAddress, city, state, zip) {
+  try {
+    const ss = SpreadsheetApp.getActive();
+    const uploadSheet = ss.getSheetByName('CD_To_Upload');
+
+    if (!uploadSheet) {
+      Logger.log('CD_To_Upload sheet not found, cannot update address');
+      return;
+    }
+
+    const data = uploadSheet.getDataRange().getValues();
+    if (data.length <= 1) return;
+
+    const header = data[0];
+    const addressIdx = header.indexOf('Address');
+    const cityIdx = header.indexOf('City');
+    const stateIdx = header.indexOf('State');
+    const zipIdx = header.indexOf('Zip');
+
+    if (addressIdx === -1) {
+      Logger.log('Address column not found in CD_To_Upload');
+      return;
+    }
+
+    // Find all rows with the original address
+    let updatedCount = 0;
+    for (let i = 1; i < data.length; i++) {
+      const row = data[i];
+      const rowAddress = String(row[addressIdx] || '').trim();
+      const rowCity = String(row[cityIdx] || '').trim();
+      const rowState = String(row[stateIdx] || '').trim();
+      const rowZip = String(row[zipIdx] || '').trim();
+
+      // Match on address, city, state, zip
+      if (rowAddress.toUpperCase() === originalAddress.toUpperCase() &&
+          rowCity.toUpperCase() === city.toUpperCase() &&
+          rowState.toUpperCase() === state.toUpperCase() &&
+          rowZip === zip) {
+        // Update the address cell
+        uploadSheet.getRange(i + 1, addressIdx + 1).setValue(correctedAddress);
+        updatedCount++;
+      }
+    }
+
+    if (updatedCount > 0) {
+      Logger.log(`Updated ${updatedCount} address(es) in CD_To_Upload: "${originalAddress}" -> "${correctedAddress}"`);
+    }
+
+  } catch (error) {
+    Logger.log(`Error updating address in CD_To_Upload: ${error.message}`);
+  }
+}
+
+/**
  * Get or create the geocode cache sheet
  * @private
  */
@@ -2397,9 +2722,21 @@ function getOrCreateGeocodeCache_() {
 
   if (!cacheSheet) {
     cacheSheet = ss.insertSheet('_GeocodeCache');
-    cacheSheet.getRange(1, 1, 1, 6).setValues([['NormalizedAddress', 'Latitude', 'Longitude', 'Status', 'Source', 'DateAdded']]);
+    cacheSheet.getRange(1, 1, 1, 8).setValues([['NormalizedAddress', 'Latitude', 'Longitude', 'Status', 'Source', 'DateAdded', 'AttemptCount', 'WorkingAddress']]);
     cacheSheet.setFrozenRows(1);
     Logger.log('Created _GeocodeCache sheet');
+  } else {
+    // Migrate existing cache if needed - add new columns if they don't exist
+    const headers = cacheSheet.getRange(1, 1, 1, cacheSheet.getLastColumn()).getValues()[0];
+    if (headers.length < 8) {
+      if (!headers.includes('AttemptCount')) {
+        cacheSheet.getRange(1, 7).setValue('AttemptCount');
+      }
+      if (!headers.includes('WorkingAddress')) {
+        cacheSheet.getRange(1, 8).setValue('WorkingAddress');
+      }
+      Logger.log('Migrated _GeocodeCache schema to include AttemptCount and WorkingAddress');
+    }
   }
 
   return cacheSheet;
@@ -2421,13 +2758,17 @@ function loadGeocodeCache_(cacheSheet) {
     const lng = row[2];
     const status = row[3] || 'exact';
     const source = row[4] || '-';
+    const attemptCount = row[6] || 0;
+    const workingAddress = row[7] || '';
 
     if (key) {
       cache[key] = {
         lat: lat,
         lng: lng,
         status: status,
-        source: source
+        source: source,
+        attemptCount: attemptCount,
+        workingAddress: workingAddress
       };
     }
   }
@@ -2448,12 +2789,14 @@ function saveGeocodeCache_(cacheSheet, newEntries) {
     entry.lng || '',
     entry.status || 'exact',
     entry.source || '-',
-    entry.date || new Date().toISOString().split('T')[0]
+    entry.date || new Date().toISOString().split('T')[0],
+    entry.attemptCount || 0,
+    entry.workingAddress || ''
   ]);
 
   const nextRow = cacheSheet.getLastRow() + 1;
 
-  cacheSheet.getRange(nextRow, 1, newRows.length, 6).setValues(newRows);
+  cacheSheet.getRange(nextRow, 1, newRows.length, 8).setValues(newRows);
   Logger.log(`Saved ${newRows.length} new cache entries`);
 }
 
