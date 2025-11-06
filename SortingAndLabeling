@@ -1010,18 +1010,29 @@ function TEST_showAddressAndDistrictData() {
     Logger.log('');
   }
 
-  Logger.log('=== First 10 entries from Geocode Cache ===');
+  Logger.log('=== Geocode Cache Info ===');
   Logger.log('');
 
   const cacheData = cacheSheet.getDataRange().getValues();
   const cacheHeaders = cacheData[0];
+
+  Logger.log(`Cache sheet name: "${cacheSheet.getName()}"`);
+  Logger.log(`Total rows: ${cacheData.length}`);
+  Logger.log(`Column headers: ${cacheHeaders.join(', ')}`);
+  Logger.log('');
+
   const keyIdx = cacheHeaders.indexOf('AddressKey');
   const latIdx = cacheHeaders.indexOf('Latitude');
   const lngIdx = cacheHeaders.indexOf('Longitude');
   const statusIdx = cacheHeaders.indexOf('Status');
 
+  Logger.log(`Column indices: AddressKey=${keyIdx}, Latitude=${latIdx}, Longitude=${lngIdx}, Status=${statusIdx}`);
+  Logger.log('');
+  Logger.log('First 10 entries:');
+  Logger.log('');
+
   for (let i = 1; i < Math.min(11, cacheData.length); i++) {
-    Logger.log(`Cache entry ${i}:`);
+    Logger.log(`Entry ${i}:`);
     Logger.log(`  Key: ${cacheData[i][keyIdx]}`);
     Logger.log(`  Lat/Lng: ${cacheData[i][latIdx]}, ${cacheData[i][lngIdx]}`);
     Logger.log(`  Status: ${cacheData[i][statusIdx]}`);
