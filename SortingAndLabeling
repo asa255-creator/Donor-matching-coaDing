@@ -961,6 +961,123 @@ function storePropertySelection(propertyName) {
 }
 
 /**
+ * TEST FUNCTION - Diagnose shapefile loading issues
+ * Run this from Apps Script editor to test loading shapefiles for a specific state
+ * Check the logs (View → Logs or Ctrl+Enter) after running
+ */
+function TEST_diagnoseShapefileLoading() {
+  const stateCode = 'KY'; // Change this to test different states
+
+  Logger.log('=== SHAPEFILE LOADING DIAGNOSTIC TEST ===');
+  Logger.log(`Testing state: ${stateCode}`);
+  Logger.log('');
+
+  // Get state folder
+  const stateFolder = getStateFolder_(stateCode);
+  if (!stateFolder) {
+    Logger.log('ERROR: State folder not found!');
+    Logger.log('Make sure you have a folder for this state in your District Shapefiles folder');
+    return;
+  }
+  Logger.log(`✓ Found state folder: ${stateFolder.getName()}`);
+  Logger.log('');
+
+  // Scan subfolders
+  Logger.log('Scanning subfolders...');
+  const subfolders = stateFolder.getFolders();
+  let folderCount = 0;
+
+  while (subfolders.hasNext()) {
+    const subfolder = subfolders.next();
+    const folderName = subfolder.getName();
+    const folderNameLower = folderName.toLowerCase();
+    folderCount++;
+
+    Logger.log(`\nSubfolder ${folderCount}: "${folderName}"`);
+
+    // Check which district type this folder matches
+    let districtType = null;
+    if (folderNameLower.includes('federal')) {
+      districtType = 'federal';
+    } else if (folderNameLower.includes('senate')) {
+      districtType = 'senate';
+    } else if (folderNameLower.includes('house')) {
+      districtType = 'house';
+    } else if (folderNameLower.includes('count')) {
+      districtType = 'county';
+    }
+
+    if (districtType) {
+      Logger.log(`  → Detected as: ${districtType.toUpperCase()} district`);
+    } else {
+      Logger.log(`  → WARNING: Folder name doesn't match any district type!`);
+      Logger.log(`  → Expected keywords: "federal", "senate", "house", or "count"`);
+    }
+
+    // Look for GeoJSON files
+    const files = subfolder.getFiles();
+    let fileCount = 0;
+    let foundGeoJson = false;
+
+    while (files.hasNext()) {
+      const file = files.next();
+      const fileName = file.getName();
+      const fileNameLower = fileName.toLowerCase();
+      fileCount++;
+
+      if (fileNameLower.endsWith('.geojson') || fileNameLower.endsWith('.json')) {
+        foundGeoJson = true;
+        Logger.log(`  → Found GeoJSON: "${fileName}"`);
+        Logger.log(`     File ID: ${file.getId()}`);
+
+        // Check if we have a stored property mapping for this file
+        const props = PropertiesService.getDocumentProperties();
+        const mappingKey = 'shapefile_property_' + file.getId();
+        const storedProperty = props.getProperty(mappingKey);
+
+        if (storedProperty) {
+          Logger.log(`     ✓ Has property mapping: "${storedProperty}"`);
+        } else {
+          Logger.log(`     ✗ No property mapping stored (will prompt user)`);
+        }
+
+        // Try to parse and show first feature properties
+        try {
+          const content = file.getBlob().getDataAsString();
+          const geoJson = JSON.parse(content);
+
+          if (geoJson.features && geoJson.features.length > 0) {
+            const props = geoJson.features[0].properties || {};
+            const propKeys = Object.keys(props);
+            Logger.log(`     Available properties (${propKeys.length}): ${propKeys.join(', ')}`);
+          } else {
+            Logger.log(`     WARNING: No features found in GeoJSON!`);
+          }
+        } catch (error) {
+          Logger.log(`     ERROR parsing GeoJSON: ${error.message}`);
+        }
+
+        break; // Only check first GeoJSON file
+      }
+    }
+
+    if (!foundGeoJson) {
+      Logger.log(`  → WARNING: No GeoJSON files found in this folder!`);
+      Logger.log(`  → Expected files ending in .geojson or .json`);
+    }
+  }
+
+  if (folderCount === 0) {
+    Logger.log('\nWARNING: No subfolders found in state folder!');
+    Logger.log('Expected subfolders like: "Federal", "Senate", "House", "Counties"');
+  }
+
+  Logger.log('\n=== END DIAGNOSTIC TEST ===');
+  Logger.log('\nTo actually load the shapefiles, the system will call loadStateShapefiles_()');
+  Logger.log('This test just shows what it would find and any issues detected.');
+}
+
+/**
  * Reset all stored property mappings
  * Called from menu: Donor Tools → Reset District Property Mappings
  */
