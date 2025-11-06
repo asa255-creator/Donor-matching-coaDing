@@ -3150,7 +3150,7 @@ function cd_receiveResults_(body) {
     // Define header
     const header = [
       'PersonID', 'NameFirst', 'NameLast', 'Address', 'City', 'State', 'Zip',
-      'TotalAmount', 'TotalWeighted', 'Occupation', 'Employer', 'Notes'
+      'TotalAmount', 'TotalWeighted', 'GaveLocally', 'NumberOfDonations', 'Occupation', 'Employer', 'Notes'
     ];
 
     // First batch: Clear sheet and write header
@@ -3650,11 +3650,19 @@ function cd_getMatcherScript_() {
     '    # Calculate totals',
     '    total_amount = 0',
     '    total_weighted = 0',
+    '    gave_locally = False  # Check if any donation is from KREF (origin "K")',
+    '    num_donations = len(records)  # Total count of donations',
+    '    ',
     '    for rec in records:',
     '        try: total_amount += float(rec.get("Amount", 0) or 0)',
     '        except: pass',
     '        try: total_weighted += float(rec.get("WeightedAmount", 0) or 0)',
     '        except: pass',
+    '        ',
+    '        # Check if this donation is from KREF (origin starts with "K:")',
+    '        donation_id = rec.get("DonationID", "")',
+    '        if donation_id.startswith("K:"):',
+    '            gave_locally = True',
     '    ',
     '    # Build notes - Option 2 format: $amount to recipient on date',
     '    # Find oldest valid date for summary (use original string)',
@@ -3681,6 +3689,8 @@ function cd_getMatcherScript_() {
     '        zip_code,',
     '        f"${total_amount:.2f}",',
     '        f"${total_weighted:.2f}",',
+    '        "TRUE" if gave_locally else "FALSE",  # Gave Locally',
+    '        str(num_donations),  # Number of Donations',
     '        occupation,',
     '        employer,',
     '        notes',
