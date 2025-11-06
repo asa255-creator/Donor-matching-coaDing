@@ -1089,36 +1089,28 @@ function TEST_districtMatchingForRow() {
   Logger.log(`Zip: ${zip}`);
   Logger.log('');
 
-  // Get geocoded coordinates
+  // Get geocoded coordinates from cache (uses hardcoded column indices)
   const cacheSheet = getOrCreateGeocodeCache_();
-  const cacheData = cacheSheet.getDataRange().getValues();
-  const cacheHeaders = cacheData[0];
-  const keyIdx = cacheHeaders.indexOf('AddressKey');
-  const latIdx = cacheHeaders.indexOf('Latitude');
-  const lngIdx = cacheHeaders.indexOf('Longitude');
-  const statusIdx = cacheHeaders.indexOf('Status');
+  const cache = loadGeocodeCache_(cacheSheet);
 
   const addressKey = normalizeAddressKey_(address, city, state, zip);
   Logger.log(`Looking for geocode with key: ${addressKey}`);
 
-  let lat = null;
-  let lng = null;
+  const cached = cache[addressKey];
 
-  for (let i = 1; i < cacheData.length; i++) {
-    if (cacheData[i][keyIdx] === addressKey) {
-      lat = cacheData[i][latIdx];
-      lng = cacheData[i][lngIdx];
-      const status = cacheData[i][statusIdx];
-      Logger.log(`✓ Found geocoded location: ${lat}, ${lng} (${status})`);
-      break;
-    }
-  }
-
-  if (!lat || !lng) {
+  if (!cached || !cached.lat || !cached.lng) {
     Logger.log('ERROR: No geocoded coordinates found for this address!');
     Logger.log('You may need to run "Improve Geocode Cache" first.');
+    Logger.log(`Cache has ${Object.keys(cache).length} total entries`);
+    Logger.log('First 5 cache keys:');
+    Object.keys(cache).slice(0, 5).forEach(key => Logger.log(`  "${key}"`));
     return;
   }
+
+  const lat = cached.lat;
+  const lng = cached.lng;
+  Logger.log(`✓ Found geocoded location: ${lat}, ${lng} (${cached.status})`);
+
 
   Logger.log('');
   Logger.log('Loading shapefiles for state...');
