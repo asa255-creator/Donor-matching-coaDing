@@ -169,3 +169,333 @@ function troubleshoot_findSheet(sheetName) {
 
   return info;
 }
+
+/**
+ * TEST FUNCTION - Show first 10 rows from both sheets side by side
+ * This helps identify which rows have geocodes and district matches
+ */
+function TEST_showAddressAndDistrictData() {
+  Logger.log('=== ADDRESS AND DISTRICT DATA COMPARISON ===');
+
+  const ss = SpreadsheetApp.getActive();
+  const uploadSheet = ss.getSheetByName('CD_To_Upload');
+  const cacheSheet = getOrCreateGeocodeCache_();
+
+  if (!uploadSheet) {
+    Logger.log('ERROR: CD_To_Upload sheet not found!');
+    return;
+  }
+
+  // Get upload sheet data
+  const uploadHeaders = uploadSheet.getRange(1, 1, 1, uploadSheet.getLastColumn()).getValues()[0];
+  const addressIdx = uploadHeaders.indexOf('Address');
+  const cityIdx = uploadHeaders.indexOf('City');
+  const stateIdx = uploadHeaders.indexOf('State');
+  const zipIdx = uploadHeaders.indexOf('Zip');
+  const fedDistIdx = uploadHeaders.indexOf('Federal District');
+  const stateSenateIdx = uploadHeaders.indexOf('State Senate District');
+  const stateHouseIdx = uploadHeaders.indexOf('State House District');
+  const countyIdx = uploadHeaders.indexOf('County');
+
+  Logger.log('First 10 rows from CD_To_Upload:');
+  Logger.log('');
+
+  const numRows = Math.min(11, uploadSheet.getLastRow()); // Header + 10 data rows
+  const uploadData = uploadSheet.getRange(2, 1, numRows - 1, uploadSheet.getLastColumn()).getValues();
+
+  for (let i = 0; i < Math.min(10, uploadData.length); i++) {
+    const row = uploadData[i];
+    const rowNum = i + 2;
+    Logger.log(`Row ${rowNum}:`);
+    Logger.log(`  Address: ${row[addressIdx]}`);
+    Logger.log(`  City: ${row[cityIdx]}, State: ${row[stateIdx]}, Zip: ${row[zipIdx]}`);
+    Logger.log(`  Federal District: "${row[fedDistIdx] || '(blank)'}"`);
+    Logger.log(`  State Senate: "${row[stateSenateIdx] || '(blank)'}"`);
+    Logger.log(`  State House: "${row[stateHouseIdx] || '(blank)'}"`);
+    Logger.log(`  County: "${row[countyIdx] || '(blank)'}"`);
+
+    // Check if geocoded
+    const addressKey = normalizeAddressKey_(row[addressIdx], row[cityIdx], row[stateIdx], row[zipIdx]);
+    Logger.log(`  Normalized key: ${addressKey}`);
+    Logger.log('');
+  }
+
+  Logger.log('=== Geocode Cache Info ===');
+  Logger.log('');
+
+  const cacheData = cacheSheet.getDataRange().getValues();
+  const cacheHeaders = cacheData[0];
+
+  Logger.log(`Cache sheet name: "${cacheSheet.getName()}"`);
+  Logger.log(`Total rows: ${cacheData.length}`);
+  Logger.log(`Column headers: ${cacheHeaders.join(', ')}`);
+  Logger.log('');
+
+  const keyIdx = cacheHeaders.indexOf('AddressKey');
+  const latIdx = cacheHeaders.indexOf('Latitude');
+  const lngIdx = cacheHeaders.indexOf('Longitude');
+  const statusIdx = cacheHeaders.indexOf('Status');
+
+  Logger.log(`Column indices: AddressKey=${keyIdx}, Latitude=${latIdx}, Longitude=${lngIdx}, Status=${statusIdx}`);
+  Logger.log('');
+  Logger.log('First 10 entries:');
+  Logger.log('');
+
+  for (let i = 1; i < Math.min(11, cacheData.length); i++) {
+    Logger.log(`Entry ${i}:`);
+    Logger.log(`  Key: ${cacheData[i][keyIdx]}`);
+    Logger.log(`  Lat/Lng: ${cacheData[i][latIdx]}, ${cacheData[i][lngIdx]}`);
+    Logger.log(`  Status: ${cacheData[i][statusIdx]}`);
+    Logger.log('');
+  }
+
+  Logger.log('=== END ===');
+}
+
+/**
+ * TEST FUNCTION - Test district matching for a specific row
+ * Run this to see detailed matching process for one address
+ * Change ROW_TO_TEST to test different addresses (2 = first data row)
+ */
+function TEST_districtMatchingForRow() {
+  const ROW_TO_TEST = 3; // Change this to test different rows (2 = first data row)
+  const STATE_TO_TEST = 'KY'; // Change if testing different state
+
+  Logger.log('=== DISTRICT MATCHING TEST ===');
+  Logger.log(`Testing row ${ROW_TO_TEST} with state ${STATE_TO_TEST}`);
+  Logger.log('');
+
+  // Get the sheet
+  const ss = SpreadsheetApp.getActive();
+  const uploadSheet = ss.getSheetByName('CD_To_Upload');
+
+  if (!uploadSheet) {
+    Logger.log('ERROR: CD_To_Upload sheet not found!');
+    return;
+  }
+
+  // Get headers and find column indices
+  const headers = uploadSheet.getRange(1, 1, 1, uploadSheet.getLastColumn()).getValues()[0];
+  const addressIdx = headers.indexOf('Address');
+  const cityIdx = headers.indexOf('City');
+  const stateIdx = headers.indexOf('State');
+  const zipIdx = headers.indexOf('Zip');
+
+  if (addressIdx === -1 || cityIdx === -1 || stateIdx === -1 || zipIdx === -1) {
+    Logger.log('ERROR: Could not find address columns!');
+    return;
+  }
+
+  // Get the test row
+  const row = uploadSheet.getRange(ROW_TO_TEST, 1, 1, uploadSheet.getLastColumn()).getValues()[0];
+  const address = row[addressIdx];
+  const city = row[cityIdx];
+  const state = row[stateIdx];
+  const zip = row[zipIdx];
+
+  Logger.log(`Address: ${address}`);
+  Logger.log(`City: ${city}`);
+  Logger.log(`State: ${state}`);
+  Logger.log(`Zip: ${zip}`);
+  Logger.log('');
+
+  // Get geocoded coordinates from cache (uses hardcoded column indices)
+  const cacheSheet = getOrCreateGeocodeCache_();
+  const cache = loadGeocodeCache_(cacheSheet);
+
+  const addressKey = normalizeAddressKey_(address, city, state, zip);
+  Logger.log(`Looking for geocode with key: ${addressKey}`);
+
+  const cached = cache[addressKey];
+
+  if (!cached || !cached.lat || !cached.lng) {
+    Logger.log('ERROR: No geocoded coordinates found for this address!');
+    Logger.log('You may need to run "Improve Geocode Cache" first.');
+    Logger.log(`Cache has ${Object.keys(cache).length} total entries`);
+    Logger.log('First 5 cache keys:');
+    Object.keys(cache).slice(0, 5).forEach(key => Logger.log(`  "${key}"`));
+    return;
+  }
+
+  const lat = cached.lat;
+  const lng = cached.lng;
+  Logger.log(`✓ Found geocoded location: ${lat}, ${lng} (${cached.status})`);
+
+
+  Logger.log('');
+  Logger.log('Loading shapefiles for state...');
+
+  // Load shapefiles
+  const shapes = loadStateShapefiles_(STATE_TO_TEST);
+
+  Logger.log('');
+  Logger.log('Shapefile loading results:');
+  Logger.log(`  Federal: ${shapes.federal ? '✓ Loaded (' + shapes.federal.fileName + ')' : '✗ Not loaded'}`);
+  Logger.log(`  Senate: ${shapes.senate ? '✓ Loaded (' + shapes.senate.fileName + ')' : '✗ Not loaded'}`);
+  Logger.log(`  House: ${shapes.house ? '✓ Loaded (' + shapes.house.fileName + ')' : '✗ Not loaded'}`);
+  Logger.log(`  County: ${shapes.county ? '✓ Loaded (' + shapes.county.fileName + ')' : '✗ Not loaded'}`);
+  Logger.log('');
+
+  // Test matching for each district type
+  Logger.log('Testing point-in-polygon matching...');
+  Logger.log('');
+
+  // Federal
+  if (shapes.federal) {
+    Logger.log('FEDERAL DISTRICTS:');
+    Logger.log(`  Using property: "${shapes.federal.propertyName}"`);
+    Logger.log(`  Total features: ${shapes.federal.geoJson.features.length}`);
+    const result = findContainingFeature_(lat, lng, shapes.federal.geoJson, shapes.federal.propertyName);
+    Logger.log(`  Match result: ${result ? '"' + result + '"' : 'null (not in any district)'}`);
+    Logger.log('');
+  }
+
+  // Senate
+  if (shapes.senate) {
+    Logger.log('STATE SENATE DISTRICTS:');
+    Logger.log(`  Using property: "${shapes.senate.propertyName}"`);
+    Logger.log(`  Total features: ${shapes.senate.geoJson.features.length}`);
+    const result = findContainingFeature_(lat, lng, shapes.senate.geoJson, shapes.senate.propertyName);
+    Logger.log(`  Match result: ${result ? '"' + result + '"' : 'null (not in any district)'}`);
+    Logger.log('');
+  }
+
+  // House
+  if (shapes.house) {
+    Logger.log('STATE HOUSE DISTRICTS:');
+    Logger.log(`  Using property: "${shapes.house.propertyName}"`);
+    Logger.log(`  Total features: ${shapes.house.geoJson.features.length}`);
+    const result = findContainingFeature_(lat, lng, shapes.house.geoJson, shapes.house.propertyName);
+    Logger.log(`  Match result: ${result ? '"' + result + '"' : 'null (not in any district)'}`);
+    Logger.log('');
+  }
+
+  // County
+  if (shapes.county) {
+    Logger.log('COUNTIES:');
+    Logger.log(`  Using property: "${shapes.county.propertyName}"`);
+    Logger.log(`  Total features: ${shapes.county.geoJson.features.length}`);
+    const result = findContainingFeature_(lat, lng, shapes.county.geoJson, shapes.county.propertyName);
+    Logger.log(`  Match result: ${result ? '"' + result + '"' : 'null (not in any district)'}`);
+    Logger.log('');
+  }
+
+  Logger.log('=== END TEST ===');
+}
+
+/**
+ * TEST FUNCTION - Diagnose shapefile loading issues
+ * Run this from Apps Script editor to test loading shapefiles for a specific state
+ * Check the logs (View → Logs or Ctrl+Enter) after running
+ */
+function TEST_diagnoseShapefileLoading() {
+  const stateCode = 'KY'; // Change this to test different states
+
+  Logger.log('=== SHAPEFILE LOADING DIAGNOSTIC TEST ===');
+  Logger.log(`Testing state: ${stateCode}`);
+  Logger.log('');
+
+  // Get state folder
+  const stateFolder = getStateFolder_(stateCode);
+  if (!stateFolder) {
+    Logger.log('ERROR: State folder not found!');
+    Logger.log('Make sure you have a folder for this state in your District Shapefiles folder');
+    return;
+  }
+  Logger.log(`✓ Found state folder: ${stateFolder.getName()}`);
+  Logger.log('');
+
+  // Scan subfolders
+  Logger.log('Scanning subfolders...');
+  const subfolders = stateFolder.getFolders();
+  let folderCount = 0;
+
+  while (subfolders.hasNext()) {
+    const subfolder = subfolders.next();
+    const folderName = subfolder.getName();
+    const folderNameLower = folderName.toLowerCase();
+    folderCount++;
+
+    Logger.log(`\nSubfolder ${folderCount}: "${folderName}"`);
+
+    // Check which district type this folder matches
+    let districtType = null;
+    if (folderNameLower.includes('federal')) {
+      districtType = 'federal';
+    } else if (folderNameLower.includes('senate')) {
+      districtType = 'senate';
+    } else if (folderNameLower.includes('house')) {
+      districtType = 'house';
+    } else if (folderNameLower.includes('count')) {
+      districtType = 'county';
+    }
+
+    if (districtType) {
+      Logger.log(`  → Detected as: ${districtType.toUpperCase()} district`);
+    } else {
+      Logger.log(`  → WARNING: Folder name doesn't match any district type!`);
+      Logger.log(`  → Expected keywords: "federal", "senate", "house", or "count"`);
+    }
+
+    // Look for GeoJSON files
+    const files = subfolder.getFiles();
+    let fileCount = 0;
+    let foundGeoJson = false;
+
+    while (files.hasNext()) {
+      const file = files.next();
+      const fileName = file.getName();
+      const fileNameLower = fileName.toLowerCase();
+      fileCount++;
+
+      if (fileNameLower.endsWith('.geojson') || fileNameLower.endsWith('.json')) {
+        foundGeoJson = true;
+        Logger.log(`  → Found GeoJSON: "${fileName}"`);
+        Logger.log(`     File ID: ${file.getId()}`);
+
+        // Check if we have a stored property mapping for this file
+        const props = PropertiesService.getDocumentProperties();
+        const mappingKey = 'shapefile_property_' + file.getId();
+        const storedProperty = props.getProperty(mappingKey);
+
+        if (storedProperty) {
+          Logger.log(`     ✓ Has property mapping: "${storedProperty}"`);
+        } else {
+          Logger.log(`     ✗ No property mapping stored (will prompt user)`);
+        }
+
+        // Try to parse and show first feature properties
+        try {
+          const content = file.getBlob().getDataAsString();
+          const geoJson = JSON.parse(content);
+
+          if (geoJson.features && geoJson.features.length > 0) {
+            const props = geoJson.features[0].properties || {};
+            const propKeys = Object.keys(props);
+            Logger.log(`     Available properties (${propKeys.length}): ${propKeys.join(', ')}`);
+          } else {
+            Logger.log(`     WARNING: No features found in GeoJSON!`);
+          }
+        } catch (error) {
+          Logger.log(`     ERROR parsing GeoJSON: ${error.message}`);
+        }
+
+        break; // Only check first GeoJSON file
+      }
+    }
+
+    if (!foundGeoJson) {
+      Logger.log(`  → WARNING: No GeoJSON files found in this folder!`);
+      Logger.log(`  → Expected files ending in .geojson or .json`);
+    }
+  }
+
+  if (folderCount === 0) {
+    Logger.log('\nWARNING: No subfolders found in state folder!');
+    Logger.log('Expected subfolders like: "Federal", "Senate", "House", "Counties"');
+  }
+
+  Logger.log('\n=== END DIAGNOSTIC TEST ===');
+  Logger.log('\nTo actually load the shapefiles, the system will call loadStateShapefiles_()');
+  Logger.log('This test just shows what it would find and any issues detected.');
+}
