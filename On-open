@@ -13,6 +13,7 @@ function onOpen() {
   // Donor Tools menu now includes your local functions plus the final donor ID list creator
   ui.createMenu('Donor Tools')
     .addItem('Run locally: prepare job and show Terminal command', 'dl_prepareLocalJobAndShowCommand_')
+    .addItem('Continue training: add more labeled pairs', 'dl_prepareIncrementalTrainingJob_')
     .addItem('Open progress sidebar', 'dl_showProgressSidebar')
     .addSeparator()
     .addItem('Upload Campaign Deputy Export', 'cd_uploadDialog')

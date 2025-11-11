@@ -728,6 +728,86 @@ function dl_prepareLocalJobAndShowCommand_() {
   SpreadsheetApp.getUi().showModalDialog(html, 'Run locally');
 }
 
+/** Incremental training: load existing data and add more pairs */
+function dl_prepareIncrementalTrainingJob_() {
+  dl_resetProgress_();
+  dl_setProgress_('Preparing incremental training job', 0, 1, 'Creating Drive bundle');
+
+  const webAppUrl = dl_getExecUrlFromOptions_();
+  if (!webAppUrl) {
+    SpreadsheetApp.getUi().alert(
+      'Put your Web App URL ending with /exec in Options!I2.\nExample:\nhttps://script.google.com/macros/s/AKfycb.../exec'
+    );
+    return;
+  }
+
+  const kref = dl_exportSheetAsCsv_(DL_CFG.krefSheet);
+  const fec  = dl_exportSheetAsCsv_(DL_CFG.fecSheet);
+  if (!kref.file || !fec.file) {
+    SpreadsheetApp.getUi().alert(
+      'Missing input sheets or no rows. Confirm sheets exist: ' + DL_CFG.krefSheet + ' and ' + DL_CFG.fecSheet
+    );
+    return;
+  }
+
+  const token = dl_makeToken_();
+  const until = Date.now() + DL_CFG.tokenMinutes * 60 * 1000;
+
+  // Read match threshold from Options!J2
+  const ss = SpreadsheetApp.getActive();
+  const optionsSheet = ss.getSheetByName('Options');
+  const threshold = optionsSheet ? Number(optionsSheet.getRange('J2').getValue() || 0.7) : 0.7;
+
+  const job = {
+    jobId: 'job_' + Utilities.getUuid().replace(/-/g, '').slice(0, 12),
+    mode: 'incremental',  // NEW: Flag to indicate incremental training mode
+    cfg: {
+      sampleTrainingPairs: DL_CFG.sampleTrainingPairs,
+      uncertainBatchSize: DL_CFG.uncertainBatchSize,
+      uncertaintyBand: DL_CFG.uncertaintyBand,
+      maxPairsPerBlock: DL_CFG.maxPairsPerBlock,
+      maxTotalPairs: DL_CFG.maxTotalPairs,
+      predictThreshold: threshold
+    },
+    krefUrl: webAppUrl + '?csv=kref&token=' + encodeURIComponent(token),
+    fecUrl:  webAppUrl + '?csv=fec&token=' + encodeURIComponent(token),
+    modelUrl: webAppUrl + '?model=1',
+    resultUrl: webAppUrl + '?result=1&token=' + encodeURIComponent(token)
+  };
+
+  const props = PropertiesService.getDocumentProperties();
+  props.setProperty('dl_token', token);
+  props.setProperty('dl_token_until', String(until));
+  props.setProperty('dl_job_json', JSON.stringify(job));
+  props.setProperty('dl_kref_fileId', kref.file.getId());
+  props.setProperty('dl_fec_fileId',  fec.file.getId());
+  props.setProperty('dl_staging_folderId', kref.folder.getId());
+
+  const cmd =
+    "curl -sSL '" + webAppUrl + "?runner=1' | " +
+    "python3 - --bundle '" + webAppUrl + "?job=1&token=" + token + "' " +
+    "--result '" + webAppUrl + "?result=1&token=" + token + "'";
+
+  dl_setProgress_('Waiting', 0, 0, 'Copy the command into Terminal');
+
+  const html = HtmlService.createHtmlOutput(
+    '<div style="font-family:system-ui,Arial;padding:12px;max-width:720px">' +
+      '<div style="margin:6px 0"><strong>Incremental Training Mode</strong></div>' +
+      '<div style="margin:6px 0;color:#666">This will load your existing training data and let you add more labeled pairs.</div>' +
+      '<div style="margin:6px 0">Token expires in about ' + DL_CFG.tokenMinutes + ' minutes</div>' +
+      '<div style="margin:6px 0">Copy this command into your Mac Terminal:</div>' +
+      '<textarea id="cmd" style="width:100%;height:140px" readonly>' +
+        dl_htmlEscape_(cmd) +
+      '</textarea>' +
+      '<div style="margin-top:8px">' +
+        '<button onclick="navigator.clipboard.writeText(document.getElementById(\'cmd\').value)">Copy to clipboard</button>' +
+      '</div>' +
+      '<div style="margin-top:8px;color:#666;font-size:12px">Keep this sheet open. Progress will appear in the sidebar.</div>' +
+    '</div>'
+  ).setWidth(740).setHeight(320);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Continue Training Locally');
+}
+
 /** Progress sidebar */
 function dl_showProgressSidebar() {
   const html = HtmlService.createHtmlOutput(
@@ -1278,58 +1358,92 @@ function doGet(e) {
       'existing_model = http_get(job["modelUrl"]).decode("utf-8")',
       'existing_data = json.loads(existing_model)',
       'is_continuing = False  # Track if we loaded existing data',
+      'job_mode = job.get("mode", "full")  # Get job mode (full or incremental)',
       '',
       'if existing_data.get("weights"):',
       '    weights_count = len(existing_data.get("weights", []))',
       '    print(f"Found existing model with {weights_count} weights")',
       '    ',
-      '    # Ask user: load or new',
-      '    while True:',
-      '        choice = read_tty("(L)oad existing training data and continue, or start (N)ew? (l/n): ").strip().lower()',
-      '        if choice == "l":',
-      '            print("Loading existing training data...")',
-      '            # Fetch training data',
-      '            training_url = job["modelUrl"].replace("model=1", "training=1")',
-      '            training_json = http_get(training_url).decode("utf-8")',
-      '            training_data = json.loads(training_json)',
+      '    # Incremental mode: automatically load existing data',
+      '    if job_mode == "incremental":',
+      '        print("INCREMENTAL MODE: Loading existing training data...")',
+      '        training_url = job["modelUrl"].replace("model=1", "training=1")',
+      '        training_json = http_get(training_url).decode("utf-8")',
+      '        training_data = json.loads(training_json)',
+      '        ',
+      '        if training_data.get("training_rows"):',
+      '            training_rows = training_data["training_rows"]',
+      '            w = existing_data["weights"]',
+      '            # NOTE: is_continuing stays False so we run training loop',
+      '            loaded_training_count = len(training_rows)',
       '            ',
-      '            if training_data.get("training_rows"):',
-      '                training_rows = training_data["training_rows"]',
-      '                w = existing_data["weights"]',
-      '                is_continuing = True  # Mark as continuing',
-      '                loaded_training_count = len(training_rows)  # Track how many we loaded',
+      '            # Build seen_pairs from loaded data',
+      '            for row in training_rows:',
+      '                a_key = (row["a"]["origin"], row["a"]["row"])',
+      '                b_key = (row["b"]["origin"], row["b"]["row"])',
+      '                pair_key = (a_key, b_key) if a_key <= b_key else (b_key, a_key)',
+      '                seen_pairs.add(pair_key)',
       '                ',
-      '                # Build seen_pairs from loaded data',
-      '                for row in training_rows:',
-      '                    a_key = (row["a"]["origin"], row["a"]["row"])',
-      '                    b_key = (row["b"]["origin"], row["b"]["row"])',
-      '                    pair_key = (a_key, b_key) if a_key <= b_key else (b_key, a_key)',
-      '                    seen_pairs.add(pair_key)',
-      '                    ',
-      '                    # Track donor usage',
-      '                    donor_usage_count[a_key] = donor_usage_count.get(a_key, 0) + 1',
-      '                    donor_usage_count[b_key] = donor_usage_count.get(b_key, 0) + 1',
-      '                ',
-      '                print(f"Loaded {len(training_rows)} existing labeled pairs")',
-      '                print(f"Model has {len(w)} weights")',
-      '            else:',
-      '                print("No training data found, starting fresh")',
-      '            break',
-      '        elif choice == "n":',
-      '            print("Starting new training session...")',
-      '            # Clear any existing weights so we start fresh',
-      '            print("Clearing any previously saved model weights...")',
-      '            clear_url = job["modelUrl"].replace("model=1", "clear=1")',
-      '            try:',
-      '                http_get(clear_url)',
-      '                print("Old model cleared.")',
-      '            except:',
-      '                print("(No old model to clear)")',
-      '            break',
+      '                # Track donor usage',
+      '                donor_usage_count[a_key] = donor_usage_count.get(a_key, 0) + 1',
+      '                donor_usage_count[b_key] = donor_usage_count.get(b_key, 0) + 1',
+      '            ',
+      '            print(f"Loaded {len(training_rows)} existing labeled pairs")',
+      '            print(f"Model has {len(w)} weights")',
+      '            print("You can now add more training pairs to improve the model.\\n")',
       '        else:',
-      '            print(\'Please enter "l" to load or "n" for new.\')',
+      '            print("No training data found, starting fresh")',
+      '    # Full mode: ask user to load or start new',
+      '    else:',
+      '        while True:',
+      '            choice = read_tty("(L)oad existing training data and continue, or start (N)ew? (l/n): ").strip().lower()',
+      '            if choice == "l":',
+      '                print("Loading existing training data...")',
+      '                # Fetch training data',
+      '                training_url = job["modelUrl"].replace("model=1", "training=1")',
+      '                training_json = http_get(training_url).decode("utf-8")',
+      '                training_data = json.loads(training_json)',
+      '                ',
+      '                if training_data.get("training_rows"):',
+      '                    training_rows = training_data["training_rows"]',
+      '                    w = existing_data["weights"]',
+      '                    is_continuing = True  # Mark as continuing (skip training loop)',
+      '                    loaded_training_count = len(training_rows)  # Track how many we loaded',
+      '                    ',
+      '                    # Build seen_pairs from loaded data',
+      '                    for row in training_rows:',
+      '                        a_key = (row["a"]["origin"], row["a"]["row"])',
+      '                        b_key = (row["b"]["origin"], row["b"]["row"])',
+      '                        pair_key = (a_key, b_key) if a_key <= b_key else (b_key, a_key)',
+      '                        seen_pairs.add(pair_key)',
+      '                        ',
+      '                        # Track donor usage',
+      '                        donor_usage_count[a_key] = donor_usage_count.get(a_key, 0) + 1',
+      '                        donor_usage_count[b_key] = donor_usage_count.get(b_key, 0) + 1',
+      '                    ',
+      '                    print(f"Loaded {len(training_rows)} existing labeled pairs")',
+      '                    print(f"Model has {len(w)} weights")',
+      '                else:',
+      '                    print("No training data found, starting fresh")',
+      '                break',
+      '            elif choice == "n":',
+      '                print("Starting new training session...")',
+      '                # Clear any existing weights so we start fresh',
+      '                print("Clearing any previously saved model weights...")',
+      '                clear_url = job["modelUrl"].replace("model=1", "clear=1")',
+      '                try:',
+      '                    http_get(clear_url)',
+      '                    print("Old model cleared.")',
+      '                except:',
+      '                    print("(No old model to clear)")',
+      '                break',
+      '            else:',
+      '                print(\'Please enter "l" to load or "n" for new.\')',
       'else:',
       '    print("No existing model found. Starting fresh.")',
+      '    if job_mode == "incremental":',
+      '        print("WARNING: Incremental mode requested but no existing training data found.")',
+      '        print("This will behave the same as full mode.\\n")',
       '',
       '# ----------------------------',
       '# Retraining function',
