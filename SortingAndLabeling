@@ -5,8 +5,8 @@
  * Matches addresses to Federal Districts, State Senate Districts, and Counties.
  */
 
-// All 50 states + DC (using 2-letter codes)
-const US_STATES = [
+// All 50 states + DC (using 2-letter codes) for district matching
+const DISTRICT_US_STATES = [
   'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA',
   'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD',
   'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ',
@@ -21,6 +21,261 @@ const DISTRICT_SUBFOLDER_NAMES = [
   'State House Districts',
   'Counties'
 ];
+
+// Complete ZIP code prefix to state lookup table
+// Covers all 50 states + DC and territories
+const ZIP_TO_STATE = {
+  // Massachusetts
+  '010': 'MA', '011': 'MA', '012': 'MA', '013': 'MA', '014': 'MA', '015': 'MA', '016': 'MA', '017': 'MA', '018': 'MA', '019': 'MA',
+  '020': 'MA', '021': 'MA', '022': 'MA', '023': 'MA', '024': 'MA', '025': 'MA', '026': 'MA', '027': 'MA',
+  // Rhode Island
+  '028': 'RI', '029': 'RI',
+  // New Hampshire
+  '030': 'NH', '031': 'NH', '032': 'NH', '033': 'NH', '034': 'NH', '035': 'NH', '036': 'NH', '037': 'NH', '038': 'NH',
+  // Maine
+  '039': 'ME', '040': 'ME', '041': 'ME', '042': 'ME', '043': 'ME', '044': 'ME', '045': 'ME', '046': 'ME', '047': 'ME', '048': 'ME', '049': 'ME',
+  // Vermont
+  '050': 'VT', '051': 'VT', '052': 'VT', '053': 'VT', '054': 'VT', '055': 'VT', '056': 'VT', '057': 'VT', '058': 'VT', '059': 'VT',
+  // Connecticut
+  '060': 'CT', '061': 'CT', '062': 'CT', '063': 'CT', '064': 'CT', '065': 'CT', '066': 'CT', '067': 'CT', '068': 'CT', '069': 'CT',
+  // New Jersey
+  '070': 'NJ', '071': 'NJ', '072': 'NJ', '073': 'NJ', '074': 'NJ', '075': 'NJ', '076': 'NJ', '077': 'NJ', '078': 'NJ', '079': 'NJ',
+  '080': 'NJ', '081': 'NJ', '082': 'NJ', '083': 'NJ', '084': 'NJ', '085': 'NJ', '086': 'NJ', '087': 'NJ', '088': 'NJ', '089': 'NJ',
+  // New York
+  '100': 'NY', '101': 'NY', '102': 'NY', '103': 'NY', '104': 'NY', '105': 'NY', '106': 'NY', '107': 'NY', '108': 'NY', '109': 'NY',
+  '110': 'NY', '111': 'NY', '112': 'NY', '113': 'NY', '114': 'NY', '115': 'NY', '116': 'NY', '117': 'NY', '118': 'NY', '119': 'NY',
+  '120': 'NY', '121': 'NY', '122': 'NY', '123': 'NY', '124': 'NY', '125': 'NY', '126': 'NY', '127': 'NY', '128': 'NY', '129': 'NY',
+  '130': 'NY', '131': 'NY', '132': 'NY', '133': 'NY', '134': 'NY', '135': 'NY', '136': 'NY', '137': 'NY', '138': 'NY', '139': 'NY',
+  '140': 'NY', '141': 'NY', '142': 'NY', '143': 'NY', '144': 'NY', '145': 'NY', '146': 'NY', '147': 'NY', '148': 'NY', '149': 'NY',
+  // Pennsylvania
+  '150': 'PA', '151': 'PA', '152': 'PA', '153': 'PA', '154': 'PA', '155': 'PA', '156': 'PA', '157': 'PA', '158': 'PA', '159': 'PA',
+  '160': 'PA', '161': 'PA', '162': 'PA', '163': 'PA', '164': 'PA', '165': 'PA', '166': 'PA', '167': 'PA', '168': 'PA', '169': 'PA',
+  '170': 'PA', '171': 'PA', '172': 'PA', '173': 'PA', '174': 'PA', '175': 'PA', '176': 'PA', '177': 'PA', '178': 'PA', '179': 'PA',
+  '180': 'PA', '181': 'PA', '182': 'PA', '183': 'PA', '184': 'PA', '185': 'PA', '186': 'PA', '187': 'PA', '188': 'PA', '189': 'PA',
+  '190': 'PA', '191': 'PA', '192': 'PA', '193': 'PA', '194': 'PA', '195': 'PA', '196': 'PA',
+  // Delaware
+  '197': 'DE', '198': 'DE', '199': 'DE',
+  // DC
+  '200': 'DC', '201': 'DC', '202': 'DC', '203': 'DC', '204': 'DC', '205': 'DC',
+  // Maryland
+  '206': 'MD', '207': 'MD', '208': 'MD', '209': 'MD', '210': 'MD', '211': 'MD', '212': 'MD', '213': 'MD', '214': 'MD', '215': 'MD',
+  '216': 'MD', '217': 'MD', '218': 'MD', '219': 'MD',
+  // Virginia
+  '220': 'VA', '221': 'VA', '222': 'VA', '223': 'VA', '224': 'VA', '225': 'VA', '226': 'VA', '227': 'VA', '228': 'VA', '229': 'VA',
+  '230': 'VA', '231': 'VA', '232': 'VA', '233': 'VA', '234': 'VA', '235': 'VA', '236': 'VA', '237': 'VA', '238': 'VA', '239': 'VA',
+  '240': 'VA', '241': 'VA', '242': 'VA', '243': 'VA', '244': 'VA', '245': 'VA', '246': 'VA',
+  // West Virginia
+  '247': 'WV', '248': 'WV', '249': 'WV', '250': 'WV', '251': 'WV', '252': 'WV', '253': 'WV', '254': 'WV', '255': 'WV', '256': 'WV',
+  '257': 'WV', '258': 'WV', '259': 'WV', '260': 'WV', '261': 'WV', '262': 'WV', '263': 'WV', '264': 'WV', '265': 'WV', '266': 'WV',
+  '267': 'WV', '268': 'WV',
+  // North Carolina
+  '270': 'NC', '271': 'NC', '272': 'NC', '273': 'NC', '274': 'NC', '275': 'NC', '276': 'NC', '277': 'NC', '278': 'NC', '279': 'NC',
+  '280': 'NC', '281': 'NC', '282': 'NC', '283': 'NC', '284': 'NC', '285': 'NC', '286': 'NC', '287': 'NC', '288': 'NC', '289': 'NC',
+  // South Carolina
+  '290': 'SC', '291': 'SC', '292': 'SC', '293': 'SC', '294': 'SC', '295': 'SC', '296': 'SC', '297': 'SC', '298': 'SC', '299': 'SC',
+  // Florida
+  '300': 'FL', '301': 'FL', '302': 'FL', '303': 'FL', '304': 'FL', '305': 'FL', '306': 'FL', '307': 'FL', '308': 'FL', '309': 'FL',
+  '310': 'FL', '311': 'FL', '312': 'FL', '313': 'FL', '314': 'FL', '315': 'FL', '316': 'FL', '317': 'FL', '318': 'FL', '319': 'FL',
+  '320': 'FL', '321': 'FL', '322': 'FL', '323': 'FL', '324': 'FL', '325': 'FL', '326': 'FL', '327': 'FL', '328': 'FL', '329': 'FL',
+  '330': 'FL', '331': 'FL', '332': 'FL', '333': 'FL', '334': 'FL', '335': 'FL', '336': 'FL', '337': 'FL', '338': 'FL', '339': 'FL',
+  '341': 'FL', '342': 'FL', '343': 'FL', '344': 'FL', '345': 'FL', '346': 'FL', '347': 'FL', '349': 'FL',
+  // Alabama
+  '350': 'AL', '351': 'AL', '352': 'AL', '353': 'AL', '354': 'AL', '355': 'AL', '356': 'AL', '357': 'AL', '358': 'AL', '359': 'AL',
+  '360': 'AL', '361': 'AL', '362': 'AL', '363': 'AL', '364': 'AL', '365': 'AL', '366': 'AL', '367': 'AL', '368': 'AL', '369': 'AL',
+  // Tennessee
+  '370': 'TN', '371': 'TN', '372': 'TN', '373': 'TN', '374': 'TN', '375': 'TN', '376': 'TN', '377': 'TN', '378': 'TN', '379': 'TN',
+  '380': 'TN', '381': 'TN', '382': 'TN', '383': 'TN', '384': 'TN', '385': 'TN',
+  // Mississippi
+  '386': 'MS', '387': 'MS', '388': 'MS', '389': 'MS', '390': 'MS', '391': 'MS', '392': 'MS', '393': 'MS', '394': 'MS', '395': 'MS',
+  '396': 'MS', '397': 'MS',
+  // Georgia
+  '398': 'GA', '399': 'GA', '300': 'GA', '301': 'GA', '302': 'GA', '303': 'GA', '304': 'GA', '305': 'GA', '306': 'GA', '307': 'GA',
+  '308': 'GA', '309': 'GA', '310': 'GA', '311': 'GA', '312': 'GA', '313': 'GA', '314': 'GA', '315': 'GA', '316': 'GA', '317': 'GA',
+  '318': 'GA', '319': 'GA',
+  // Kentucky (IMPORTANT STATE - was missing!)
+  '400': 'KY', '401': 'KY', '402': 'KY', '403': 'KY', '404': 'KY', '405': 'KY', '406': 'KY', '407': 'KY', '408': 'KY', '409': 'KY',
+  '410': 'KY', '411': 'KY', '412': 'KY', '413': 'KY', '414': 'KY', '415': 'KY', '416': 'KY', '417': 'KY', '418': 'KY',
+  '420': 'KY', '421': 'KY', '422': 'KY', '423': 'KY', '424': 'KY', '425': 'KY', '426': 'KY', '427': 'KY',
+  // Ohio
+  '430': 'OH', '431': 'OH', '432': 'OH', '433': 'OH', '434': 'OH', '435': 'OH', '436': 'OH', '437': 'OH', '438': 'OH', '439': 'OH',
+  '440': 'OH', '441': 'OH', '442': 'OH', '443': 'OH', '444': 'OH', '445': 'OH', '446': 'OH', '447': 'OH', '448': 'OH', '449': 'OH',
+  '450': 'OH', '451': 'OH', '452': 'OH', '453': 'OH', '454': 'OH', '455': 'OH', '456': 'OH', '457': 'OH', '458': 'OH',
+  // Indiana
+  '460': 'IN', '461': 'IN', '462': 'IN', '463': 'IN', '464': 'IN', '465': 'IN', '466': 'IN', '467': 'IN', '468': 'IN', '469': 'IN',
+  '470': 'IN', '471': 'IN', '472': 'IN', '473': 'IN', '474': 'IN', '475': 'IN', '476': 'IN', '477': 'IN', '478': 'IN', '479': 'IN',
+  // Michigan
+  '480': 'MI', '481': 'MI', '482': 'MI', '483': 'MI', '484': 'MI', '485': 'MI', '486': 'MI', '487': 'MI', '488': 'MI', '489': 'MI',
+  '490': 'MI', '491': 'MI', '492': 'MI', '493': 'MI', '494': 'MI', '495': 'MI', '496': 'MI', '497': 'MI', '498': 'MI', '499': 'MI',
+  // Iowa
+  '500': 'IA', '501': 'IA', '502': 'IA', '503': 'IA', '504': 'IA', '505': 'IA', '506': 'IA', '507': 'IA', '508': 'IA', '509': 'IA',
+  '510': 'IA', '511': 'IA', '512': 'IA', '513': 'IA', '514': 'IA', '515': 'IA', '516': 'IA', '520': 'IA', '521': 'IA', '522': 'IA',
+  '523': 'IA', '524': 'IA', '525': 'IA', '526': 'IA', '527': 'IA', '528': 'IA',
+  // Wisconsin
+  '530': 'WI', '531': 'WI', '532': 'WI', '534': 'WI', '535': 'WI', '537': 'WI', '538': 'WI', '539': 'WI',
+  '540': 'WI', '541': 'WI', '542': 'WI', '543': 'WI', '544': 'WI', '545': 'WI', '546': 'WI', '547': 'WI', '548': 'WI', '549': 'WI',
+  // Minnesota
+  '550': 'MN', '551': 'MN', '553': 'MN', '554': 'MN', '555': 'MN', '556': 'MN', '557': 'MN', '558': 'MN', '559': 'MN',
+  '560': 'MN', '561': 'MN', '562': 'MN', '563': 'MN', '564': 'MN', '565': 'MN', '566': 'MN', '567': 'MN',
+  // South Dakota
+  '570': 'SD', '571': 'SD', '572': 'SD', '573': 'SD', '574': 'SD', '575': 'SD', '576': 'SD', '577': 'SD',
+  // North Dakota
+  '580': 'ND', '581': 'ND', '582': 'ND', '583': 'ND', '584': 'ND', '585': 'ND', '586': 'ND', '587': 'ND', '588': 'ND',
+  // Montana
+  '590': 'MT', '591': 'MT', '592': 'MT', '593': 'MT', '594': 'MT', '595': 'MT', '596': 'MT', '597': 'MT', '598': 'MT', '599': 'MT',
+  // Illinois
+  '600': 'IL', '601': 'IL', '602': 'IL', '603': 'IL', '604': 'IL', '605': 'IL', '606': 'IL', '607': 'IL', '608': 'IL', '609': 'IL',
+  '610': 'IL', '611': 'IL', '612': 'IL', '613': 'IL', '614': 'IL', '615': 'IL', '616': 'IL', '617': 'IL', '618': 'IL', '619': 'IL',
+  '620': 'IL', '622': 'IL', '623': 'IL', '624': 'IL', '625': 'IL', '626': 'IL', '627': 'IL', '628': 'IL', '629': 'IL',
+  // Missouri
+  '630': 'MO', '631': 'MO', '633': 'MO', '634': 'MO', '635': 'MO', '636': 'MO', '637': 'MO', '638': 'MO', '639': 'MO',
+  '640': 'MO', '641': 'MO', '644': 'MO', '645': 'MO', '646': 'MO', '647': 'MO', '648': 'MO', '649': 'MO',
+  '650': 'MO', '651': 'MO', '652': 'MO', '653': 'MO', '654': 'MO', '655': 'MO', '656': 'MO', '657': 'MO', '658': 'MO',
+  // Kansas
+  '660': 'KS', '661': 'KS', '662': 'KS', '664': 'KS', '665': 'KS', '666': 'KS', '667': 'KS', '668': 'KS', '669': 'KS',
+  '670': 'KS', '671': 'KS', '672': 'KS', '673': 'KS', '674': 'KS', '675': 'KS', '676': 'KS', '677': 'KS', '678': 'KS', '679': 'KS',
+  // Nebraska
+  '680': 'NE', '681': 'NE', '683': 'NE', '684': 'NE', '685': 'NE', '686': 'NE', '687': 'NE', '688': 'NE', '689': 'NE',
+  '690': 'NE', '691': 'NE', '692': 'NE', '693': 'NE',
+  // Louisiana
+  '700': 'LA', '701': 'LA', '703': 'LA', '704': 'LA', '705': 'LA', '706': 'LA', '707': 'LA', '708': 'LA',
+  '710': 'LA', '711': 'LA', '712': 'LA', '713': 'LA', '714': 'LA',
+  // Arkansas
+  '716': 'AR', '717': 'AR', '718': 'AR', '719': 'AR', '720': 'AR', '721': 'AR', '722': 'AR', '723': 'AR', '724': 'AR', '725': 'AR',
+  '726': 'AR', '727': 'AR', '728': 'AR', '729': 'AR',
+  // Oklahoma
+  '730': 'OK', '731': 'OK', '734': 'OK', '735': 'OK', '736': 'OK', '737': 'OK', '738': 'OK', '739': 'OK',
+  '740': 'OK', '741': 'OK', '743': 'OK', '744': 'OK', '745': 'OK', '746': 'OK', '747': 'OK', '748': 'OK', '749': 'OK',
+  // Texas
+  '750': 'TX', '751': 'TX', '752': 'TX', '753': 'TX', '754': 'TX', '755': 'TX', '756': 'TX', '757': 'TX', '758': 'TX', '759': 'TX',
+  '760': 'TX', '761': 'TX', '762': 'TX', '763': 'TX', '764': 'TX', '765': 'TX', '766': 'TX', '767': 'TX', '768': 'TX', '769': 'TX',
+  '770': 'TX', '771': 'TX', '772': 'TX', '773': 'TX', '774': 'TX', '775': 'TX', '776': 'TX', '777': 'TX', '778': 'TX', '779': 'TX',
+  '780': 'TX', '781': 'TX', '782': 'TX', '783': 'TX', '784': 'TX', '785': 'TX', '786': 'TX', '787': 'TX', '788': 'TX', '789': 'TX',
+  '790': 'TX', '791': 'TX', '792': 'TX', '793': 'TX', '794': 'TX', '795': 'TX', '796': 'TX', '797': 'TX', '798': 'TX', '799': 'TX',
+  // Colorado
+  '800': 'CO', '801': 'CO', '802': 'CO', '803': 'CO', '804': 'CO', '805': 'CO', '806': 'CO', '807': 'CO', '808': 'CO', '809': 'CO',
+  '810': 'CO', '811': 'CO', '812': 'CO', '813': 'CO', '814': 'CO', '815': 'CO', '816': 'CO',
+  // Wyoming
+  '820': 'WY', '821': 'WY', '822': 'WY', '823': 'WY', '824': 'WY', '825': 'WY', '826': 'WY', '827': 'WY', '828': 'WY', '829': 'WY',
+  '830': 'WY', '831': 'WY',
+  // Idaho
+  '832': 'ID', '833': 'ID', '834': 'ID', '835': 'ID', '836': 'ID', '837': 'ID', '838': 'ID',
+  // Utah
+  '840': 'UT', '841': 'UT', '842': 'UT', '843': 'UT', '844': 'UT', '845': 'UT', '846': 'UT', '847': 'UT',
+  // Arizona
+  '850': 'AZ', '851': 'AZ', '852': 'AZ', '853': 'AZ', '855': 'AZ', '856': 'AZ', '857': 'AZ', '859': 'AZ',
+  '860': 'AZ', '863': 'AZ', '864': 'AZ', '865': 'AZ',
+  // New Mexico
+  '870': 'NM', '871': 'NM', '872': 'NM', '873': 'NM', '874': 'NM', '875': 'NM', '877': 'NM', '878': 'NM', '879': 'NM',
+  '880': 'NM', '881': 'NM', '882': 'NM', '883': 'NM', '884': 'NM',
+  // Nevada
+  '889': 'NV', '890': 'NV', '891': 'NV', '893': 'NV', '894': 'NV', '895': 'NV', '897': 'NV', '898': 'NV',
+  // California
+  '900': 'CA', '901': 'CA', '902': 'CA', '903': 'CA', '904': 'CA', '905': 'CA', '906': 'CA', '907': 'CA', '908': 'CA',
+  '910': 'CA', '911': 'CA', '912': 'CA', '913': 'CA', '914': 'CA', '915': 'CA', '916': 'CA', '917': 'CA', '918': 'CA',
+  '919': 'CA', '920': 'CA', '921': 'CA', '922': 'CA', '923': 'CA', '924': 'CA', '925': 'CA', '926': 'CA', '927': 'CA',
+  '928': 'CA', '930': 'CA', '931': 'CA', '932': 'CA', '933': 'CA', '934': 'CA', '935': 'CA', '936': 'CA', '937': 'CA',
+  '938': 'CA', '939': 'CA', '940': 'CA', '941': 'CA', '942': 'CA', '943': 'CA', '944': 'CA', '945': 'CA', '946': 'CA',
+  '947': 'CA', '948': 'CA', '949': 'CA', '950': 'CA', '951': 'CA', '952': 'CA', '953': 'CA', '954': 'CA', '955': 'CA',
+  '956': 'CA', '957': 'CA', '958': 'CA', '959': 'CA', '960': 'CA', '961': 'CA',
+  // Hawaii
+  '967': 'HI', '968': 'HI',
+  // Oregon
+  '970': 'OR', '971': 'OR', '972': 'OR', '973': 'OR', '974': 'OR', '975': 'OR', '976': 'OR', '977': 'OR', '978': 'OR', '979': 'OR',
+  // Washington
+  '980': 'WA', '981': 'WA', '982': 'WA', '983': 'WA', '984': 'WA', '985': 'WA', '986': 'WA', '988': 'WA', '989': 'WA',
+  '990': 'WA', '991': 'WA', '992': 'WA', '993': 'WA', '994': 'WA',
+  // Alaska
+  '995': 'AK', '996': 'AK', '997': 'AK', '998': 'AK', '999': 'AK'
+};
+
+/**
+ * Lookup state from ZIP code prefix (first 3 digits)
+ * @param {string} zipCode - ZIP code to lookup
+ * @returns {string} Two-letter state code or empty string if not found
+ */
+function lookupStateFromZip_(zipCode) {
+  if (!zipCode) return '';
+  const zipStr = String(zipCode).trim().substring(0, 3);
+  return ZIP_TO_STATE[zipStr] || '';
+}
+
+/**
+ * Check if a state value is missing or invalid
+ * @param {string} state - State value to check
+ * @returns {boolean} True if state is missing/invalid
+ */
+function isStateInvalid_(state) {
+  if (!state) return true;
+  const stateStr = String(state).trim().toUpperCase();
+  if (stateStr === '' || stateStr === 'NA' || stateStr === 'N/A' || stateStr === 'UNKNOWN' || stateStr === 'NULL') return true;
+  // Check if it's a valid state code
+  return !DISTRICT_US_STATES.includes(stateStr);
+}
+
+/**
+ * Scan CD_To_Upload sheet and fill missing State fields from ZIP codes
+ * This runs BEFORE geocoding to ensure all addresses have valid states
+ * @returns {Object} Results with counts of filled and failed
+ */
+function fillMissingStatesFromZip_() {
+  const ss = SpreadsheetApp.getActive();
+  const uploadSheet = ss.getSheetByName('CD_To_Upload');
+
+  if (!uploadSheet) {
+    Logger.log('CD_To_Upload sheet not found');
+    return { filled: 0, failed: 0, total: 0 };
+  }
+
+  const data = uploadSheet.getDataRange().getValues();
+  if (data.length <= 1) {
+    Logger.log('No data in CD_To_Upload');
+    return { filled: 0, failed: 0, total: 0 };
+  }
+
+  const header = data[0];
+  const stateIdx = header.indexOf('State');
+  const zipIdx = header.indexOf('Zip');
+
+  if (stateIdx === -1 || zipIdx === -1) {
+    Logger.log('State or Zip column not found');
+    return { filled: 0, failed: 0, total: 0 };
+  }
+
+  let filled = 0;
+  let failed = 0;
+  const updates = [];
+
+  // Check each row for missing/invalid state
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i];
+    const state = String(row[stateIdx] || '').trim();
+    const zip = String(row[zipIdx] || '').trim();
+
+    if (isStateInvalid_(state) && zip) {
+      const lookedUpState = lookupStateFromZip_(zip);
+      if (lookedUpState) {
+        updates.push({ row: i + 1, state: lookedUpState });
+        filled++;
+      } else {
+        failed++;
+      }
+    }
+  }
+
+  // Apply updates to sheet
+  if (updates.length > 0) {
+    updates.forEach(update => {
+      uploadSheet.getRange(update.row, stateIdx + 1).setValue(update.state);
+    });
+    Logger.log(`Filled ${filled} missing states from ZIP codes`);
+  }
+
+  if (failed > 0) {
+    Logger.log(`Failed to find state for ${failed} ZIP codes`);
+  }
+
+  return { filled, failed, total: data.length - 1 };
+}
 
 /**
  * Main function to set up district matching folder structure
@@ -111,7 +366,7 @@ function setupDistrictMatchingSilent_() {
     Logger.log('Created main folder: District Shapefiles');
 
     // Clear all old state folder IDs since we're starting fresh
-    US_STATES.forEach(state => {
+    DISTRICT_US_STATES.forEach(state => {
       props.deleteProperty('district_state_' + state.toLowerCase());
     });
     Logger.log('Cleared all old state folder IDs for fresh setup');
@@ -138,7 +393,7 @@ function setupStateFolders_(mainFolder, props, isNewSetup) {
     repaired: 0
   };
 
-  for (const state of US_STATES) {
+  for (const state of DISTRICT_US_STATES) {
     try {
       const stateKey = 'district_state_' + state.toLowerCase();
       let stateFolder = null;
@@ -241,6 +496,681 @@ function getStateFolder_(stateCode) {
 }
 
 /**
+ * SHAPEFILE PROPERTY MAPPING FUNCTIONS
+ * These handle the interactive configuration of which property to use from shapefiles
+ */
+
+/**
+ * Get or prompt for the property name to use for a shapefile
+ * Stores the result for future use
+ * @param {string} fileId - Drive file ID
+ * @param {string} fileName - File name for display
+ * @param {Object} geoJson - Parsed GeoJSON object
+ * @param {string} stateCode - 2-letter state code
+ * @param {string} districtType - 'federal', 'senate', 'house', or 'county'
+ * @returns {string} The property name to use, or null if user cancels
+ * @private
+ */
+function getShapefilePropertyMapping_(fileId, fileName, geoJson, stateCode, districtType) {
+  const props = PropertiesService.getDocumentProperties();
+  const mappingKey = 'shapefile_property_' + fileId;
+
+  // Check if we already have a mapping for this file
+  const storedProperty = props.getProperty(mappingKey);
+  if (storedProperty) {
+    Logger.log(`Using stored property mapping for ${fileName}: ${storedProperty}`);
+    return storedProperty;
+  }
+
+  // No stored mapping - prompt user
+  Logger.log(`No mapping found for ${fileName}, prompting user...`);
+  const selectedProperty = promptUserForPropertySelection_(geoJson, fileName, stateCode, districtType);
+
+  if (selectedProperty) {
+    // Store for future use
+    props.setProperty(mappingKey, selectedProperty);
+    Logger.log(`Stored property mapping for ${fileName}: ${selectedProperty}`);
+  }
+
+  return selectedProperty;
+}
+
+/**
+ * Show interactive dialog to let user select which property contains district identifier
+ * @private
+ */
+function promptUserForPropertySelection_(geoJson, fileName, stateCode, districtType) {
+  // Get first feature to examine properties
+  if (!geoJson.features || geoJson.features.length === 0) {
+    Logger.log('No features found in GeoJSON');
+    return null;
+  }
+
+  const firstFeature = geoJson.features[0];
+  const properties = firstFeature.properties || {};
+  const propertyKeys = Object.keys(properties);
+
+  if (propertyKeys.length === 0) {
+    Logger.log('No properties found in first feature');
+    return null;
+  }
+
+  // Build property preview
+  const propertyPreview = propertyKeys.map(key => {
+    const value = properties[key];
+    return `• ${key}: "${value}"`;
+  }).join('\n');
+
+  // Create HTML dialog
+  const html = HtmlService.createHtmlOutput(`
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 16px;
+      margin: 0;
+    }
+    h3 {
+      color: #1a73e8;
+      margin-top: 0;
+    }
+    .info {
+      background: #f1f3f4;
+      padding: 12px;
+      border-radius: 4px;
+      margin: 12px 0;
+    }
+    .preview {
+      background: #fff;
+      border: 1px solid #dadce0;
+      padding: 12px;
+      border-radius: 4px;
+      margin: 12px 0;
+      font-family: monospace;
+      font-size: 12px;
+      max-height: 200px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }
+    select {
+      width: 100%;
+      padding: 8px;
+      font-size: 14px;
+      border: 1px solid #dadce0;
+      border-radius: 4px;
+      margin: 8px 0;
+    }
+    button {
+      background: #1a73e8;
+      color: white;
+      border: none;
+      padding: 10px 24px;
+      font-size: 14px;
+      border-radius: 4px;
+      cursor: pointer;
+      margin-top: 12px;
+    }
+    button:hover {
+      background: #1765cc;
+    }
+    .cancel {
+      background: #fff;
+      color: #5f6368;
+      border: 1px solid #dadce0;
+      margin-left: 8px;
+    }
+    .cancel:hover {
+      background: #f8f9fa;
+    }
+  </style>
+</head>
+<body>
+  <h3>Configure Shapefile Property</h3>
+
+  <div class="info">
+    <strong>State:</strong> ${stateCode}<br>
+    <strong>Type:</strong> ${districtType.charAt(0).toUpperCase() + districtType.slice(1)} Districts<br>
+    <strong>File:</strong> ${fileName}
+  </div>
+
+  <p><strong>Which property contains the district identifier?</strong></p>
+
+  <select id="propertySelect">
+    ${propertyKeys.map(key => `<option value="${key}">${key}</option>`).join('\n')}
+  </select>
+
+  <p><strong>Preview from first feature:</strong></p>
+  <div class="preview">${propertyPreview}</div>
+
+  <button onclick="confirmSelection()">Use This Property</button>
+  <button class="cancel" onclick="cancel()">Cancel</button>
+
+  <script>
+    function confirmSelection() {
+      const select = document.getElementById('propertySelect');
+      const selectedValue = select.value;
+      google.script.host.setWidth(0);
+      google.script.host.setHeight(0);
+      google.script.run
+        .withSuccessHandler(() => google.script.host.close())
+        .storePropertySelection(selectedValue);
+    }
+
+    function cancel() {
+      google.script.host.setWidth(0);
+      google.script.host.setHeight(0);
+      google.script.run
+        .withSuccessHandler(() => google.script.host.close())
+        .storePropertySelection(null);
+    }
+  </script>
+</body>
+</html>
+  `).setWidth(500).setHeight(550);
+
+  SpreadsheetApp.getUi().showModalDialog(html, 'Shapefile Property Configuration');
+
+  // Wait for user selection (stored in temporary property)
+  const tempKey = 'temp_property_selection';
+  props.setProperty(tempKey, 'WAITING');
+
+  // Poll for result (up to 5 minutes)
+  const maxWait = 300; // 5 minutes
+  let waited = 0;
+  while (waited < maxWait) {
+    Utilities.sleep(1000);
+    waited++;
+
+    const result = props.getProperty(tempKey);
+    if (result !== 'WAITING') {
+      props.deleteProperty(tempKey);
+      return result === 'CANCELLED' ? null : result;
+    }
+  }
+
+  // Timeout
+  props.deleteProperty(tempKey);
+  Logger.log('Property selection timed out');
+  return null;
+}
+
+/**
+ * Show consolidated property selection dialog for all district types in a state
+ * @param {string} stateCode - State code (e.g., "KY")
+ * @param {Array} filesNeedingMapping - Array of {districtType, fileId, fileName, geoJson}
+ * @returns {Object|null} - Object mapping fileId to selected property name, or null if cancelled
+ */
+function promptConsolidatedPropertySelection_(stateCode, filesNeedingMapping) {
+  const props = PropertiesService.getDocumentProperties();
+
+  // Build HTML sections for each district type
+  const districtSections = filesNeedingMapping.map(file => {
+    const { districtType, fileId, fileName, geoJson } = file;
+
+    // Get properties from first feature
+    if (!geoJson.features || geoJson.features.length === 0) {
+      return '';
+    }
+
+    const properties = geoJson.features[0].properties || {};
+    const propertyKeys = Object.keys(properties);
+
+    if (propertyKeys.length === 0) {
+      return '';
+    }
+
+    // Build property preview
+    const propertyPreview = propertyKeys.slice(0, 10).map(key => {
+      const value = properties[key];
+      return `${key}: "${value}"`;
+    }).join('<br>');
+
+    const districtLabel = districtType.charAt(0).toUpperCase() + districtType.slice(1);
+
+    return `
+      <div class="district-section">
+        <h4>${districtLabel} Districts</h4>
+        <div class="file-info">
+          <strong>File:</strong> ${fileName}
+        </div>
+
+        <label for="select_${fileId}"><strong>Select district identifier property:</strong></label>
+        <select id="select_${fileId}" class="property-select" data-fileid="${fileId}">
+          ${propertyKeys.map(key => `<option value="${key}">${key}</option>`).join('\n')}
+        </select>
+
+        <div class="preview">
+          <strong>Properties preview:</strong><br>
+          ${propertyPreview}
+        </div>
+      </div>
+    `;
+  }).filter(section => section !== '').join('\n');
+
+  // Create HTML dialog
+  const html = HtmlService.createHtmlOutput(`
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 16px;
+      margin: 0;
+      max-width: 600px;
+    }
+    h3 {
+      color: #1a73e8;
+      margin-top: 0;
+      margin-bottom: 8px;
+    }
+    .state-info {
+      background: #e8f0fe;
+      padding: 12px;
+      border-radius: 4px;
+      margin-bottom: 16px;
+      font-weight: 500;
+    }
+    .district-section {
+      background: #f8f9fa;
+      border: 1px solid #dadce0;
+      border-radius: 4px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    .district-section h4 {
+      color: #202124;
+      margin-top: 0;
+      margin-bottom: 12px;
+      font-size: 16px;
+    }
+    .file-info {
+      color: #5f6368;
+      font-size: 13px;
+      margin-bottom: 12px;
+    }
+    label {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 14px;
+    }
+    select.property-select {
+      width: 100%;
+      padding: 8px;
+      font-size: 14px;
+      border: 1px solid #dadce0;
+      border-radius: 4px;
+      margin-bottom: 12px;
+      background: white;
+    }
+    .preview {
+      background: #fff;
+      border: 1px solid #dadce0;
+      padding: 12px;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 11px;
+      max-height: 150px;
+      overflow-y: auto;
+      color: #5f6368;
+    }
+    .button-container {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 20px;
+      padding-top: 16px;
+      border-top: 1px solid #dadce0;
+    }
+    button {
+      padding: 10px 24px;
+      font-size: 14px;
+      border-radius: 4px;
+      cursor: pointer;
+      border: none;
+    }
+    button.primary {
+      background: #1a73e8;
+      color: white;
+    }
+    button.primary:hover {
+      background: #1765cc;
+    }
+    button.secondary {
+      background: #fff;
+      color: #5f6368;
+      border: 1px solid #dadce0;
+    }
+    button.secondary:hover {
+      background: #f8f9fa;
+    }
+  </style>
+</head>
+<body>
+  <h3>Configure Shapefile Properties for ${stateCode}</h3>
+
+  <div class="state-info">
+    Configure district identifier properties for all district types in this state
+  </div>
+
+  ${districtSections}
+
+  <div class="button-container">
+    <button class="secondary" onclick="cancel()">Cancel</button>
+    <button class="primary" onclick="confirmSelections()">Confirm All Selections</button>
+  </div>
+
+  <script>
+    function confirmSelections() {
+      // Collect all selections
+      const selects = document.querySelectorAll('.property-select');
+      const selections = {};
+
+      selects.forEach(select => {
+        const fileId = select.getAttribute('data-fileid');
+        const propertyName = select.value;
+        selections[fileId] = propertyName;
+      });
+
+      // Close dialog and send selections
+      google.script.host.setWidth(0);
+      google.script.host.setHeight(0);
+      google.script.run
+        .withSuccessHandler(() => google.script.host.close())
+        .storeConsolidatedPropertySelections(JSON.stringify(selections));
+    }
+
+    function cancel() {
+      google.script.host.setWidth(0);
+      google.script.host.setHeight(0);
+      google.script.run
+        .withSuccessHandler(() => google.script.host.close())
+        .storeConsolidatedPropertySelections(null);
+    }
+  </script>
+</body>
+</html>
+  `).setWidth(650).setHeight(Math.min(700, 300 + filesNeedingMapping.length * 250));
+
+  SpreadsheetApp.getUi().showModalDialog(html, `${stateCode} Shapefile Configuration`);
+
+  // Wait for user selection (stored in temporary property)
+  const tempKey = 'temp_consolidated_property_selection';
+  props.setProperty(tempKey, 'WAITING');
+
+  // Poll for result (up to 5 minutes)
+  const maxWait = 300; // 5 minutes
+  let waited = 0;
+  while (waited < maxWait) {
+    Utilities.sleep(1000);
+    waited++;
+
+    const result = props.getProperty(tempKey);
+    if (result !== 'WAITING') {
+      props.deleteProperty(tempKey);
+      if (result === 'CANCELLED') {
+        return null;
+      }
+      // Parse JSON string back to object
+      try {
+        return JSON.parse(result);
+      } catch (error) {
+        Logger.log('Error parsing property selections: ' + error.message);
+        return null;
+      }
+    }
+  }
+
+  // Timeout
+  props.deleteProperty(tempKey);
+  Logger.log('Consolidated property selection timed out');
+  return null;
+}
+
+/**
+ * Callback function to store user's consolidated property selections
+ * Called from the HTML dialog
+ * @param {string} selectionsJson - JSON string of {fileId: propertyName, ...} or null
+ */
+function storeConsolidatedPropertySelections(selectionsJson) {
+  const props = PropertiesService.getDocumentProperties();
+  const tempKey = 'temp_consolidated_property_selection';
+
+  if (selectionsJson) {
+    props.setProperty(tempKey, selectionsJson);
+  } else {
+    props.setProperty(tempKey, 'CANCELLED');
+  }
+}
+
+/**
+ * Callback function to store user's property selection
+ * Called from the HTML dialog
+ */
+function storePropertySelection(propertyName) {
+  const props = PropertiesService.getDocumentProperties();
+  const tempKey = 'temp_property_selection';
+
+  if (propertyName) {
+    props.setProperty(tempKey, propertyName);
+  } else {
+    props.setProperty(tempKey, 'CANCELLED');
+  }
+}
+
+/**
+ * Reset all stored property mappings
+ * Called from menu: Donor Tools → Reset District Property Mappings
+ */
+function resetPropertyMappings() {
+  const ui = SpreadsheetApp.getUi();
+
+  const response = ui.alert(
+    'Reset Property Mappings',
+    'This will clear all stored shapefile property mappings.\n\n' +
+    'You will be prompted to reconfigure each shapefile the next time you run district matching.\n\n' +
+    'Continue?',
+    ui.ButtonSet.YES_NO
+  );
+
+  if (response !== ui.Button.YES) {
+    return;
+  }
+
+  const props = PropertiesService.getDocumentProperties();
+  const allProps = props.getProperties();
+  let count = 0;
+
+  // Delete all properties that start with 'shapefile_property_'
+  for (const key in allProps) {
+    if (key.startsWith('shapefile_property_')) {
+      props.deleteProperty(key);
+      count++;
+    }
+  }
+
+  Logger.log(`Cleared ${count} property mappings`);
+  ui.alert(
+    'Property Mappings Reset',
+    `Cleared ${count} shapefile property mapping(s).\n\n` +
+    'You will be prompted to reconfigure each shapefile the next time you run district matching.',
+    ui.ButtonSet.OK
+  );
+}
+
+/**
+ * SHAPEFILE AVAILABILITY SCANNING
+ */
+
+/**
+ * Scan all state folders to check which shapefiles are available
+ * Returns a map of states with availability info
+ * @returns {Object} Map of state codes to availability info
+ * @private
+ */
+function scanShapefileAvailability_() {
+  const availability = {};
+
+  for (const stateCode of DISTRICT_US_STATES) {
+    availability[stateCode] = {
+      federal: false,
+      senate: false,
+      house: false,
+      county: false,
+      hasFolders: false
+    };
+
+    const stateFolder = getStateFolder_(stateCode);
+    if (!stateFolder) {
+      Logger.log(`State folder not found for ${stateCode}`);
+      continue;
+    }
+
+    availability[stateCode].hasFolders = true;
+
+    // Check each subfolder for files
+    const subfolders = stateFolder.getFolders();
+    while (subfolders.hasNext()) {
+      const subfolder = subfolders.next();
+      const folderName = subfolder.getName().toLowerCase();
+
+      // Determine which type of district
+      let districtType = null;
+      if (folderName.includes('federal')) {
+        districtType = 'federal';
+      } else if (folderName.includes('senate')) {
+        districtType = 'senate';
+      } else if (folderName.includes('house')) {
+        districtType = 'house';
+      } else if (folderName.includes('count')) {
+        districtType = 'county';
+      }
+
+      if (!districtType) continue;
+
+      // Check if subfolder has any .json or .geojson files
+      // Use getFiles() instead of getFilesByType() to catch all MIME types
+      const files = subfolder.getFiles();
+      while (files.hasNext()) {
+        const file = files.next();
+        const fileName = file.getName().toLowerCase();
+
+        if (fileName.endsWith('.geojson') || fileName.endsWith('.json')) {
+          availability[stateCode][districtType] = true;
+          Logger.log(`Found ${districtType} shapefile for ${stateCode}: ${file.getName()}`);
+          break; // Only need to find one file
+        }
+      }
+    }
+  }
+
+  return availability;
+}
+
+/**
+ * Show shapefile availability report to user
+ * @param {Object} availability - Map from scanShapefileAvailability_
+ * @private
+ */
+function showShapefileReport_(availability) {
+  // Count states with complete coverage
+  let completeStates = 0;
+  let partialStates = 0;
+  let emptyStates = 0;
+
+  const statesWithData = [];
+
+  for (const stateCode of DISTRICT_US_STATES) {
+    const info = availability[stateCode];
+    if (!info.hasFolders) {
+      emptyStates++;
+      continue;
+    }
+
+    const count = [info.federal, info.senate, info.house, info.county].filter(Boolean).length;
+
+    if (count === 4) {
+      completeStates++;
+      statesWithData.push(stateCode);
+    } else if (count > 0) {
+      partialStates++;
+      statesWithData.push(stateCode);
+    } else {
+      emptyStates++;
+    }
+  }
+
+  // Build report message
+  let message = 'SHAPEFILE AVAILABILITY REPORT\n\n';
+  message += `States with all 4 shapefiles: ${completeStates}\n`;
+  message += `States with some shapefiles: ${partialStates}\n`;
+  message += `States with no shapefiles: ${emptyStates}\n\n`;
+
+  if (statesWithData.length > 0) {
+    message += `States ready for matching:\n${statesWithData.join(', ')}\n\n`;
+  }
+
+  if (emptyStates === 51) {
+    message += 'WARNING: No shapefiles found in any state folder!\n';
+    message += 'Please upload GeoJSON files to the state folders.';
+  } else if (emptyStates > 0) {
+    message += `TIP: ${emptyStates} states have no shapefiles yet.\n`;
+    message += 'Addresses in those states will be marked as "Missing shapefile".';
+  }
+
+  const ui = SpreadsheetApp.getUi();
+  ui.alert('Shapefile Availability', message, ui.ButtonSet.OK);
+}
+
+/**
+ * GROUP ADDRESSES BY STATE
+ */
+
+/**
+ * Group addresses from CD_To_Upload by state
+ * @param {Array} uploadData - Data from CD_To_Upload sheet
+ * @param {Array} header - Header row
+ * @returns {Object} Map of state codes to address info arrays
+ * @private
+ */
+function groupAddressesByState_(uploadData, header) {
+  const addressIdx = header.indexOf('Address');
+  const cityIdx = header.indexOf('City');
+  const stateIdx = header.indexOf('State');
+  const zipIdx = header.indexOf('Zip');
+
+  const grouped = {};
+
+  for (let i = 1; i < uploadData.length; i++) {
+    const row = uploadData[i];
+    const address = String(row[addressIdx] || '').trim();
+    const city = String(row[cityIdx] || '').trim();
+    const state = String(row[stateIdx] || '').trim().toUpperCase();
+    const zip = String(row[zipIdx] || '').trim();
+
+    if (!address || !city || !state) {
+      continue;
+    }
+
+    if (!grouped[state]) {
+      grouped[state] = [];
+    }
+
+    grouped[state].push({
+      rowIndex: i,
+      address: address,
+      city: city,
+      state: state,
+      zip: zip
+    });
+  }
+
+  return grouped;
+}
+
+/**
  * GEOCODING FUNCTIONS
  */
 
@@ -266,7 +1196,20 @@ function geocodeAddresses_(showToast = false) {
     }
     Logger.log('Starting geocoding...');
 
-    // Get or create cache sheet
+    // STEP 1: Fill missing State fields from ZIP codes BEFORE geocoding
+    Logger.log('Scanning for missing State fields...');
+    const stateResults = fillMissingStatesFromZip_();
+    if (stateResults.filled > 0) {
+      Logger.log(`Filled ${stateResults.filled} missing states from ZIP codes`);
+      if (showToast) {
+        ss.toast(`Filled ${stateResults.filled} missing states from ZIP codes`, 'Data Normalization', 2);
+      }
+    }
+    if (stateResults.failed > 0) {
+      Logger.log(`Warning: ${stateResults.failed} addresses have invalid ZIP codes - cannot determine state`);
+    }
+
+    // STEP 2: Get or create cache sheet
     const cacheSheet = getOrCreateGeocodeCache_();
 
     // Load existing cache
@@ -362,6 +1305,9 @@ function improveGeocodeCache() {
     let message = `Geocoding complete!\n\n`;
     message += `Exact geocodes: ${results.exact}\n`;
     message += `Approximate matches: ${results.approximate}\n`;
+    if (results.corrected && results.corrected > 0) {
+      message += `Addresses corrected via normalization: ${results.corrected}\n`;
+    }
     message += `Failed/Pending: ${results.failed}\n`;
 
     ui.alert('Geocoding Complete', message, ui.ButtonSet.OK);
@@ -375,7 +1321,9 @@ function improveGeocodeCache() {
 }
 
 /**
- * Process geocoding with priority: exact geocoding first, then proximity matching
+ * Process geocoding with 2-phase progressive approach:
+ * Phase 1: Try all addresses once with original format
+ * Phase 2: After all tried once, progressively normalize pending addresses (5 attempts)
  * @private
  */
 function processGeocoding_(addressList, cache) {
@@ -386,16 +1334,35 @@ function processGeocoding_(addressList, cache) {
     exact: 0,
     approximate: 0,
     failed: 0,
-    newEntries: []
+    newEntries: [],
+    corrected: 0
   };
 
   let quotaUsed = 0;
 
+  // Separate addresses into Phase 1 (never attempted) and Phase 2 (pending after attempt)
+  const phase1Addresses = [];
+  const phase2Addresses = [];
+
   for (const addr of addressList) {
-    // Skip if we've exhausted quota
-    if (quotaUsed >= BATCH_LIMIT) {
-      break;
+    const cached = cache[addr.key];
+    const attemptCount = cached ? (cached.attemptCount || 0) : 0;
+
+    if (attemptCount === 0) {
+      // Phase 1: Never attempted
+      phase1Addresses.push(addr);
+    } else if (cached && cached.status === 'pending' && attemptCount > 0 && attemptCount < 5) {
+      // Phase 2: Previously attempted but still pending, try normalization
+      phase2Addresses.push(addr);
     }
+  }
+
+  Logger.log(`Phase 1: ${phase1Addresses.length} addresses to try as-is`);
+  Logger.log(`Phase 2: ${phase2Addresses.length} addresses to try with normalization`);
+
+  // PHASE 1: Try all addresses with original format
+  for (const addr of phase1Addresses) {
+    if (quotaUsed >= BATCH_LIMIT) break;
 
     // Try exact geocoding first
     try {
@@ -414,24 +1381,24 @@ function processGeocoding_(addressList, cache) {
           lat: lat,
           lng: lng,
           status: 'exact',
-          source: '-',
-          date: new Date().toISOString().split('T')[0]
+          source: 'original',
+          date: new Date().toISOString().split('T')[0],
+          attemptCount: 1,
+          workingAddress: ''
         });
 
         results.exact++;
-        Logger.log(`Exact geocode: ${fullAddress} -> ${lat}, ${lng}`);
+        Logger.log(`Phase 1 exact: ${fullAddress} -> ${lat}, ${lng}`);
         continue;
       }
     } catch (error) {
-      Logger.log(`Geocoding error for ${addr.address}: ${error.message}`);
-
-      // If we hit quota limit, stop
+      Logger.log(`Phase 1 geocoding error for ${addr.address}: ${error.message}`);
       if (error.message.includes('limit') || error.message.includes('quota')) {
         break;
       }
     }
 
-    // If exact geocoding failed or no quota, try proximity match
+    // If exact geocoding failed, try proximity match
     const proximityMatch = findProximityMatch_(addr, cache);
     if (proximityMatch) {
       results.newEntries.push({
@@ -440,29 +1407,153 @@ function processGeocoding_(addressList, cache) {
         lng: proximityMatch.lng,
         status: 'approximate',
         source: proximityMatch.source,
-        date: new Date().toISOString().split('T')[0]
+        date: new Date().toISOString().split('T')[0],
+        attemptCount: 1,
+        workingAddress: ''
       });
 
       results.approximate++;
-      Logger.log(`Proximity match: ${addr.address} -> ${proximityMatch.source}`);
+      Logger.log(`Phase 1 proximity: ${addr.address} -> ${proximityMatch.source}`);
     } else {
-      // Mark as pending for future processing
+      // Mark as pending for Phase 2 processing
       results.newEntries.push({
         key: addr.key,
         lat: '',
         lng: '',
         status: 'pending',
         source: '-',
-        date: new Date().toISOString().split('T')[0]
+        date: new Date().toISOString().split('T')[0],
+        attemptCount: 1,
+        workingAddress: ''
       });
 
       results.failed++;
     }
 
-    // Small delay to avoid rate limiting
     if (quotaUsed % 50 === 0) {
       Utilities.sleep(100);
     }
+  }
+
+  // PHASE 2: Progressive normalization for pending addresses
+  for (const addr of phase2Addresses) {
+    if (quotaUsed >= BATCH_LIMIT) break;
+
+    const cached = cache[addr.key];
+    const currentAttempt = cached.attemptCount + 1;
+
+    Logger.log(`Phase 2: Attempting normalization level ${currentAttempt} for ${addr.address}`);
+
+    let normalizedAddress = addr.address;
+    let shouldUpdateSheet = true;
+
+    // Apply appropriate normalization level
+    switch (currentAttempt) {
+      case 2: // Level 1: Remove apt/suite
+        normalizedAddress = normalizeAddressLevel1_(addr.address);
+        break;
+      case 3: // Level 2: Expand abbreviations
+        normalizedAddress = normalizeAddressLevel2_(addr.address);
+        break;
+      case 4: // Level 3: Remove directionals
+        normalizedAddress = normalizeAddressLevel3_(addr.address);
+        break;
+      case 5: // Level 4: Remove street type
+        normalizedAddress = normalizeAddressLevel4_(addr.address);
+        break;
+      case 6: // Level 5: City centroid (last resort)
+        const centroid = getCityCentroid_(addr.city, addr.state);
+        if (centroid) {
+          results.newEntries.push({
+            key: addr.key,
+            lat: centroid.lat,
+            lng: centroid.lng,
+            status: 'city_centroid',
+            source: `centroid of ${addr.city}, ${addr.state}`,
+            date: new Date().toISOString().split('T')[0],
+            attemptCount: 6,
+            workingAddress: ''  // Don't store working address for city centroid
+          });
+
+          results.approximate++;
+          Logger.log(`Phase 2 level 5 (city centroid): ${addr.address} -> ${centroid.lat}, ${centroid.lng}`);
+        } else {
+          // Even city centroid failed, mark as permanently failed
+          results.newEntries.push({
+            key: addr.key,
+            lat: '',
+            lng: '',
+            status: 'pending',
+            source: 'all attempts failed',
+            date: new Date().toISOString().split('T')[0],
+            attemptCount: 6,
+            workingAddress: ''
+          });
+          results.failed++;
+        }
+        continue; // Skip geocoding attempt for level 5
+    }
+
+    // Try geocoding with normalized address (levels 1-4)
+    try {
+      const fullAddress = `${normalizedAddress}, ${addr.city}, ${addr.state} ${addr.zip}`;
+      const location = geocoder.geocode(fullAddress);
+
+      quotaUsed++;
+
+      if (location && location.results && location.results.length > 0) {
+        const result = location.results[0];
+        const lat = result.geometry.location.lat;
+        const lng = result.geometry.location.lng;
+
+        // Success! Store coordinates and update sheet
+        results.newEntries.push({
+          key: addr.key,
+          lat: lat,
+          lng: lng,
+          status: 'exact',
+          source: `normalized_level_${currentAttempt - 1}`,
+          date: new Date().toISOString().split('T')[0],
+          attemptCount: currentAttempt,
+          workingAddress: normalizedAddress
+        });
+
+        results.exact++;
+        results.corrected++;
+        Logger.log(`Phase 2 level ${currentAttempt - 1} success: "${addr.address}" -> "${normalizedAddress}" -> ${lat}, ${lng}`);
+
+        // Update CD_To_Upload sheet with corrected address
+        updateAddressInUploadSheet_(addr.address, normalizedAddress, addr.city, addr.state, addr.zip);
+        continue;
+      }
+    } catch (error) {
+      Logger.log(`Phase 2 level ${currentAttempt - 1} error for ${addr.address}: ${error.message}`);
+      if (error.message.includes('limit') || error.message.includes('quota')) {
+        break;
+      }
+    }
+
+    // Normalization didn't work, increment attempt count and keep as pending
+    results.newEntries.push({
+      key: addr.key,
+      lat: '',
+      lng: '',
+      status: 'pending',
+      source: `-`,
+      date: new Date().toISOString().split('T')[0],
+      attemptCount: currentAttempt,
+      workingAddress: ''
+    });
+
+    results.failed++;
+
+    if (quotaUsed % 50 === 0) {
+      Utilities.sleep(100);
+    }
+  }
+
+  if (results.corrected > 0) {
+    Logger.log(`Phase 2 corrected ${results.corrected} addresses through normalization`);
   }
 
   return results;
@@ -519,6 +1610,13 @@ function findProximityMatch_(addr, cache) {
 /**
  * Main user-facing function to match addresses to districts
  * Called from menu: Extensions → Donor Tools → Match Addresses to Districts
+ *
+ * NEW BATCHED WORKFLOW:
+ * 1. Verify/create folder structure
+ * 2. Scan all shapefiles and show availability report
+ * 3. Group addresses by state
+ * 4. Geocode addresses
+ * 5. Process state-by-state in batches
  */
 function matchAddressesToDistricts() {
   const ss = SpreadsheetApp.getActive();
@@ -535,10 +1633,9 @@ function matchAddressesToDistricts() {
     return;
   }
 
-  // STEP 1: BLOCKING FOLDER VERIFICATION - MUST COMPLETE BEFORE ANYTHING ELSE
+  // STEP 1: BLOCKING FOLDER VERIFICATION
   let mainFolder;
   try {
-    // Show BLOCKING dialog while checking
     const checkResult = ui.alert(
       'Folder Verification',
       'Checking if District Shapefiles folder structure exists...\n\n' +
@@ -551,12 +1648,10 @@ function matchAddressesToDistricts() {
       return;
     }
 
-    // NOW do the actual check
     Logger.log('Starting folder verification...');
     mainFolder = getDistrictMainFolder_();
 
     if (!mainFolder) {
-      // Folder structure missing - create it now
       Logger.log('District folder structure missing, creating now...');
 
       ui.alert(
@@ -576,7 +1671,6 @@ function matchAddressesToDistricts() {
 
       Logger.log(`Created folder structure: ${setupResult.results.created} states created, ${setupResult.results.repaired} repaired`);
 
-      // Alert user to upload shapefiles before continuing
       const continueResponse = ui.alert(
         'Folder Structure Created',
         `✓ Created District Shapefiles folder structure for all 51 states.\n\n` +
@@ -595,7 +1689,6 @@ function matchAddressesToDistricts() {
         return;
       }
     } else {
-      // Folders exist - show confirmation
       Logger.log('District folder structure verified: ' + mainFolder.getName());
 
       ui.alert(
@@ -617,32 +1710,29 @@ function matchAddressesToDistricts() {
     return;
   }
 
-  // STEP 2: NOW show the main confirmation dialog
+  // STEP 2: SCAN SHAPEFILE AVAILABILITY
   try {
-    const response = ui.alert(
-      'Match Addresses to Districts',
-      'Folders verified. Ready to:\n\n' +
+    ss.toast('Scanning shapefiles...', 'District Matching', 3);
+    Logger.log('Scanning shapefile availability...');
+
+    const availability = scanShapefileAvailability_();
+    showShapefileReport_(availability);
+
+    // Ask user if they want to continue
+    const continueResponse = ui.alert(
+      'Continue with Matching?',
+      'Shapefile scan complete.\n\n' +
+      'Ready to:\n' +
       '1. Geocode up to 1,500 addresses (using Google Maps API)\n' +
-      '2. Match addresses to districts using your GeoJSON shapefiles\n' +
-      '3. Add Federal District, State Senate District, State House District, and County columns\n\n' +
+      '2. Match addresses to districts using available shapefiles\n' +
+      '3. Process state-by-state in batches for efficiency\n\n' +
       'Continue?',
       ui.ButtonSet.YES_NO
     );
 
-    if (response !== ui.Button.YES) {
+    if (continueResponse !== ui.Button.YES) {
       return;
     }
-
-    // Step 2: Geocode addresses (up to 1,500 new ones)
-    ss.toast('Geocoding addresses...', 'District Matching', 3);
-    const geocodeResults = geocodeAddresses_(false); // false = no additional toasts
-    Logger.log(`Geocoding results: ${geocodeResults.exact} exact, ${geocodeResults.approximate} approximate, ${geocodeResults.failed} failed`);
-
-    // Step 3: Load cache (now updated with new geocoding)
-    ss.toast('Matching addresses to districts...', 'District Matching', 3);
-    const cacheSheet = getOrCreateGeocodeCache_();
-    const cache = loadGeocodeCache_(cacheSheet);
-    Logger.log(`Loaded geocode cache with ${Object.keys(cache).length} entries`);
 
     // Get upload data
     const uploadData = uploadSheet.getDataRange().getValues();
@@ -653,7 +1743,26 @@ function matchAddressesToDistricts() {
 
     const header = uploadData[0];
 
-    // Find or add district columns
+    // STEP 3: GROUP ADDRESSES BY STATE
+    ss.toast('Grouping addresses by state...', 'District Matching', 3);
+    const addressGroups = groupAddressesByState_(uploadData, header);
+    const statesWithAddresses = Object.keys(addressGroups);
+    const totalAddresses = statesWithAddresses.reduce((sum, state) => sum + addressGroups[state].length, 0);
+
+    Logger.log(`Grouped ${totalAddresses} addresses across ${statesWithAddresses.length} states`);
+    Logger.log(`States: ${statesWithAddresses.join(', ')}`);
+
+    // STEP 4: GEOCODE ADDRESSES
+    ss.toast('Geocoding addresses...', 'District Matching', 3);
+    const geocodeResults = geocodeAddresses_(false);
+    Logger.log(`Geocoding results: ${geocodeResults.exact} exact, ${geocodeResults.approximate} approximate, ${geocodeResults.failed} failed`);
+
+    // STEP 5: LOAD GEOCODE CACHE
+    const cacheSheet = getOrCreateGeocodeCache_();
+    const cache = loadGeocodeCache_(cacheSheet);
+    Logger.log(`Loaded geocode cache with ${Object.keys(cache).length} entries`);
+
+    // STEP 6: ENSURE DISTRICT COLUMNS EXIST
     let fedDistIdx = header.indexOf('Federal District');
     let stateSenateIdx = header.indexOf('State Senate District');
     let stateHouseIdx = header.indexOf('State House District');
@@ -676,90 +1785,110 @@ function matchAddressesToDistricts() {
       countyIdx = header.length - 1;
     }
 
-    // Update header
-    uploadSheet.getRange(1, 1, 1, header.length).setValues([header]);
-
-    // Find address column indices
-    const addressIdx = header.indexOf('Address');
-    const cityIdx = header.indexOf('City');
-    const stateIdx = header.indexOf('State');
-    const zipIdx = header.indexOf('Zip');
-
-    if (addressIdx === -1 || cityIdx === -1 || stateIdx === -1 || zipIdx === -1) {
-      throw new Error('Required address columns not found (Address, City, State, Zip)');
-    }
-
-    // Process each row
-    const stats = {
-      matched: 0,
-      pending: 0,
-      failed: 0
-    };
-
-    const stateShapefiles = {}; // Cache loaded shapefiles per state
-
-    for (let i = 1; i < uploadData.length; i++) {
-      const row = uploadData[i];
-
-      // Ensure row has enough columns
+    // Ensure all rows have enough columns
+    for (const row of uploadData) {
       while (row.length < header.length) {
         row.push('');
       }
+    }
 
-      const address = String(row[addressIdx] || '').trim();
-      const city = String(row[cityIdx] || '').trim();
-      const state = String(row[stateIdx] || '').trim();
-      const zip = String(row[zipIdx] || '').trim();
+    // STEP 7: BATCH PROCESS BY STATE
+    const stats = {
+      matched: 0,
+      pending: 0,
+      missingShapefile: 0,
+      failed: 0,
+      stateStats: {}
+    };
 
-      if (!address || !city || !state) {
-        stats.failed++;
-        continue;
+    for (const stateCode of statesWithAddresses) {
+      const addresses = addressGroups[stateCode];
+      Logger.log(`Processing ${stateCode}: ${addresses.length} addresses`);
+      ss.toast(`Processing ${stateCode}: ${addresses.length} addresses...`, 'District Matching', 3);
+
+      stats.stateStats[stateCode] = {
+        matched: 0,
+        pending: 0,
+        missingShapefile: 0,
+        failed: 0
+      };
+
+      // Check if shapefiles are available for this state
+      const stateAvailability = availability[stateCode];
+      const hasAnyShapefiles = stateAvailability && (
+        stateAvailability.federal ||
+        stateAvailability.senate ||
+        stateAvailability.house ||
+        stateAvailability.county
+      );
+
+      // Load shapefiles for this state once
+      let shapes = null;
+      if (hasAnyShapefiles) {
+        try {
+          shapes = loadStateShapefiles_(stateCode);
+          Logger.log(`Loaded shapefiles for ${stateCode}`);
+        } catch (error) {
+          Logger.log(`Error loading shapefiles for ${stateCode}: ${error.message}`);
+        }
       }
 
-      // Get coordinates from cache
-      const normalizedKey = normalizeAddressKey_(address, city, state, zip);
-      const cached = cache[normalizedKey];
+      // Process all addresses for this state
+      for (const addrInfo of addresses) {
+        const rowIndex = addrInfo.rowIndex;
+        const row = uploadData[rowIndex];
 
-      if (!cached || cached.status === 'pending' || !cached.lat || !cached.lng) {
-        stats.pending++;
-        continue;
-      }
+        // Get coordinates from cache
+        const normalizedKey = normalizeAddressKey_(addrInfo.address, addrInfo.city, addrInfo.state, addrInfo.zip);
+        const cached = cache[normalizedKey];
 
-      // Have coordinates - match to districts
-      try {
-        // Load shapefiles for this state if not already loaded
-        if (!stateShapefiles[state]) {
-          stateShapefiles[state] = loadStateShapefiles_(state);
+        if (!cached || cached.status === 'pending' || !cached.lat || !cached.lng) {
+          stats.pending++;
+          stats.stateStats[stateCode].pending++;
+          continue;
         }
 
-        const shapes = stateShapefiles[state];
-        if (!shapes.federal && !shapes.senate && !shapes.house && !shapes.county) {
-          Logger.log(`No shapefiles found for ${state}`);
-          stats.failed++;
+        // Check if we have shapefiles
+        if (!hasAnyShapefiles || !shapes) {
+          row[fedDistIdx] = 'Missing shapefile';
+          row[stateSenateIdx] = 'Missing shapefile';
+          row[stateHouseIdx] = 'Missing shapefile';
+          row[countyIdx] = 'Missing shapefile';
+          stats.missingShapefile++;
+          stats.stateStats[stateCode].missingShapefile++;
           continue;
         }
 
         // Match point to districts
-        const districts = matchPointToDistricts_(cached.lat, cached.lng, shapes);
+        try {
+          const districts = matchPointToDistricts_(cached.lat, cached.lng, shapes);
 
-        row[fedDistIdx] = districts.federal || '';
-        row[stateSenateIdx] = districts.senate || '';
-        row[stateHouseIdx] = districts.house || '';
-        row[countyIdx] = districts.county || '';
+          row[fedDistIdx] = districts.federal || '';
+          row[stateSenateIdx] = districts.senate || '';
+          row[stateHouseIdx] = districts.house || '';
+          row[countyIdx] = districts.county || '';
 
-        stats.matched++;
+          stats.matched++;
+          stats.stateStats[stateCode].matched++;
 
-      } catch (error) {
-        Logger.log(`Error matching row ${i + 1}: ${error.message}`);
-        stats.failed++;
+        } catch (error) {
+          Logger.log(`Error matching row ${rowIndex + 1}: ${error.message}`);
+          stats.failed++;
+          stats.stateStats[stateCode].failed++;
+        }
       }
+
+      // Log state completion
+      Logger.log(`${stateCode} complete: ${stats.stateStats[stateCode].matched} matched, ${stats.stateStats[stateCode].pending} pending, ${stats.stateStats[stateCode].missingShapefile} missing shapefile`);
+
+      // Free memory (garbage collection hint)
+      shapes = null;
     }
 
-    // Write results back to sheet
+    // STEP 8: WRITE RESULTS BACK
     uploadSheet.getRange(1, 1, uploadData.length, header.length).setValues(uploadData);
 
-    // Show results
-    const totalProcessed = uploadData.length - 1; // minus header
+    // STEP 9: SHOW RESULTS
     let message = `District matching complete!\n\n`;
 
     // Geocoding stats
@@ -773,21 +1902,31 @@ function matchAddressesToDistricts() {
 
     // District matching stats
     message += `DISTRICT MATCHING:\n`;
-    message += `• Total addresses: ${totalProcessed}\n`;
+    message += `• Total addresses: ${totalAddresses}\n`;
     message += `• Matched to districts: ${stats.matched}\n`;
     message += `• Still pending geocoding: ${stats.pending}\n`;
+    message += `• Missing shapefiles: ${stats.missingShapefile}\n`;
     message += `• Failed matching: ${stats.failed}\n\n`;
+
+    // Per-state summary
+    if (statesWithAddresses.length <= 10) {
+      message += `BY STATE:\n`;
+      for (const state of statesWithAddresses) {
+        const s = stats.stateStats[state];
+        message += `• ${state}: ${s.matched} matched, ${s.pending} pending, ${s.missingShapefile} missing\n`;
+      }
+      message += `\n`;
+    }
 
     // Tips based on results
     if (stats.pending > 0) {
       message += `TIP: ${stats.pending} addresses still need geocoding.\n`;
-      message += `Run this function again or use "Improve Geocode Cache"\n`;
-      message += `to continue geocoding (processes 1,500 per run).\n\n`;
+      message += `Run this function again or use "Improve Geocode Cache".\n\n`;
     }
 
-    if (stats.matched === 0 && stats.failed > 0 && stats.pending === 0) {
-      message += `TIP: Make sure you've uploaded GeoJSON shapefiles to:\n`;
-      message += `District Shapefiles/[STATE]/[Federal/Senate/House/Counties]/\n\n`;
+    if (stats.missingShapefile > 0) {
+      message += `TIP: ${stats.missingShapefile} addresses need shapefiles.\n`;
+      message += `Upload GeoJSON files to the appropriate state folders.\n\n`;
     }
 
     if (stats.matched > 0) {
@@ -810,6 +1949,7 @@ function matchAddressesToDistricts() {
 
 /**
  * Load GeoJSON shapefiles for a state
+ * Uses consolidated property mapping dialog per state
  * @private
  */
 function loadStateShapefiles_(stateCode) {
@@ -826,7 +1966,10 @@ function loadStateShapefiles_(stateCode) {
     county: null
   };
 
-  // Look for GeoJSON files in each subfolder
+  // PASS 1: Scan all folders and collect files that need property mapping
+  const filesNeedingMapping = [];
+  const fileData = {}; // Store file info keyed by districtType
+
   const subfolders = stateFolder.getFolders();
   while (subfolders.hasNext()) {
     const subfolder = subfolders.next();
@@ -847,7 +1990,7 @@ function loadStateShapefiles_(stateCode) {
     if (!districtType) continue;
 
     // Find GeoJSON file in this subfolder
-    const files = subfolder.getFilesByType(MimeType.PLAIN_TEXT);
+    const files = subfolder.getFiles();
     while (files.hasNext()) {
       const file = files.next();
       const fileName = file.getName().toLowerCase();
@@ -856,8 +1999,32 @@ function loadStateShapefiles_(stateCode) {
         try {
           const content = file.getBlob().getDataAsString();
           const geoJson = JSON.parse(content);
-          shapes[districtType] = geoJson;
-          Logger.log(`Loaded ${districtType} shapefile for ${stateCode}: ${file.getName()}`);
+          const fileId = file.getId();
+
+          // Check if we already have a mapping for this file
+          const props = PropertiesService.getDocumentProperties();
+          const mappingKey = 'shapefile_property_' + fileId;
+          const storedProperty = props.getProperty(mappingKey);
+
+          // Store file data
+          fileData[districtType] = {
+            file: file,
+            fileId: fileId,
+            fileName: file.getName(),
+            geoJson: geoJson,
+            storedProperty: storedProperty
+          };
+
+          // Track if it needs mapping
+          if (!storedProperty) {
+            filesNeedingMapping.push({
+              districtType: districtType,
+              fileId: fileId,
+              fileName: file.getName(),
+              geoJson: geoJson
+            });
+          }
+
           break; // Only load first GeoJSON file found
         } catch (error) {
           Logger.log(`Error parsing GeoJSON file ${file.getName()}: ${error.message}`);
@@ -866,11 +2033,52 @@ function loadStateShapefiles_(stateCode) {
     }
   }
 
+  // If any files need mapping, show consolidated dialog for this state
+  if (filesNeedingMapping.length > 0) {
+    Logger.log(`${filesNeedingMapping.length} shapefile(s) need property mapping for ${stateCode}`);
+    const mappings = promptConsolidatedPropertySelection_(stateCode, filesNeedingMapping);
+
+    if (!mappings) {
+      Logger.log(`User cancelled property selection for ${stateCode}`);
+      return shapes;
+    }
+
+    // Store the mappings
+    const props = PropertiesService.getDocumentProperties();
+    Object.keys(mappings).forEach(fileId => {
+      const mappingKey = 'shapefile_property_' + fileId;
+      props.setProperty(mappingKey, mappings[fileId]);
+      Logger.log(`Stored property mapping for file ${fileId}: ${mappings[fileId]}`);
+    });
+  }
+
+  // PASS 2: Load all shapefiles using stored mappings
+  Object.keys(fileData).forEach(districtType => {
+    const data = fileData[districtType];
+    const props = PropertiesService.getDocumentProperties();
+    const mappingKey = 'shapefile_property_' + data.fileId;
+    const propertyName = props.getProperty(mappingKey);
+
+    if (!propertyName) {
+      Logger.log(`No property mapping found for ${data.fileName}, skipping`);
+      return;
+    }
+
+    shapes[districtType] = {
+      geoJson: data.geoJson,
+      propertyName: propertyName,
+      fileName: data.fileName
+    };
+
+    Logger.log(`Loaded ${districtType} shapefile for ${stateCode}: ${data.fileName} (using property: ${propertyName})`);
+  });
+
   return shapes;
 }
 
 /**
  * Match a point (lat/lng) to districts using GeoJSON polygons
+ * Now uses the new shapes structure with property mappings
  * @private
  */
 function matchPointToDistricts_(lat, lng, shapes) {
@@ -883,22 +2091,22 @@ function matchPointToDistricts_(lat, lng, shapes) {
 
   // Check federal districts
   if (shapes.federal) {
-    districts.federal = findContainingFeature_(lat, lng, shapes.federal);
+    districts.federal = findContainingFeature_(lat, lng, shapes.federal.geoJson, shapes.federal.propertyName);
   }
 
   // Check state senate districts
   if (shapes.senate) {
-    districts.senate = findContainingFeature_(lat, lng, shapes.senate);
+    districts.senate = findContainingFeature_(lat, lng, shapes.senate.geoJson, shapes.senate.propertyName);
   }
 
   // Check state house districts
   if (shapes.house) {
-    districts.house = findContainingFeature_(lat, lng, shapes.house);
+    districts.house = findContainingFeature_(lat, lng, shapes.house.geoJson, shapes.house.propertyName);
   }
 
   // Check counties
   if (shapes.county) {
-    districts.county = findContainingFeature_(lat, lng, shapes.county);
+    districts.county = findContainingFeature_(lat, lng, shapes.county.geoJson, shapes.county.propertyName);
   }
 
   return districts;
@@ -906,16 +2114,29 @@ function matchPointToDistricts_(lat, lng, shapes) {
 
 /**
  * Find which GeoJSON feature contains a point
+ * Now uses the configured property name from user mapping
+ * @param {number} lat - Latitude
+ * @param {number} lng - Longitude
+ * @param {Object} geoJson - Parsed GeoJSON object
+ * @param {string} propertyName - The property to extract (configured by user)
  * @private
  */
-function findContainingFeature_(lat, lng, geoJson) {
+function findContainingFeature_(lat, lng, geoJson, propertyName) {
   if (!geoJson || !geoJson.features) return null;
 
   for (const feature of geoJson.features) {
     if (isPointInFeature_(lat, lng, feature)) {
-      // Try to extract district name from properties
+      // Extract the configured property
       const props = feature.properties || {};
-      return props.name || props.NAME || props.district || props.DISTRICT || props.GEOID || 'Unknown';
+      const value = props[propertyName];
+
+      if (value !== null && value !== undefined) {
+        return String(value);
+      }
+
+      // Fallback if property not found
+      Logger.log(`Warning: Property '${propertyName}' not found in feature, returning 'Unknown'`);
+      return 'Unknown';
     }
   }
 
@@ -985,6 +2206,183 @@ function normalizeAddressKey_(address, city, state, zip) {
 }
 
 /**
+ * Progressive address normalization functions for geocoding fallback
+ * Level 1 (Light): Remove apartment/suite/unit numbers
+ * @private
+ */
+function normalizeAddressLevel1_(address) {
+  let normalized = address.trim();
+
+  // Remove apartment, suite, unit numbers and related info
+  normalized = normalized.replace(/\s+(APT|APARTMENT|SUITE|STE|UNIT|#)\s*[A-Z0-9\-]+$/i, '');
+  normalized = normalized.replace(/\s+(APT|APARTMENT|SUITE|STE|UNIT|#)\s*[A-Z0-9\-]+\s+/i, ' ');
+
+  return normalized.trim();
+}
+
+/**
+ * Level 2 (Moderate): Expand common street abbreviations
+ * @private
+ */
+function normalizeAddressLevel2_(address) {
+  let normalized = normalizeAddressLevel1_(address);
+
+  // Expand common abbreviations
+  const abbreviations = {
+    ' ST$': ' STREET',
+    ' ST ': ' STREET ',
+    ' AVE$': ' AVENUE',
+    ' AVE ': ' AVENUE ',
+    ' BLVD$': ' BOULEVARD',
+    ' BLVD ': ' BOULEVARD ',
+    ' RD$': ' ROAD',
+    ' RD ': ' ROAD ',
+    ' DR$': ' DRIVE',
+    ' DR ': ' DRIVE ',
+    ' LN$': ' LANE',
+    ' LN ': ' LANE ',
+    ' CT$': ' COURT',
+    ' CT ': ' COURT ',
+    ' PL$': ' PLACE',
+    ' PL ': ' PLACE ',
+    ' PKWY$': ' PARKWAY',
+    ' PKWY ': ' PARKWAY ',
+    ' CIR$': ' CIRCLE',
+    ' CIR ': ' CIRCLE ',
+    ' TER$': ' TERRACE',
+    ' TER ': ' TERRACE ',
+    ' WAY$': ' WAY',
+    ' HWY$': ' HIGHWAY',
+    ' HWY ': ' HIGHWAY '
+  };
+
+  normalized = normalized.toUpperCase();
+  for (const [abbr, full] of Object.entries(abbreviations)) {
+    const regex = new RegExp(abbr, 'i');
+    normalized = normalized.replace(regex, full);
+  }
+
+  return normalized.trim();
+}
+
+/**
+ * Level 3 (Aggressive): Remove directional prefixes/suffixes
+ * @private
+ */
+function normalizeAddressLevel3_(address) {
+  let normalized = normalizeAddressLevel2_(address);
+
+  // Remove directionals at beginning or end
+  normalized = normalized.replace(/^(NORTH|SOUTH|EAST|WEST|N|S|E|W|NE|NW|SE|SW)\s+/i, '');
+  normalized = normalized.replace(/\s+(NORTH|SOUTH|EAST|WEST|N|S|E|W|NE|NW|SE|SW)$/i, '');
+
+  return normalized.trim();
+}
+
+/**
+ * Level 4 (Very Aggressive): Remove street type entirely
+ * @private
+ */
+function normalizeAddressLevel4_(address) {
+  let normalized = normalizeAddressLevel3_(address);
+
+  // Remove common street types at the end
+  const streetTypes = [
+    'STREET', 'AVENUE', 'BOULEVARD', 'ROAD', 'DRIVE', 'LANE', 'COURT',
+    'PLACE', 'PARKWAY', 'CIRCLE', 'TERRACE', 'WAY', 'HIGHWAY', 'TRAIL',
+    'PATH', 'SQUARE', 'ALLEY', 'PLAZA'
+  ];
+
+  for (const type of streetTypes) {
+    const regex = new RegExp('\\s+' + type + '$', 'i');
+    normalized = normalized.replace(regex, '');
+  }
+
+  return normalized.trim();
+}
+
+/**
+ * Level 5: Get city centroid coordinates (last resort fallback)
+ * @private
+ */
+function getCityCentroid_(city, state) {
+  try {
+    const geocoder = Maps.newGeocoder();
+    const location = geocoder.geocode(`${city}, ${state}, USA`);
+
+    if (location && location.results && location.results.length > 0) {
+      const result = location.results[0];
+      return {
+        lat: result.geometry.location.lat,
+        lng: result.geometry.location.lng
+      };
+    }
+  } catch (error) {
+    Logger.log(`Failed to get city centroid for ${city}, ${state}: ${error.message}`);
+  }
+
+  return null;
+}
+
+/**
+ * Update address in CD_To_Upload sheet when a normalized version successfully geocodes
+ * This is called for normalization levels 1-4 only (NOT level 5 city centroid)
+ * @private
+ */
+function updateAddressInUploadSheet_(originalAddress, correctedAddress, city, state, zip) {
+  try {
+    const ss = SpreadsheetApp.getActive();
+    const uploadSheet = ss.getSheetByName('CD_To_Upload');
+
+    if (!uploadSheet) {
+      Logger.log('CD_To_Upload sheet not found, cannot update address');
+      return;
+    }
+
+    const data = uploadSheet.getDataRange().getValues();
+    if (data.length <= 1) return;
+
+    const header = data[0];
+    const addressIdx = header.indexOf('Address');
+    const cityIdx = header.indexOf('City');
+    const stateIdx = header.indexOf('State');
+    const zipIdx = header.indexOf('Zip');
+
+    if (addressIdx === -1) {
+      Logger.log('Address column not found in CD_To_Upload');
+      return;
+    }
+
+    // Find all rows with the original address
+    let updatedCount = 0;
+    for (let i = 1; i < data.length; i++) {
+      const row = data[i];
+      const rowAddress = String(row[addressIdx] || '').trim();
+      const rowCity = String(row[cityIdx] || '').trim();
+      const rowState = String(row[stateIdx] || '').trim();
+      const rowZip = String(row[zipIdx] || '').trim();
+
+      // Match on address, city, state, zip
+      if (rowAddress.toUpperCase() === originalAddress.toUpperCase() &&
+          rowCity.toUpperCase() === city.toUpperCase() &&
+          rowState.toUpperCase() === state.toUpperCase() &&
+          rowZip === zip) {
+        // Update the address cell
+        uploadSheet.getRange(i + 1, addressIdx + 1).setValue(correctedAddress);
+        updatedCount++;
+      }
+    }
+
+    if (updatedCount > 0) {
+      Logger.log(`Updated ${updatedCount} address(es) in CD_To_Upload: "${originalAddress}" -> "${correctedAddress}"`);
+    }
+
+  } catch (error) {
+    Logger.log(`Error updating address in CD_To_Upload: ${error.message}`);
+  }
+}
+
+/**
  * Get or create the geocode cache sheet
  * @private
  */
@@ -994,9 +2392,21 @@ function getOrCreateGeocodeCache_() {
 
   if (!cacheSheet) {
     cacheSheet = ss.insertSheet('_GeocodeCache');
-    cacheSheet.getRange(1, 1, 1, 6).setValues([['NormalizedAddress', 'Latitude', 'Longitude', 'Status', 'Source', 'DateAdded']]);
+    cacheSheet.getRange(1, 1, 1, 8).setValues([['NormalizedAddress', 'Latitude', 'Longitude', 'Status', 'Source', 'DateAdded', 'AttemptCount', 'WorkingAddress']]);
     cacheSheet.setFrozenRows(1);
     Logger.log('Created _GeocodeCache sheet');
+  } else {
+    // Migrate existing cache if needed - add new columns if they don't exist
+    const headers = cacheSheet.getRange(1, 1, 1, cacheSheet.getLastColumn()).getValues()[0];
+    if (headers.length < 8) {
+      if (!headers.includes('AttemptCount')) {
+        cacheSheet.getRange(1, 7).setValue('AttemptCount');
+      }
+      if (!headers.includes('WorkingAddress')) {
+        cacheSheet.getRange(1, 8).setValue('WorkingAddress');
+      }
+      Logger.log('Migrated _GeocodeCache schema to include AttemptCount and WorkingAddress');
+    }
   }
 
   return cacheSheet;
@@ -1018,13 +2428,17 @@ function loadGeocodeCache_(cacheSheet) {
     const lng = row[2];
     const status = row[3] || 'exact';
     const source = row[4] || '-';
+    const attemptCount = row[6] || 0;
+    const workingAddress = row[7] || '';
 
     if (key) {
       cache[key] = {
         lat: lat,
         lng: lng,
         status: status,
-        source: source
+        source: source,
+        attemptCount: attemptCount,
+        workingAddress: workingAddress
       };
     }
   }
@@ -1045,12 +2459,14 @@ function saveGeocodeCache_(cacheSheet, newEntries) {
     entry.lng || '',
     entry.status || 'exact',
     entry.source || '-',
-    entry.date || new Date().toISOString().split('T')[0]
+    entry.date || new Date().toISOString().split('T')[0],
+    entry.attemptCount || 0,
+    entry.workingAddress || ''
   ]);
 
   const nextRow = cacheSheet.getLastRow() + 1;
 
-  cacheSheet.getRange(nextRow, 1, newRows.length, 6).setValues(newRows);
+  cacheSheet.getRange(nextRow, 1, newRows.length, 8).setValues(newRows);
   Logger.log(`Saved ${newRows.length} new cache entries`);
 }
 
