@@ -2773,6 +2773,235 @@ function donor_generatePairsFromBlocks__debug_(blocks, bigBlocksSkippedInitial) 
 /**
  * Opens a dialog for drag-and-drop CSV upload
  */
+/** =========================
+ * FEC Reports Drag & Drop Upload
+ * ========================= */
+function fec_uploadDialog() {
+  const html = HtmlService.createHtmlOutput(fec_getUploadHtml_())
+    .setWidth(520)
+    .setHeight(340)
+    .setTitle('Upload FEC Reports');
+  SpreadsheetApp.getUi().showModalDialog(html, 'FEC Reports Upload');
+}
+
+function fec_getUploadHtml_() {
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 20px;
+      margin: 0;
+    }
+    #dropzone {
+      border: 3px dashed #4285f4;
+      border-radius: 8px;
+      padding: 40px;
+      text-align: center;
+      background-color: #f8f9fa;
+      transition: all 0.3s;
+      cursor: pointer;
+    }
+    #dropzone.dragover {
+      background-color: #e8f0fe;
+      border-color: #1967d2;
+    }
+    #dropzone:hover {
+      background-color: #e8f0fe;
+    }
+    .icon {
+      font-size: 48px;
+      color: #4285f4;
+      margin-bottom: 10px;
+    }
+    .message {
+      font-size: 16px;
+      color: #5f6368;
+      margin-bottom: 8px;
+    }
+    .hint {
+      font-size: 12px;
+      color: #80868b;
+    }
+    #fileList {
+      margin-top: 15px;
+      padding: 10px;
+      background-color: #fff;
+      border-radius: 4px;
+      max-height: 100px;
+      overflow-y: auto;
+      display: none;
+    }
+    #fileList.visible {
+      display: block;
+      border: 1px solid #dadce0;
+    }
+    .file-item {
+      padding: 4px 0;
+      font-size: 13px;
+      color: #5f6368;
+    }
+    #status {
+      margin-top: 15px;
+      padding: 10px;
+      border-radius: 4px;
+      display: none;
+    }
+    #status.success {
+      background-color: #d4edda;
+      color: #155724;
+      border: 1px solid #c3e6cb;
+      display: block;
+    }
+    #status.error {
+      background-color: #f8d7da;
+      color: #721c24;
+      border: 1px solid #f5c6cb;
+      display: block;
+    }
+    #status.processing {
+      background-color: #fff3cd;
+      color: #856404;
+      border: 1px solid #ffeaa7;
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <div id="dropzone">
+    <div class="icon">📊</div>
+    <div class="message">Drag and drop FEC CSV files here</div>
+    <div class="hint">or click to select files (multiple files supported)</div>
+  </div>
+  <input type="file" id="fileInput" accept=".csv" multiple style="display: none;">
+  <div id="fileList"></div>
+  <div id="status"></div>
+
+  <script>
+    const dropzone = document.getElementById('dropzone');
+    const fileInput = document.getElementById('fileInput');
+    const fileList = document.getElementById('fileList');
+    const status = document.getElementById('status');
+    let selectedFiles = [];
+
+    // Click to select file
+    dropzone.addEventListener('click', () => {
+      fileInput.click();
+    });
+
+    // File selected via input
+    fileInput.addEventListener('change', (e) => {
+      if (e.target.files.length > 0) {
+        handleFiles(Array.from(e.target.files));
+      }
+    });
+
+    // Prevent default drag behaviors
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+      dropzone.addEventListener(eventName, preventDefaults, false);
+      document.body.addEventListener(eventName, preventDefaults, false);
+    });
+
+    function preventDefaults(e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+
+    // Highlight drop zone when dragging over it
+    ['dragenter', 'dragover'].forEach(eventName => {
+      dropzone.addEventListener(eventName, () => {
+        dropzone.classList.add('dragover');
+      }, false);
+    });
+
+    ['dragleave', 'drop'].forEach(eventName => {
+      dropzone.addEventListener(eventName, () => {
+        dropzone.classList.remove('dragover');
+      }, false);
+    });
+
+    // Handle dropped files
+    dropzone.addEventListener('drop', (e) => {
+      const files = Array.from(e.dataTransfer.files);
+      if (files.length > 0) {
+        handleFiles(files);
+      }
+    }, false);
+
+    function handleFiles(files) {
+      // Filter for CSV files only
+      const csvFiles = files.filter(f => f.name.endsWith('.csv'));
+
+      if (csvFiles.length === 0) {
+        showStatus('error', 'Please upload CSV files only.');
+        return;
+      }
+
+      if (csvFiles.length !== files.length) {
+        showStatus('error', 'Some files were skipped (only CSV files are accepted).');
+        setTimeout(() => status.style.display = 'none', 3000);
+      }
+
+      selectedFiles = csvFiles;
+      displayFileList();
+      uploadFiles();
+    }
+
+    function displayFileList() {
+      fileList.innerHTML = '<strong>Files to upload:</strong><br>' +
+        selectedFiles.map(f => '<div class="file-item">• ' + f.name + '</div>').join('');
+      fileList.classList.add('visible');
+    }
+
+    async function uploadFiles() {
+      showStatus('processing', 'Reading ' + selectedFiles.length + ' file(s)...');
+
+      try {
+        const payload = [];
+        for (const file of selectedFiles) {
+          const text = await file.text();
+          payload.push({ name: file.name, text: text });
+        }
+
+        showStatus('processing', 'Uploading to Google Sheets...');
+
+        // Send to server
+        google.script.run
+          .withSuccessHandler(onSuccess)
+          .withFailureHandler(onError)
+          .appendUploadedFecCsvBatch(payload);
+      } catch (err) {
+        showStatus('error', 'Failed to read files: ' + err.message);
+      }
+    }
+
+    function onSuccess(message) {
+      showStatus('success', message);
+      setTimeout(() => {
+        google.script.host.close();
+      }, 2500);
+    }
+
+    function onError(error) {
+      showStatus('error', 'Error: ' + error.message);
+    }
+
+    function showStatus(type, message) {
+      status.className = type;
+      status.textContent = message;
+    }
+  </script>
+</body>
+</html>
+  `;
+}
+
+/** =========================
+ * Campaign Deputy Drag & Drop Upload
+ * ========================= */
 function cd_uploadDialog() {
   const html = HtmlService.createHtmlOutput(cd_getUploadHtml_())
     .setWidth(500)

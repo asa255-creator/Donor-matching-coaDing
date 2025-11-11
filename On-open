@@ -7,7 +7,7 @@ function onOpen() {
   // KREF menu stays the same
   ui.createMenu('KREF Tools')
     .addItem('Fetch donor info from KREF', 'exportAllToSheet')
-    .addItem('Add downloaded FEC reports', 'addFecReportsFromComputer')
+    .addItem('Add downloaded FEC reports', 'fec_uploadDialog')
     .addToUi();
 
   // Donor Tools menu now includes your local functions plus the final donor ID list creator
