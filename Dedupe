@@ -728,6 +728,86 @@ function dl_prepareLocalJobAndShowCommand_() {
   SpreadsheetApp.getUi().showModalDialog(html, 'Run locally');
 }
 
+/** Incremental training: load existing data and add more pairs */
+function dl_prepareIncrementalTrainingJob_() {
+  dl_resetProgress_();
+  dl_setProgress_('Preparing incremental training job', 0, 1, 'Creating Drive bundle');
+
+  const webAppUrl = dl_getExecUrlFromOptions_();
+  if (!webAppUrl) {
+    SpreadsheetApp.getUi().alert(
+      'Put your Web App URL ending with /exec in Options!I2.\nExample:\nhttps://script.google.com/macros/s/AKfycb.../exec'
+    );
+    return;
+  }
+
+  const kref = dl_exportSheetAsCsv_(DL_CFG.krefSheet);
+  const fec  = dl_exportSheetAsCsv_(DL_CFG.fecSheet);
+  if (!kref.file || !fec.file) {
+    SpreadsheetApp.getUi().alert(
+      'Missing input sheets or no rows. Confirm sheets exist: ' + DL_CFG.krefSheet + ' and ' + DL_CFG.fecSheet
+    );
+    return;
+  }
+
+  const token = dl_makeToken_();
+  const until = Date.now() + DL_CFG.tokenMinutes * 60 * 1000;
+
+  // Read match threshold from Options!J2
+  const ss = SpreadsheetApp.getActive();
+  const optionsSheet = ss.getSheetByName('Options');
+  const threshold = optionsSheet ? Number(optionsSheet.getRange('J2').getValue() || 0.7) : 0.7;
+
+  const job = {
+    jobId: 'job_' + Utilities.getUuid().replace(/-/g, '').slice(0, 12),
+    mode: 'incremental',  // NEW: Flag to indicate incremental training mode
+    cfg: {
+      sampleTrainingPairs: DL_CFG.sampleTrainingPairs,
+      uncertainBatchSize: DL_CFG.uncertainBatchSize,
+      uncertaintyBand: DL_CFG.uncertaintyBand,
+      maxPairsPerBlock: DL_CFG.maxPairsPerBlock,
+      maxTotalPairs: DL_CFG.maxTotalPairs,
+      predictThreshold: threshold
+    },
+    krefUrl: webAppUrl + '?csv=kref&token=' + encodeURIComponent(token),
+    fecUrl:  webAppUrl + '?csv=fec&token=' + encodeURIComponent(token),
+    modelUrl: webAppUrl + '?model=1',
+    resultUrl: webAppUrl + '?result=1&token=' + encodeURIComponent(token)
+  };
+
+  const props = PropertiesService.getDocumentProperties();
+  props.setProperty('dl_token', token);
+  props.setProperty('dl_token_until', String(until));
+  props.setProperty('dl_job_json', JSON.stringify(job));
+  props.setProperty('dl_kref_fileId', kref.file.getId());
+  props.setProperty('dl_fec_fileId',  fec.file.getId());
+  props.setProperty('dl_staging_folderId', kref.folder.getId());
+
+  const cmd =
+    "curl -sSL '" + webAppUrl + "?runner=1' | " +
+    "python3 - --bundle '" + webAppUrl + "?job=1&token=" + token + "' " +
+    "--result '" + webAppUrl + "?result=1&token=" + token + "'";
+
+  dl_setProgress_('Waiting', 0, 0, 'Copy the command into Terminal');
+
+  const html = HtmlService.createHtmlOutput(
+    '<div style="font-family:system-ui,Arial;padding:12px;max-width:720px">' +
+      '<div style="margin:6px 0"><strong>Incremental Training Mode</strong></div>' +
+      '<div style="margin:6px 0;color:#666">This will load your existing training data and let you add more labeled pairs.</div>' +
+      '<div style="margin:6px 0">Token expires in about ' + DL_CFG.tokenMinutes + ' minutes</div>' +
+      '<div style="margin:6px 0">Copy this command into your Mac Terminal:</div>' +
+      '<textarea id="cmd" style="width:100%;height:140px" readonly>' +
+        dl_htmlEscape_(cmd) +
+      '</textarea>' +
+      '<div style="margin-top:8px">' +
+        '<button onclick="navigator.clipboard.writeText(document.getElementById(\'cmd\').value)">Copy to clipboard</button>' +
+      '</div>' +
+      '<div style="margin-top:8px;color:#666;font-size:12px">Keep this sheet open. Progress will appear in the sidebar.</div>' +
+    '</div>'
+  ).setWidth(740).setHeight(320);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Continue Training Locally');
+}
+
 /** Progress sidebar */
 function dl_showProgressSidebar() {
   const html = HtmlService.createHtmlOutput(
@@ -760,6 +840,7 @@ function doGet(e) {
     const py = [
       '#!/usr/bin/env python3',
       'import sys, json, csv, io, urllib.request, argparse, time, math, random, re',
+      'from collections import defaultdict',
       '',
       '# ----------------------------',
       '# HTTP helpers with retry logic',
@@ -767,17 +848,35 @@ function doGet(e) {
       '    max_retries = 4',
       '    delays = [2, 4, 8, 16]  # exponential backoff in seconds',
       '    ',
+      '    # Show which URL we\'re fetching (truncate for readability)',
+      '    url_display = url if len(url) <= 100 else url[:97] + "..."',
+      '    print(f"\\nFetching: {url_display}")',
+      '    start_time = time.time()',
+      '    ',
       '    for attempt in range(max_retries + 1):',
       '        try:',
-      '            with urllib.request.urlopen(url) as r:',
-      '                return r.read()',
+      '            with urllib.request.urlopen(url, timeout=300) as r:',
+      '                data = r.read()',
+      '                elapsed = time.time() - start_time',
+      '                size_mb = len(data) / (1024 * 1024)',
+      '                print(f"✓ Received {size_mb:.2f} MB in {elapsed:.1f}s")',
+      '                return data',
       '        except urllib.error.HTTPError as e:',
+      '            elapsed = time.time() - start_time',
+      '            print(f"✗ HTTP {e.code} error after {elapsed:.1f}s")',
+      '            if e.code == 500:',
+      '                print(f"   Server error - likely timeout or memory limit on server side")',
+      '                print(f"   This often happens with very large datasets (100k+ rows)")',
       '            if e.code == 429 and attempt < max_retries:',
       '                delay = delays[attempt]',
-      '                print(f"HTTP 429 rate limit hit. Retrying in {delay}s... (attempt {attempt + 1}/{max_retries})")',
+      '                print(f"   Rate limit hit. Retrying in {delay}s... (attempt {attempt + 1}/{max_retries})")',
       '                time.sleep(delay)',
       '            else:',
       '                raise',
+      '        except Exception as e:',
+      '            elapsed = time.time() - start_time',
+      '            print(f"✗ Error after {elapsed:.1f}s: {type(e).__name__}: {e}")',
+      '            raise',
       '    ',
       '    raise Exception("Max retries exceeded")',
       '',
@@ -860,14 +959,155 @@ function doGet(e) {
       '    return w',
       '',
       '# ----------------------------',
+      '# Learn semantic associations from training data',
+      'def learn_associations(training_rows):',
+      '    """',
+      '    Analyze matched pairs to learn which terms co-occur across ALL fields.',
+      '    Returns dictionaries for first, last, address, city, state, zip, employer, occupation associations.',
+      '    """',
+      '    first_cooccur = defaultdict(lambda: defaultdict(int))',
+      '    last_cooccur = defaultdict(lambda: defaultdict(int))',
+      '    address_cooccur = defaultdict(lambda: defaultdict(int))',
+      '    city_cooccur = defaultdict(lambda: defaultdict(int))',
+      '    state_cooccur = defaultdict(lambda: defaultdict(int))',
+      '    zip_cooccur = defaultdict(lambda: defaultdict(int))',
+      '    employer_cooccur = defaultdict(lambda: defaultdict(int))',
+      '    occupation_cooccur = defaultdict(lambda: defaultdict(int))',
+      '    ',
+      '    for row in training_rows:',
+      '        if row.get("label") != 1:  # Only learn from matches',
+      '            continue',
+      '        ',
+      '        # Extract and normalize terms',
+      '        def normalize(val):',
+      '            if not val: return "EMPTY"',
+      '            s = str(val).strip().upper()',
+      '            if s in ["", "N/A", "NA", "NULL", "NONE", "UNKNOWN"]: return "EMPTY"',
+      '            return s',
+      '        ',
+      '        first_a = normalize(row["a"].get("first", ""))',
+      '        first_b = normalize(row["b"].get("first", ""))',
+      '        last_a = normalize(row["a"].get("last", ""))',
+      '        last_b = normalize(row["b"].get("last", ""))',
+      '        addr_a = normalize(row["a"].get("addr", ""))',
+      '        addr_b = normalize(row["b"].get("addr", ""))',
+      '        city_a = normalize(row["a"].get("city", ""))',
+      '        city_b = normalize(row["b"].get("city", ""))',
+      '        state_a = normalize(row["a"].get("state", ""))',
+      '        state_b = normalize(row["b"].get("state", ""))',
+      '        zip_a = normalize(row["a"].get("zip", ""))',
+      '        zip_b = normalize(row["b"].get("zip", ""))',
+      '        emp_a = normalize(row["a"].get("employer", ""))',
+      '        emp_b = normalize(row["b"].get("employer", ""))',
+      '        occ_a = normalize(row["a"].get("occupation", ""))',
+      '        occ_b = normalize(row["b"].get("occupation", ""))',
+      '        ',
+      '        # Track co-occurrences (bidirectional)',
+      '        if first_a != first_b:',
+      '            first_cooccur[first_a][first_b] += 1',
+      '            first_cooccur[first_b][first_a] += 1',
+      '        ',
+      '        if last_a != last_b:',
+      '            last_cooccur[last_a][last_b] += 1',
+      '            last_cooccur[last_b][last_a] += 1',
+      '        ',
+      '        if addr_a != addr_b:',
+      '            address_cooccur[addr_a][addr_b] += 1',
+      '            address_cooccur[addr_b][addr_a] += 1',
+      '        ',
+      '        if city_a != city_b:',
+      '            city_cooccur[city_a][city_b] += 1',
+      '            city_cooccur[city_b][city_a] += 1',
+      '        ',
+      '        if state_a != state_b:',
+      '            state_cooccur[state_a][state_b] += 1',
+      '            state_cooccur[state_b][state_a] += 1',
+      '        ',
+      '        if zip_a != zip_b:',
+      '            zip_cooccur[zip_a][zip_b] += 1',
+      '            zip_cooccur[zip_b][zip_a] += 1',
+      '        ',
+      '        if emp_a != emp_b:',
+      '            employer_cooccur[emp_a][emp_b] += 1',
+      '            employer_cooccur[emp_b][emp_a] += 1',
+      '        ',
+      '        if occ_a != occ_b:',
+      '            occupation_cooccur[occ_a][occ_b] += 1',
+      '            occupation_cooccur[occ_b][occ_a] += 1',
+      '    ',
+      '    return (dict(first_cooccur), dict(last_cooccur), dict(address_cooccur), ',
+      '            dict(city_cooccur), dict(state_cooccur), dict(zip_cooccur),',
+      '            dict(employer_cooccur), dict(occupation_cooccur))',
+      '',
+      'def check_association(term1, term2, associations, threshold=2):',
+      '    """',
+      '    Check if two terms are associated based on learned co-occurrences.',
+      '    threshold=2 means they must co-occur in at least 2 matched pairs.',
+      '    """',
+      '    def normalize(val):',
+      '        if not val: return "EMPTY"',
+      '        s = str(val).strip().upper()',
+      '        if s in ["", "N/A", "NA", "NULL", "NONE", "UNKNOWN"]: return "EMPTY"',
+      '        return s',
+      '    ',
+      '    t1 = normalize(term1)',
+      '    t2 = normalize(term2)',
+      '    ',
+      '    if t1 == t2: return True  # Exact match',
+      '    ',
+      '    # Check if terms co-occur in training data',
+      '    if t1 in associations and t2 in associations[t1]:',
+      '        return associations[t1][t2] >= threshold',
+      '    ',
+      '    return False',
+      '',
+      '# Global association dictionaries (will be populated after loading training data)',
+      'first_associations = {}',
+      'last_associations = {}',
+      'address_associations = {}',
+      'city_associations = {}',
+      'state_associations = {}',
+      'zip_associations = {}',
+      'employer_associations = {}',
+      'occupation_associations = {}',
+      '',
+      '# ----------------------------',
       '# Features with interactions',
       'def features(a, b):',
-      '    # Base features [0-4]',
-      '    f0 = jaro_winkler((a.get("DonorFirst","")+" "+a.get("DonorLast","")).strip(), (b.get("DonorFirst","")+" "+b.get("DonorLast","")).strip())  # name',
-      '    f1 = jaro_winkler(a.get("DonorLast",""), b.get("DonorLast",""))  # last',
-      '    f2 = jaro_winkler(a.get("Address1",""), b.get("Address1",""))  # address',
-      '    f3 = jaro_winkler(a.get("Employer",""), b.get("Employer",""))  # employer',
-      '    f4 = jaro_winkler(a.get("Occupation",""), b.get("Occupation",""))  # occupation',
+      '    # First name with learned associations (for nicknames like Bob/Robert)',
+      '    first_sim = jaro_winkler(a.get("DonorFirst",""), b.get("DonorFirst",""))',
+      '    if first_sim < 0.9 and check_association(a.get("DonorFirst",""), b.get("DonorFirst",""), first_associations):',
+      '        first_sim = 0.95  # Boost for learned nicknames',
+      '    ',
+      '    # Last name with learned associations',
+      '    last_sim = jaro_winkler(a.get("DonorLast",""), b.get("DonorLast",""))',
+      '    if last_sim < 0.9 and check_association(a.get("DonorLast",""), b.get("DonorLast",""), last_associations):',
+      '        last_sim = 0.95  # Boost for variants',
+      '    ',
+      '    # Full name combines first and last with association boosts',
+      '    full_a = (a.get("DonorFirst","")+" "+a.get("DonorLast","")).strip()',
+      '    full_b = (b.get("DonorFirst","")+" "+b.get("DonorLast","")).strip()',
+      '    f0 = jaro_winkler(full_a, full_b)  # name',
+      '    # Boost full name if components are associated',
+      '    if first_sim >= 0.95 or last_sim >= 0.95:',
+      '        f0 = max(f0, (first_sim + last_sim) / 2.0)',
+      '    ',
+      '    f1 = last_sim  # last',
+      '    ',
+      '    # Address with learned associations',
+      '    f2 = jaro_winkler(a.get("Address1",""), b.get("Address1",""))',
+      '    if f2 < 0.9 and check_association(a.get("Address1",""), b.get("Address1",""), address_associations):',
+      '        f2 = 0.95  # Boost for learned address variations',
+      '    ',
+      '    # Employer with learned associations',
+      '    f3 = jaro_winkler(a.get("Employer",""), b.get("Employer",""))',
+      '    if f3 < 0.9 and check_association(a.get("Employer",""), b.get("Employer",""), employer_associations):',
+      '        f3 = 0.95  # Boost score for learned synonyms',
+      '    ',
+      '    # Occupation with learned associations',
+      '    f4 = jaro_winkler(a.get("Occupation",""), b.get("Occupation",""))',
+      '    if f4 < 0.9 and check_association(a.get("Occupation",""), b.get("Occupation",""), occupation_associations):',
+      '        f4 = 0.95  # Boost score for learned synonyms',
       '    ',
       '    # Interaction features [5-14]',
       '    f5 = f0 * f1   # name * last',
@@ -912,10 +1152,13 @@ function doGet(e) {
       '        nm = (o.get("DonorFirst","")+" "+o.get("DonorLast","")).strip()',
       '        ad = ", ".join([s for s in [o.get("Address1",""), o.get("City",""), o.get("State","")] if s])',
       '        em = " | ".join([s for s in [o.get("Employer",""), o.get("Occupation","")] if s])',
-      '        return nm+"\\n"+ad+"\\n"+em',
+      '        dt = o.get("ReceiptDate", "").strip() or "No date"',
+      '        return nm+"\\n"+ad+"\\n"+em+"\\n"+"Donated: "+dt',
       '    print("A:"); print(fmt(a))',
       '    print("B:"); print(fmt(b))',
-      '    print(f"feat nameSim={x[0]:.3f} addrSim={x[2]:.3f} empSim={x[3]:.3f} occSim={x[4]:.3f}  model_p={p:.3f}")',
+      '    # Show confidence as percentage',
+      '    confidence_pct = p * 100',
+      '    print(f"Model confidence: {confidence_pct:.1f}% match")',
       '    while True:',
       '        s = read_tty("Label this pair (1=match, 0=not match, 2=skip): ").strip()',
       '        if s in ("0","1","2"):',
@@ -1035,6 +1278,10 @@ function doGet(e) {
       'args = ap.parse_args()',
       '',
       'job = json.loads(http_get(args.bundle).decode("utf-8"))',
+      '# Extract threshold from job config (default to 0.7 if not specified)',
+      'predict_threshold = job.get("cfg", {}).get("predictThreshold", 0.7)',
+      'print(f"Using prediction threshold: {predict_threshold}")',
+      '',
       'hdrK, rowsK = parse_csv(http_get(job["krefUrl"]).decode("utf-8"))',
       'hdrF, rowsF = parse_csv(http_get(job["fecUrl"]).decode("utf-8"))',
       '',
@@ -1278,58 +1525,140 @@ function doGet(e) {
       'existing_model = http_get(job["modelUrl"]).decode("utf-8")',
       'existing_data = json.loads(existing_model)',
       'is_continuing = False  # Track if we loaded existing data',
+      'job_mode = job.get("mode", "full")  # Get job mode (full or incremental)',
+      'print(f"DEBUG: Job mode detected as: {job_mode}")',
+      'print(f"DEBUG: Job keys: {list(job.keys())}")',
       '',
       'if existing_data.get("weights"):',
       '    weights_count = len(existing_data.get("weights", []))',
       '    print(f"Found existing model with {weights_count} weights")',
       '    ',
-      '    # Ask user: load or new',
-      '    while True:',
-      '        choice = read_tty("(L)oad existing training data and continue, or start (N)ew? (l/n): ").strip().lower()',
-      '        if choice == "l":',
-      '            print("Loading existing training data...")',
-      '            # Fetch training data',
-      '            training_url = job["modelUrl"].replace("model=1", "training=1")',
-      '            training_json = http_get(training_url).decode("utf-8")',
-      '            training_data = json.loads(training_json)',
+      '    # Incremental mode: automatically load existing data',
+      '    if job_mode == "incremental":',
+      '        print("INCREMENTAL MODE: Loading existing training data...")',
+      '        training_url = job["modelUrl"].replace("model=1", "training=1")',
+      '        training_json = http_get(training_url).decode("utf-8")',
+      '        training_data = json.loads(training_json)',
+      '        ',
+      '        if training_data.get("training_rows"):',
+      '            training_rows = training_data["training_rows"]',
+      '            w = existing_data["weights"]',
+      '            # NOTE: is_continuing stays False so we run training loop',
+      '            loaded_training_count = len(training_rows)',
       '            ',
-      '            if training_data.get("training_rows"):',
-      '                training_rows = training_data["training_rows"]',
-      '                w = existing_data["weights"]',
-      '                is_continuing = True  # Mark as continuing',
-      '                loaded_training_count = len(training_rows)  # Track how many we loaded',
+      '            # Build seen_pairs from loaded data',
+      '            for row in training_rows:',
+      '                a_key = (row["a"]["origin"], row["a"]["row"])',
+      '                b_key = (row["b"]["origin"], row["b"]["row"])',
+      '                pair_key = (a_key, b_key) if a_key <= b_key else (b_key, a_key)',
+      '                seen_pairs.add(pair_key)',
       '                ',
-      '                # Build seen_pairs from loaded data',
-      '                for row in training_rows:',
-      '                    a_key = (row["a"]["origin"], row["a"]["row"])',
-      '                    b_key = (row["b"]["origin"], row["b"]["row"])',
-      '                    pair_key = (a_key, b_key) if a_key <= b_key else (b_key, a_key)',
-      '                    seen_pairs.add(pair_key)',
-      '                    ',
-      '                    # Track donor usage',
-      '                    donor_usage_count[a_key] = donor_usage_count.get(a_key, 0) + 1',
-      '                    donor_usage_count[b_key] = donor_usage_count.get(b_key, 0) + 1',
-      '                ',
-      '                print(f"Loaded {len(training_rows)} existing labeled pairs")',
-      '                print(f"Model has {len(w)} weights")',
-      '            else:',
-      '                print("No training data found, starting fresh")',
-      '            break',
-      '        elif choice == "n":',
-      '            print("Starting new training session...")',
-      '            # Clear any existing weights so we start fresh',
-      '            print("Clearing any previously saved model weights...")',
-      '            clear_url = job["modelUrl"].replace("model=1", "clear=1")',
-      '            try:',
-      '                http_get(clear_url)',
-      '                print("Old model cleared.")',
-      '            except:',
-      '                print("(No old model to clear)")',
-      '            break',
+      '                # Track donor usage',
+      '                donor_usage_count[a_key] = donor_usage_count.get(a_key, 0) + 1',
+      '                donor_usage_count[b_key] = donor_usage_count.get(b_key, 0) + 1',
+      '            ',
+      '            print(f"Loaded {len(training_rows)} existing labeled pairs")',
+      '            print(f"Model has {len(w)} weights")',
+      '            ',
+      '            # Learn semantic associations from existing training data',
+      '            print("Learning semantic associations from training data...")',
+      '            (first_associations, last_associations, address_associations,',
+      '             city_associations, state_associations, zip_associations,',
+      '             employer_associations, occupation_associations) = learn_associations(training_rows)',
+      '            first_pairs = sum(len(v) for v in first_associations.values()) // 2',
+      '            last_pairs = sum(len(v) for v in last_associations.values()) // 2',
+      '            addr_pairs = sum(len(v) for v in address_associations.values()) // 2',
+      '            city_pairs = sum(len(v) for v in city_associations.values()) // 2',
+      '            state_pairs = sum(len(v) for v in state_associations.values()) // 2',
+      '            zip_pairs = sum(len(v) for v in zip_associations.values()) // 2',
+      '            emp_pairs = sum(len(v) for v in employer_associations.values()) // 2',
+      '            occ_pairs = sum(len(v) for v in occupation_associations.values()) // 2',
+      '            print(f"  Learned {first_pairs} first name associations (nicknames)")',
+      '            print(f"  Learned {last_pairs} last name associations")',
+      '            print(f"  Learned {addr_pairs} address associations")',
+      '            print(f"  Learned {city_pairs} city associations")',
+      '            print(f"  Learned {state_pairs} state associations")',
+      '            print(f"  Learned {zip_pairs} zip associations")',
+      '            print(f"  Learned {emp_pairs} employer associations")',
+      '            print(f"  Learned {occ_pairs} occupation associations")',
+      '            if first_pairs > 0 or addr_pairs > 0 or emp_pairs > 0 or occ_pairs > 0:',
+      '                print("  (e.g., Bob ↔ Robert, N/A ↔ RETIRED)")',
+      '            print("You can now add more training pairs to improve the model.\\n")',
       '        else:',
-      '            print(\'Please enter "l" to load or "n" for new.\')',
+      '            print("No training data found, starting fresh")',
+      '    # Full mode: ask user to load or start new',
+      '    else:',
+      '        while True:',
+      '            choice = read_tty("(L)oad existing training data and continue, or start (N)ew? (l/n): ").strip().lower()',
+      '            if choice == "l":',
+      '                print("Loading existing training data...")',
+      '                # Fetch training data',
+      '                training_url = job["modelUrl"].replace("model=1", "training=1")',
+      '                training_json = http_get(training_url).decode("utf-8")',
+      '                training_data = json.loads(training_json)',
+      '                ',
+      '                if training_data.get("training_rows"):',
+      '                    training_rows = training_data["training_rows"]',
+      '                    w = existing_data["weights"]',
+      '                    is_continuing = True  # Mark as continuing (skip training loop)',
+      '                    loaded_training_count = len(training_rows)  # Track how many we loaded',
+      '                    ',
+      '                    # Build seen_pairs from loaded data',
+      '                    for row in training_rows:',
+      '                        a_key = (row["a"]["origin"], row["a"]["row"])',
+      '                        b_key = (row["b"]["origin"], row["b"]["row"])',
+      '                        pair_key = (a_key, b_key) if a_key <= b_key else (b_key, a_key)',
+      '                        seen_pairs.add(pair_key)',
+      '                        ',
+      '                        # Track donor usage',
+      '                        donor_usage_count[a_key] = donor_usage_count.get(a_key, 0) + 1',
+      '                        donor_usage_count[b_key] = donor_usage_count.get(b_key, 0) + 1',
+      '                    ',
+      '                    print(f"Loaded {len(training_rows)} existing labeled pairs")',
+      '                    print(f"Model has {len(w)} weights")',
+      '                    ',
+      '                    # Learn semantic associations from existing training data',
+      '                    print("Learning semantic associations from training data...")',
+      '                    (first_associations, last_associations, address_associations,',
+      '                     city_associations, state_associations, zip_associations,',
+      '                     employer_associations, occupation_associations) = learn_associations(training_rows)',
+      '                    first_pairs = sum(len(v) for v in first_associations.values()) // 2',
+      '                    last_pairs = sum(len(v) for v in last_associations.values()) // 2',
+      '                    addr_pairs = sum(len(v) for v in address_associations.values()) // 2',
+      '                    city_pairs = sum(len(v) for v in city_associations.values()) // 2',
+      '                    state_pairs = sum(len(v) for v in state_associations.values()) // 2',
+      '                    zip_pairs = sum(len(v) for v in zip_associations.values()) // 2',
+      '                    emp_pairs = sum(len(v) for v in employer_associations.values()) // 2',
+      '                    occ_pairs = sum(len(v) for v in occupation_associations.values()) // 2',
+      '                    print(f"  Learned {first_pairs} first name associations (nicknames)")',
+      '                    print(f"  Learned {last_pairs} last name associations")',
+      '                    print(f"  Learned {addr_pairs} address associations")',
+      '                    print(f"  Learned {city_pairs} city associations")',
+      '                    print(f"  Learned {state_pairs} state associations")',
+      '                    print(f"  Learned {zip_pairs} zip associations")',
+      '                    print(f"  Learned {emp_pairs} employer associations")',
+      '                    print(f"  Learned {occ_pairs} occupation associations")',
+      '                else:',
+      '                    print("No training data found, starting fresh")',
+      '                break',
+      '            elif choice == "n":',
+      '                print("Starting new training session...")',
+      '                # Clear any existing weights so we start fresh',
+      '                print("Clearing any previously saved model weights...")',
+      '                clear_url = job["modelUrl"].replace("model=1", "clear=1")',
+      '                try:',
+      '                    http_get(clear_url)',
+      '                    print("Old model cleared.")',
+      '                except:',
+      '                    print("(No old model to clear)")',
+      '                break',
+      '            else:',
+      '                print(\'Please enter "l" to load or "n" for new.\')',
       'else:',
       '    print("No existing model found. Starting fresh.")',
+      '    if job_mode == "incremental":',
+      '        print("WARNING: Incremental mode requested but no existing training data found.")',
+      '        print("This will behave the same as full mode.\\n")',
       '',
       '# ----------------------------',
       '# Retraining function',
@@ -1421,8 +1750,22 @@ function doGet(e) {
       '        return f"{key1}|{key2}"',
       '    return None',
       '',
-      'def adaptive_candidates(window_rows, want, seen_pairs, w, feature_names, donor_usage_count, max_usage=3):',
+      'def adaptive_candidates(window_rows, want, seen_pairs, w, feature_names, donor_usage_count, threshold, max_usage=3):',
       '    """Find candidate pairs using learned blocking strategies."""',
+      '    # Calculate uncertainty band centered on the threshold',
+      '    # Band width shrinks as threshold approaches 1.0',
+      '    # At 0.5: ±0.15 (30% range)',
+      '    # At 0.7: ±0.15 (30% range)',
+      '    # At 0.9: ±0.09 (18% range)',
+      '    # At 0.95: ±0.045 (9% range)',
+      '    base_band = 0.15',
+      '    # Scale band proportionally: shrinks as threshold approaches 1.0',
+      '    band_width = base_band * (1.0 - threshold) / 0.5 if threshold > 0.5 else base_band',
+      '    lower_bound = max(0.0, threshold - band_width)',
+      '    upper_bound = min(1.0, threshold + band_width)',
+      '    ',
+      '    print(f"  Uncertainty band: {lower_bound:.2f} to {upper_bound:.2f} (centered on threshold {threshold:.2f})")',
+      '    ',
       '    # Analyze weights to get top features',
       '    weight_analysis = analyze_weights(w, feature_names)',
       '    ',
@@ -1488,10 +1831,10 @@ function doGet(e) {
       '                for t in range(len(x)):',
       '                    z += w[t] * x[t]',
       '                p = 1.0 / (1.0 + math.exp(-z))',
-      '                u = abs(p - 0.5)',
+      '                u = abs(p - threshold)  # Uncertainty is distance from threshold',
       '                ',
       '                # Accept pairs in uncertainty band',
-      '                if 0.35 <= p <= 0.65:',
+      '                if lower_bound <= p <= upper_bound:',
       '                    candidates.append((u, p, a, b, x, p))',
       '    ',
       '    print(f"  Found {len(candidates)} uncertain pairs in blocks")',
@@ -1538,7 +1881,7 @@ function doGet(e) {
       '    else:',
       '        ask = 5',
       '        print("Using adaptive blocking based on learned weights...")',
-      '        batch = adaptive_candidates(selected_donors, ask, seen_pairs, w, feature_names, donor_usage_count)',
+      '        batch = adaptive_candidates(selected_donors, ask, seen_pairs, w, feature_names, donor_usage_count, predict_threshold)',
       '    ',
       '    if not batch:',
       '        print("No new candidate pairs found this round.")',
@@ -1579,6 +1922,11 @@ function doGet(e) {
       '        print(f"Retraining model on {len(training_rows)} labeled pairs...")',
       '        w[:] = retrain_model(training_rows, w, epochs=50, lr=0.1)',
       '        print("Model retrained.")',
+      '        ',
+      '        # Update associations with new training data',
+      '        (first_associations, last_associations, address_associations,',
+      '         city_associations, state_associations, zip_associations,',
+      '         employer_associations, occupation_associations) = learn_associations(training_rows)',
       '    ',
       '    print(f"Donors remaining in pool: {len(remaining_pool)}")',
       '    return True',
@@ -1605,6 +1953,28 @@ function doGet(e) {
       '        if ans == "n":',
       '            break',
       '        round_num += 1',
+      '    ',
+      '    # After training loop: Check if incremental mode - if so, save and exit WITHOUT matching',
+      '    if job_mode == "incremental":',
+      '        print("\\n" + "="*60)',
+      '        print("INCREMENTAL TRAINING COMPLETE")',
+      '        print(f"Total labeled pairs: {len(training_rows)}")',
+      '        print(f"New pairs added this session: {len(training_rows) - loaded_training_count}")',
+      '        print("="*60)',
+      '        ',
+      '        # Save updated model and training data',
+      '        print("\\nSaving updated training data and model...")',
+      '        payload = {',
+      '            "training_rows": training_rows,',
+      '            "model_weights": w',
+      '        }',
+      '        response = http_post(job["resultUrl"], payload)',
+      '        print("✓ Training data saved successfully!")',
+      '        print("✓ Model weights updated")',
+      '        print("\\nTo run final matching with your updated training, use:")',
+      '        print("  \'Donor Tools → Run locally: prepare job and show Terminal command\'")',
+      '        sys.exit(0)  # Exit without running final matching',
+      '',
       'else:',
       '    print("Using existing trained model - proceeding directly to final matching...")',
       '',
@@ -1619,10 +1989,18 @@ function doGet(e) {
       'threshold = job.get("cfg", {}).get("predictThreshold", 0.7)',
       'print(f"Using match threshold: {threshold}")',
       '',
-      '# Build blocks using adaptive blocking on ALL donors',
-      'print(f"\\nApplying adaptive blocking to {len(COMBINED)} donors...")',
+      '# Analyze weights to determine blocking strategy',
       'weight_analysis = analyze_weights(w, feature_names)',
-      'print(f"Top features: {[\', \'.join([f\'{name}={weight:.2f}\' for _, weight, name, _ in weight_analysis[:3]])]}")',
+      'print(f"Top features for blocking: {[\', \'.join([f\'{name}={weight:.2f}\' for _, weight, name, _ in weight_analysis[:3]])]}")',
+      '',
+      '# Multi-phase matching strategy',
+      'print("\\n" + "="*60)',
+      'print("MULTI-PHASE MATCHING")',
+      'print("="*60)',
+      'print("Phase 1: Exact matches (normalized capitalization)")',
+      'print("Phase 2: Quick blocking (tight constraints)")',
+      'print("Phase 3: Broad blocking (comprehensive search)")',
+      'print("="*60)',
       '',
       '# Use Union-Find for clustering',
       'parent = list(range(len(COMBINED)))',
@@ -1645,11 +2023,49 @@ function doGet(e) {
       '    if rank[pa] == rank[pb]:',
       '        rank[pa] += 1',
       '',
-      '# Use adaptive blocking to find candidate pairs',
-      'top_features = weight_analysis[:5]',
-      'all_blocks = {}',
+      'matches_found = 0',
+      'pairs_checked = 0',
+      'seen_final_pairs = set()',
       '',
-      'for abs_w, w_val, feat_name, feat_idx in top_features:',
+      '# ----------------------------',
+      '# PHASE 1: Exact matches (normalized)',
+      'print("\\n[Phase 1] Exact matching...")',
+      'exact_blocks = {}',
+      'for donor in COMBINED:',
+      '    # Normalize: uppercase, strip, remove extra whitespace',
+      '    name = (donor.get("DonorFirst","") + " " + donor.get("DonorLast","")).strip().upper()',
+      '    name = " ".join(name.split())  # Remove extra whitespace',
+      '    addr = donor.get("Address1","").strip().upper()',
+      '    addr = " ".join(addr.split())',
+      '    key = f"{name}|{addr}"',
+      '    if key and name and addr:  # Skip empty keys',
+      '        if key not in exact_blocks:',
+      '            exact_blocks[key] = []',
+      '        exact_blocks[key].append(donor)',
+      '',
+      'phase1_matches = 0',
+      'for key, donors in exact_blocks.items():',
+      '    if len(donors) >= 2:',
+      '        for i in range(len(donors)):',
+      '            for j in range(i+1, len(donors)):',
+      '                a_idx = donors[i].get("_globalIdx", -1)',
+      '                b_idx = donors[j].get("_globalIdx", -1)',
+      '                if a_idx != -1 and b_idx != -1 and uf_find(a_idx) != uf_find(b_idx):',
+      '                    uf_union(a_idx, b_idx)',
+      '                    donor_confidence[a_idx] = 1.0',
+      '                    donor_confidence[b_idx] = 1.0',
+      '                    phase1_matches += 1',
+      '',
+      'print(f"  Found {phase1_matches} exact matches")',
+      'matches_found += phase1_matches',
+      '',
+      '# ----------------------------',
+      '# PHASE 2: Quick blocking (tight)',
+      'print("\\n[Phase 2] Quick blocking (tight constraints)...")',
+      'top_features_phase2 = weight_analysis[:3]  # Use top 3 features',
+      'phase2_blocks = {}',
+      '',
+      'for abs_w, w_val, feat_name, feat_idx in top_features_phase2:',
       '    if abs_w < 0.1:',
       '        continue',
       '    blocks = {}',
@@ -1663,57 +2079,115 @@ function doGet(e) {
       '                blocks[key] = []',
       '            blocks[key].append(donor)',
       '    for key, donors in blocks.items():',
-      '        if len(donors) >= 2 and len(donors) <= 200:',
-      '            block_id = f"{feat_name}:{key}"',
-      '            all_blocks[block_id] = donors',
+      '        if len(donors) >= 2 and len(donors) <= 50:  # Tight limit',
+      '            block_id = f"P2_{feat_name}:{key}"',
+      '            phase2_blocks[block_id] = donors',
       '',
-      'print(f"Generated {len(all_blocks)} blocks for matching")',
+      'print(f"  Generated {len(phase2_blocks)} blocks")',
+      'phase2_matches = 0',
+      'phase2_checked = 0',
       '',
-      '# Find matching pairs',
-      'matches_found = 0',
-      'pairs_checked = 0',
-      'seen_final_pairs = set()',
-      '',
-      'for block_id, block_donors in all_blocks.items():',
+      'for block_id, block_donors in phase2_blocks.items():',
       '    for i in range(len(block_donors)):',
       '        for j in range(i+1, len(block_donors)):',
       '            a = block_donors[i]',
       '            b = block_donors[j]',
-      '            ',
       '            a_idx = a.get("_globalIdx", -1)',
       '            b_idx = b.get("_globalIdx", -1)',
       '            if a_idx == -1 or b_idx == -1:',
       '                continue',
-      '            ',
+      '            # Skip if already matched in Phase 1',
+      '            if uf_find(a_idx) == uf_find(b_idx):',
+      '                continue',
       '            pair_key = (min(a_idx, b_idx), max(a_idx, b_idx))',
       '            if pair_key in seen_final_pairs:',
       '                continue',
       '            seen_final_pairs.add(pair_key)',
-      '            ',
       '            x = features(a, b)',
       '            z = w[-1]',
       '            for t in range(len(x)):',
       '                z += w[t] * x[t]',
       '            p = 1.0 / (1.0 + math.exp(-z))',
-      '            pairs_checked += 1',
-      '            ',
+      '            phase2_checked += 1',
       '            if p >= threshold:',
       '                uf_union(a_idx, b_idx)',
-      '                # Store confidence for both donors',
       '                donor_confidence[a_idx] = max(donor_confidence.get(a_idx, 0), p)',
       '                donor_confidence[b_idx] = max(donor_confidence.get(b_idx, 0), p)',
-      '                matches_found += 1',
-      '                ',
-      '                # Debug: Show first 20 matches',
-      '                if matches_found <= 20:',
-      '                    a_first = a.get("DonorFirst","")',
-      '                    a_last = a.get("DonorLast","")',
-      '                    b_first = b.get("DonorFirst","")',
-      '                    b_last = b.get("DonorLast","")',
-      '                    print(f"  Match {matches_found}: {a_first} {a_last} <-> {b_first} {b_last} (p={p:.3f})")',
+      '                phase2_matches += 1',
       '',
-      'print(f"Checked {pairs_checked} candidate pairs")',
-      'print(f"Found {matches_found} matches above threshold {threshold}")',
+      'print(f"  Checked {phase2_checked} pairs, found {phase2_matches} matches")',
+      'matches_found += phase2_matches',
+      'pairs_checked += phase2_checked',
+      '',
+      '# ----------------------------',
+      '# PHASE 3: Broad blocking (comprehensive)',
+      'print("\\n[Phase 3] Broad blocking (comprehensive search)...")',
+      'top_features_phase3 = weight_analysis[:5]  # Use top 5 features',
+      'phase3_blocks = {}',
+      '',
+      'for abs_w, w_val, feat_name, feat_idx in top_features_phase3:',
+      '    if abs_w < 0.1:',
+      '        continue',
+      '    blocks = {}',
+      '    for donor in COMBINED:',
+      '        if "*" in feat_name:',
+      '            key = generate_interaction_blocking_key(donor, feat_name)',
+      '        else:',
+      '            key = generate_blocking_key(donor, feat_name)',
+      '        if key:',
+      '            if key not in blocks:',
+      '                blocks[key] = []',
+      '            blocks[key].append(donor)',
+      '    for key, donors in blocks.items():',
+      '        if len(donors) >= 2 and len(donors) <= 200:  # Broad limit',
+      '            block_id = f"P3_{feat_name}:{key}"',
+      '            phase3_blocks[block_id] = donors',
+      '',
+      'print(f"  Generated {len(phase3_blocks)} blocks")',
+      'phase3_matches = 0',
+      'phase3_checked = 0',
+      '',
+      'for block_id, block_donors in phase3_blocks.items():',
+      '    for i in range(len(block_donors)):',
+      '        for j in range(i+1, len(block_donors)):',
+      '            a = block_donors[i]',
+      '            b = block_donors[j]',
+      '            a_idx = a.get("_globalIdx", -1)',
+      '            b_idx = b.get("_globalIdx", -1)',
+      '            if a_idx == -1 or b_idx == -1:',
+      '                continue',
+      '            # Skip if already matched in Phase 1 or 2',
+      '            if uf_find(a_idx) == uf_find(b_idx):',
+      '                continue',
+      '            pair_key = (min(a_idx, b_idx), max(a_idx, b_idx))',
+      '            if pair_key in seen_final_pairs:',
+      '                continue',
+      '            seen_final_pairs.add(pair_key)',
+      '            x = features(a, b)',
+      '            z = w[-1]',
+      '            for t in range(len(x)):',
+      '                z += w[t] * x[t]',
+      '            p = 1.0 / (1.0 + math.exp(-z))',
+      '            phase3_checked += 1',
+      '            if p >= threshold:',
+      '                uf_union(a_idx, b_idx)',
+      '                donor_confidence[a_idx] = max(donor_confidence.get(a_idx, 0), p)',
+      '                donor_confidence[b_idx] = max(donor_confidence.get(b_idx, 0), p)',
+      '                phase3_matches += 1',
+      '',
+      'print(f"  Checked {phase3_checked} pairs, found {phase3_matches} matches")',
+      'matches_found += phase3_matches',
+      'pairs_checked += phase3_checked',
+      '',
+      '# Summary',
+      'print("\\n" + "="*60)',
+      'print("MATCHING COMPLETE")',
+      'print("="*60)',
+      'print(f"Phase 1 (Exact):  {phase1_matches} matches")',
+      'print(f"Phase 2 (Quick):  {phase2_matches} matches ({phase2_checked} pairs checked)")',
+      'print(f"Phase 3 (Broad):  {phase3_matches} matches ({phase3_checked} pairs checked)")',
+      'print(f"TOTAL: {matches_found} matches ({pairs_checked} pairs checked)")',
+      'print("="*60)',
       '',
       '# Assign DonorIDs',
       'components = {}',
@@ -3034,27 +3508,36 @@ function cd_prepareMatchingJob_() {
   // Export sheets to Drive as CSV
   const mergeData = mergeSheet.getDataRange().getValues();
   const cdData = cdSheet.getDataRange().getValues();
-  
+
   const mergeFile = cd_createTempCsv_(mergeData, 'merge_output');
   const cdFile = cd_createTempCsv_(cdData, 'cd_donors');
-  
+
+  // Make files publicly readable (temporary) for direct download
+  mergeFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  cdFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+
+  // Get direct download URLs (bypassing the web app middleman)
+  const mergeUrl = 'https://drive.google.com/uc?export=download&id=' + mergeFile.getId();
+  const cdUrl = 'https://drive.google.com/uc?export=download&id=' + cdFile.getId();
+
   // Create token
   const token = dl_makeToken_();
   const until = Date.now() + 60 * 60 * 1000; // 1 hour
-  
-  // Store file IDs and token
+
+  // Store file IDs and token (for cleanup later)
   const props = PropertiesService.getDocumentProperties();
   props.setProperty('cd_token', token);
   props.setProperty('cd_token_until', String(until));
   props.setProperty('cd_merge_fileId', mergeFile.getId());
   props.setProperty('cd_cd_fileId', cdFile.getId());
-  
-  // Build terminal command
-  const cmd = 
+
+  // Build terminal command - downloads DIRECTLY from Drive, not through web app
+  const cmd =
     "curl -sSL '" + webAppUrl + "?cd_matcher=1' | " +
-    "python3 - --merge '" + webAppUrl + "?cd_csv=merge&token=" + token + "' " +
-    "--cd '" + webAppUrl + "?cd_csv=cd&token=" + token + "' " +
-    "--result '" + webAppUrl + "?cd_result=1&token=" + token + "'";
+    "python3 - --merge '" + mergeUrl + "' " +
+    "--cd '" + cdUrl + "' " +
+    "--result '" + webAppUrl + "?cd_result=1&token=" + token + "' " +
+    "--model '" + webAppUrl + "?model=1'";
   
   // Show command in dialog
   const html = HtmlService.createHtmlOutput(
@@ -3064,12 +3547,15 @@ function cd_prepareMatchingJob_() {
     '<textarea readonly style="width:100%; height:100px; font-family:monospace;">' + cmd + '</textarea>' +
     '<p style="margin-top:20px;"><strong>What this does:</strong></p>' +
     '<ul>' +
+    '<li>Downloads data <strong>directly from Google Drive</strong> (no size limits!)</li>' +
     '<li>Matches donor clusters to Campaign Deputy PersonIDs</li>' +
-    '<li>Aggregates donation history</li>' +
+    '<li>Aggregates donation history and calculates metrics</li>' +
     '<li>Creates CD_To_Upload sheet for import</li>' +
+    '<li>Automatically cleans up temporary files</li>' +
     '</ul>' +
+    '<p style="margin-top:10px; color:#666; font-size:12px;">Note: CSV files are temporarily shared with "anyone with link" for download, then deleted.</p>' +
     '</div>'
-  ).setWidth(600).setHeight(400);
+  ).setWidth(600).setHeight(480);
   
   SpreadsheetApp.getUi().showModalDialog(html, 'Campaign Deputy Matching');
 }
@@ -3132,6 +3618,47 @@ function cd_validateToken_(token) {
 }
 
 /**
+ * Cleans up temporary CSV files from Drive
+ */
+function cd_cleanupTempFiles_() {
+  try {
+    const props = PropertiesService.getDocumentProperties();
+    const mergeFileId = props.getProperty('cd_merge_fileId');
+    const cdFileId = props.getProperty('cd_cd_fileId');
+
+    if (mergeFileId) {
+      try {
+        const file = DriveApp.getFileById(mergeFileId);
+        file.setTrashed(true);
+        Logger.log('Deleted temporary merge file: ' + mergeFileId);
+      } catch (e) {
+        Logger.log('Could not delete merge file: ' + e.message);
+      }
+    }
+
+    if (cdFileId) {
+      try {
+        const file = DriveApp.getFileById(cdFileId);
+        file.setTrashed(true);
+        Logger.log('Deleted temporary CD file: ' + cdFileId);
+      } catch (e) {
+        Logger.log('Could not delete CD file: ' + e.message);
+      }
+    }
+
+    // Clear the stored file IDs
+    props.deleteProperty('cd_merge_fileId');
+    props.deleteProperty('cd_cd_fileId');
+    props.deleteProperty('cd_token');
+    props.deleteProperty('cd_token_until');
+
+  } catch (error) {
+    Logger.log('Error during cleanup: ' + error.message);
+    // Don't throw - cleanup failures shouldn't break the main workflow
+  }
+}
+
+/**
  * Receives matching results and creates/appends to CD_To_Upload sheet
  * Supports batched uploads to handle large datasets
  */
@@ -3150,7 +3677,7 @@ function cd_receiveResults_(body) {
     // Define header
     const header = [
       'PersonID', 'NameFirst', 'NameLast', 'Address', 'City', 'State', 'Zip',
-      'TotalAmount', 'TotalWeighted', 'GaveLocally', 'NumberOfDonations', 'Occupation', 'Employer', 'Notes'
+      'TotalAmount', 'TotalWeighted', 'GaveLocally', 'NumberOfDonations', 'LargestYearAmount', 'LastYearAmount', 'Occupation', 'Employer', 'Notes'
     ];
 
     // First batch: Clear sheet and write header
@@ -3166,17 +3693,32 @@ function cd_receiveResults_(body) {
     if (rows.length > 0) {
       const nextRow = uploadSheet.getLastRow() + 1;
       uploadSheet.getRange(nextRow, 1, rows.length, header.length).setValues(rows);
-    }
-
-    // Auto-resize columns on last batch
-    if (batchNum === totalBatches) {
-      for (let i = 1; i <= header.length; i++) {
-        uploadSheet.autoResizeColumn(i);
-      }
+      Logger.log(`Wrote ${rows.length} rows starting at row ${nextRow}`);
     }
 
     const totalRows = uploadSheet.getLastRow() - 1; // Minus header
     Logger.log(`CD_To_Upload batch ${batchNum}/${totalBatches}: Added ${rows.length} rows (total: ${totalRows})`);
+
+    // Auto-resize and cleanup AFTER confirming write succeeded
+    if (batchNum === totalBatches) {
+      try {
+        // Auto-resize columns (non-critical, can fail)
+        for (let i = 1; i <= header.length; i++) {
+          uploadSheet.autoResizeColumn(i);
+        }
+        Logger.log('Columns auto-resized');
+      } catch (e) {
+        Logger.log('Auto-resize failed (non-critical): ' + e.message);
+      }
+
+      try {
+        // Clean up temporary CSV files from Drive (non-critical, can fail)
+        cd_cleanupTempFiles_();
+        Logger.log('Temporary files cleaned up');
+      } catch (e) {
+        Logger.log('Cleanup failed (non-critical): ' + e.message);
+      }
+    }
 
     return {
       success: true,
@@ -3197,7 +3739,7 @@ function cd_receiveResults_(body) {
 function cd_getMatcherScript_() {
   const py = [
     '#!/usr/bin/env python3',
-    'import sys, json, csv, io, urllib.request, argparse, math, re',
+    'import sys, json, csv, io, urllib.request, argparse, math, re, time',
     'from collections import defaultdict',
     'from datetime import datetime',
     '',
@@ -3206,17 +3748,35 @@ function cd_getMatcherScript_() {
     '    max_retries = 4',
     '    delays = [2, 4, 8, 16]  # exponential backoff in seconds',
     '    ',
+    '    # Show which URL we\'re fetching (truncate for readability)',
+    '    url_display = url if len(url) <= 100 else url[:97] + "..."',
+    '    print(f"\\nFetching: {url_display}")',
+    '    start_time = time.time()',
+    '    ',
     '    for attempt in range(max_retries + 1):',
     '        try:',
-    '            with urllib.request.urlopen(url) as r:',
-    '                return r.read()',
+    '            with urllib.request.urlopen(url, timeout=300) as r:',
+    '                data = r.read()',
+    '                elapsed = time.time() - start_time',
+    '                size_mb = len(data) / (1024 * 1024)',
+    '                print(f"✓ Received {size_mb:.2f} MB in {elapsed:.1f}s")',
+    '                return data',
     '        except urllib.error.HTTPError as e:',
+    '            elapsed = time.time() - start_time',
+    '            print(f"✗ HTTP {e.code} error after {elapsed:.1f}s")',
+    '            if e.code == 500:',
+    '                print(f"   Server error - likely timeout or memory limit on server side")',
+    '                print(f"   This often happens with very large datasets (100k+ rows)")',
     '            if e.code == 429 and attempt < max_retries:',
     '                delay = delays[attempt]',
-    '                print(f"HTTP 429 rate limit hit. Retrying in {delay}s... (attempt {attempt + 1}/{max_retries})")',
+    '                print(f"   Rate limit hit. Retrying in {delay}s... (attempt {attempt + 1}/{max_retries})")',
     '                time.sleep(delay)',
     '            else:',
     '                raise',
+    '        except Exception as e:',
+    '            elapsed = time.time() - start_time',
+    '            print(f"✗ Error after {elapsed:.1f}s: {type(e).__name__}: {e}")',
+    '            raise',
     '    ',
     '    raise Exception("Max retries exceeded")',
     '',
@@ -3250,12 +3810,14 @@ function cd_getMatcherScript_() {
     '',
     '# Parse args',
     'ap = argparse.ArgumentParser()',
-    'ap.add_argument("--merge", required=True)',
-    'ap.add_argument("--cd", required=True)',
-    'ap.add_argument("--result", required=True)',
+    'ap.add_argument("--merge", required=True, help="URL to merge output CSV")',
+    'ap.add_argument("--cd", required=True, help="URL to Campaign Deputy CSV")',
+    'ap.add_argument("--result", required=True, help="URL to post results")',
+    'ap.add_argument("--model", required=True, help="URL to get trained model")',
     'args = ap.parse_args()',
     '',
-    'print("Loading data...")',
+    'print("Downloading data from Google Drive...")',
+    'print("(This downloads directly from Drive, bypassing Apps Script limits)")',
     'merge_hdr, merge_rows = parse_csv(http_get(args.merge).decode("utf-8"))',
     'cd_hdr, cd_rows = parse_csv(http_get(args.cd).decode("utf-8"))',
     '',
@@ -3264,8 +3826,7 @@ function cd_getMatcherScript_() {
     '',
     '# Load existing model weights',
     'print("\\nChecking for trained model...")',
-    'model_url = args.merge.split("?")[0] + "?model=1"',
-    'model_data = json.loads(http_get(model_url).decode("utf-8"))',
+    'model_data = json.loads(http_get(args.model).decode("utf-8"))',
     'w = model_data.get("weights")',
     '',
     'if not w:',
@@ -3705,6 +4266,9 @@ function cd_getMatcherScript_() {
     '    gave_locally = False  # Check if any donation is from KREF (origin "K")',
     '    num_donations = len(records)  # Total count of donations',
     '    ',
+    '    # Group donations by year for annual calculations',
+    '    year_amounts = defaultdict(float)',
+    '    ',
     '    for rec in records:',
     '        try: total_amount += float(rec.get("Amount", 0) or 0)',
     '        except: pass',
@@ -3715,6 +4279,22 @@ function cd_getMatcherScript_() {
     '        donation_id = rec.get("DonationID", "")',
     '        if donation_id.startswith("K:"):',
     '            gave_locally = True',
+    '        ',
+    '        # Group by year for annual totals',
+    '        date_str = rec.get("ReceiptDate", "")',
+    '        dt = parse_date(date_str)',
+    '        if dt and dt.year > 1900:  # Valid year',
+    '            try:',
+    '                amount = float(rec.get("Amount", 0) or 0)',
+    '                year_amounts[dt.year] += amount',
+    '            except:',
+    '                pass',
+    '    ',
+    '    # Calculate largest year amount and last year amount',
+    '    largest_year_amount = max(year_amounts.values()) if year_amounts else 0',
+    '    current_year = datetime.now().year',
+    '    last_year = current_year - 1',
+    '    last_year_amount = year_amounts.get(last_year, 0)',
     '    ',
     '    # Build notes - Option 2 format: $amount to recipient on date',
     '    # Find oldest valid date for summary (use original string)',
@@ -3743,6 +4323,8 @@ function cd_getMatcherScript_() {
     '        f"${total_weighted:.2f}",',
     '        "TRUE" if gave_locally else "FALSE",  # Gave Locally',
     '        str(num_donations),  # Number of Donations',
+    '        f"${largest_year_amount:.2f}",  # Largest Year Amount',
+    '        f"${last_year_amount:.2f}",  # Last Year Amount',
     '        occupation,',
     '        employer,',
     '        notes',

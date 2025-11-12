@@ -1268,12 +1268,7 @@ function geocodeAddresses_(showToast = false) {
 
     // Process in priority order
     const toProcess = [...pending, ...approximate, ...newAddresses];
-    const results = processGeocoding_(toProcess, cache);
-
-    // Save new cache entries
-    if (results.newEntries.length > 0) {
-      saveGeocodeCache_(cacheSheet, results.newEntries);
-    }
+    const results = processGeocoding_(toProcess, cache, cacheSheet);
 
     Logger.log(`Geocoding complete: ${results.exact} exact, ${results.approximate} approximate, ${results.failed} failed`);
 
@@ -1326,9 +1321,11 @@ function improveGeocodeCache() {
  * Phase 2: After all tried once, progressively normalize pending addresses (5 attempts)
  * @private
  */
-function processGeocoding_(addressList, cache) {
+function processGeocoding_(addressList, cache, cacheSheet) {
   const geocoder = Maps.newGeocoder();
   const BATCH_LIMIT = 1500;
+  const WRITE_BATCH_SIZE = 50; // Write to cache every 50 entries
+  const MAX_PHASE2_TIME_MS = 300000; // 5 minutes max for Phase 2
 
   const results = {
     exact: 0,
@@ -1339,6 +1336,26 @@ function processGeocoding_(addressList, cache) {
   };
 
   let quotaUsed = 0;
+  let pendingWrites = []; // Buffer for batched writes
+
+  // Helper function to write batches immediately
+  const flushPendingWrites = () => {
+    if (pendingWrites.length > 0) {
+      saveGeocodeCache_(cacheSheet, pendingWrites);
+      SpreadsheetApp.flush(); // Force immediate write to sheet
+      Logger.log(`Flushed ${pendingWrites.length} cache entries to sheet`);
+      results.newEntries.push(...pendingWrites);
+      pendingWrites = [];
+    }
+  };
+
+  // Helper function to add entry and maybe flush
+  const addEntry = (entry) => {
+    pendingWrites.push(entry);
+    if (pendingWrites.length >= WRITE_BATCH_SIZE) {
+      flushPendingWrites();
+    }
+  };
 
   // Separate addresses into Phase 1 (never attempted) and Phase 2 (pending after attempt)
   const phase1Addresses = [];
@@ -1376,7 +1393,7 @@ function processGeocoding_(addressList, cache) {
         const lat = result.geometry.location.lat;
         const lng = result.geometry.location.lng;
 
-        results.newEntries.push({
+        addEntry({
           key: addr.key,
           lat: lat,
           lng: lng,
@@ -1394,6 +1411,7 @@ function processGeocoding_(addressList, cache) {
     } catch (error) {
       Logger.log(`Phase 1 geocoding error for ${addr.address}: ${error.message}`);
       if (error.message.includes('limit') || error.message.includes('quota')) {
+        flushPendingWrites(); // Flush before breaking
         break;
       }
     }
@@ -1401,7 +1419,7 @@ function processGeocoding_(addressList, cache) {
     // If exact geocoding failed, try proximity match
     const proximityMatch = findProximityMatch_(addr, cache);
     if (proximityMatch) {
-      results.newEntries.push({
+      addEntry({
         key: addr.key,
         lat: proximityMatch.lat,
         lng: proximityMatch.lng,
@@ -1416,7 +1434,7 @@ function processGeocoding_(addressList, cache) {
       Logger.log(`Phase 1 proximity: ${addr.address} -> ${proximityMatch.source}`);
     } else {
       // Mark as pending for Phase 2 processing
-      results.newEntries.push({
+      addEntry({
         key: addr.key,
         lat: '',
         lng: '',
@@ -1435,9 +1453,28 @@ function processGeocoding_(addressList, cache) {
     }
   }
 
+  // Flush any remaining Phase 1 entries
+  flushPendingWrites();
+  Logger.log(`Phase 1 complete. Processed ${quotaUsed} geocode requests.`);
+
   // PHASE 2: Progressive normalization for pending addresses
+  const phase2StartTime = Date.now();
+  let phase2Processed = 0;
+
   for (const addr of phase2Addresses) {
-    if (quotaUsed >= BATCH_LIMIT) break;
+    if (quotaUsed >= BATCH_LIMIT) {
+      Logger.log(`Phase 2: Hit quota limit at ${quotaUsed} requests`);
+      break;
+    }
+
+    // Time limit check for Phase 2
+    const phase2Elapsed = Date.now() - phase2StartTime;
+    if (phase2Elapsed > MAX_PHASE2_TIME_MS) {
+      Logger.log(`Phase 2: Hit time limit (${(phase2Elapsed/1000).toFixed(0)}s). Processed ${phase2Processed} of ${phase2Addresses.length} pending addresses.`);
+      break;
+    }
+
+    phase2Processed++;
 
     const cached = cache[addr.key];
     const currentAttempt = cached.attemptCount + 1;
@@ -1464,7 +1501,7 @@ function processGeocoding_(addressList, cache) {
       case 6: // Level 5: City centroid (last resort)
         const centroid = getCityCentroid_(addr.city, addr.state);
         if (centroid) {
-          results.newEntries.push({
+          addEntry({
             key: addr.key,
             lat: centroid.lat,
             lng: centroid.lng,
@@ -1479,7 +1516,7 @@ function processGeocoding_(addressList, cache) {
           Logger.log(`Phase 2 level 5 (city centroid): ${addr.address} -> ${centroid.lat}, ${centroid.lng}`);
         } else {
           // Even city centroid failed, mark as permanently failed
-          results.newEntries.push({
+          addEntry({
             key: addr.key,
             lat: '',
             lng: '',
@@ -1507,7 +1544,7 @@ function processGeocoding_(addressList, cache) {
         const lng = result.geometry.location.lng;
 
         // Success! Store coordinates and update sheet
-        results.newEntries.push({
+        addEntry({
           key: addr.key,
           lat: lat,
           lng: lng,
@@ -1529,12 +1566,13 @@ function processGeocoding_(addressList, cache) {
     } catch (error) {
       Logger.log(`Phase 2 level ${currentAttempt - 1} error for ${addr.address}: ${error.message}`);
       if (error.message.includes('limit') || error.message.includes('quota')) {
+        flushPendingWrites(); // Flush before breaking
         break;
       }
     }
 
     // Normalization didn't work, increment attempt count and keep as pending
-    results.newEntries.push({
+    addEntry({
       key: addr.key,
       lat: '',
       lng: '',
@@ -1552,9 +1590,14 @@ function processGeocoding_(addressList, cache) {
     }
   }
 
+  // Flush any remaining entries
+  flushPendingWrites();
+
   if (results.corrected > 0) {
     Logger.log(`Phase 2 corrected ${results.corrected} addresses through normalization`);
   }
+
+  Logger.log(`Geocoding complete. Total API calls: ${quotaUsed}. Cache entries written: ${results.newEntries.length}`);
 
   return results;
 }
