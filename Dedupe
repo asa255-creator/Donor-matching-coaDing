@@ -3353,20 +3353,32 @@ function cd_receiveResults_(body) {
     if (rows.length > 0) {
       const nextRow = uploadSheet.getLastRow() + 1;
       uploadSheet.getRange(nextRow, 1, rows.length, header.length).setValues(rows);
-    }
-
-    // Auto-resize columns on last batch
-    if (batchNum === totalBatches) {
-      for (let i = 1; i <= header.length; i++) {
-        uploadSheet.autoResizeColumn(i);
-      }
-
-      // Clean up temporary CSV files from Drive
-      cd_cleanupTempFiles_();
+      Logger.log(`Wrote ${rows.length} rows starting at row ${nextRow}`);
     }
 
     const totalRows = uploadSheet.getLastRow() - 1; // Minus header
     Logger.log(`CD_To_Upload batch ${batchNum}/${totalBatches}: Added ${rows.length} rows (total: ${totalRows})`);
+
+    // Auto-resize and cleanup AFTER confirming write succeeded
+    if (batchNum === totalBatches) {
+      try {
+        // Auto-resize columns (non-critical, can fail)
+        for (let i = 1; i <= header.length; i++) {
+          uploadSheet.autoResizeColumn(i);
+        }
+        Logger.log('Columns auto-resized');
+      } catch (e) {
+        Logger.log('Auto-resize failed (non-critical): ' + e.message);
+      }
+
+      try {
+        // Clean up temporary CSV files from Drive (non-critical, can fail)
+        cd_cleanupTempFiles_();
+        Logger.log('Temporary files cleaned up');
+      } catch (e) {
+        Logger.log('Cleanup failed (non-critical): ' + e.message);
+      }
+    }
 
     return {
       success: true,
