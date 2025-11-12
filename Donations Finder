@@ -121,6 +121,7 @@ const DEFAULTS = {
 /** MAIN **/
 function exportAllToSheet() {
   const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
 
   // Always start clean and write header
   const out = resetOutputSheet_(ss, OUTPUT_SHEET);
@@ -131,7 +132,25 @@ function exportAllToSheet() {
 
   const total = candRows.length + orgRows.length;
   if (!total) {
-    SpreadsheetApp.getUi().alert('No rows found in Candidates or Organizations.');
+    ui.alert('No rows found in Candidates or Organizations.');
+    return;
+  }
+
+  // Warn user to stay on the page
+  const response = ui.alert(
+    'KREF Export Starting',
+    `About to fetch data for ${total} ${total === 1 ? 'entry' : 'entries'}.\n\n` +
+    `⚠️ IMPORTANT: Keep this Google Sheets tab ACTIVE and FOCUSED during the entire export.\n\n` +
+    `Switching tabs or clicking away may cause:\n` +
+    `• Network timeouts\n` +
+    `• Missing progress updates\n` +
+    `• Export failures\n\n` +
+    `Progress will show in the bottom-right corner.\n\nReady to start?`,
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (response !== ui.Button.OK) {
+    ui.toast('Export cancelled', 'KREF export', 3);
     return;
   }
 
