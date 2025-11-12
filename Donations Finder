@@ -6,90 +6,6 @@ const OUTPUT_SHEET    = 'KREF_Exports';
 const USER_AGENT      = 'Mozilla/5.0 (Apps Script)';
 const EXPORT_BASE     = 'https://secure.kentucky.gov/kref/publicsearch/ExportContributors';
 
-/** DIAGNOSTIC FUNCTION - Test KREF connectivity **/
-function testKrefConnection() {
-  const ui = SpreadsheetApp.getUi();
-
-  // Test 1: Simple URL fetch
-  const testUrl = 'https://secure.kentucky.gov/kref/publicsearch/';
-  Logger.log('Testing connection to: ' + testUrl);
-
-  try {
-    const response = UrlFetchApp.fetch(testUrl, {
-      method: 'get',
-      headers: { 'User-Agent': USER_AGENT },
-      muteHttpExceptions: true,
-      followRedirects: true,
-      validateHttpsCertificates: true
-    });
-
-    const code = response.getResponseCode();
-    Logger.log(`Response code: ${code}`);
-
-    if (code >= 200 && code < 300) {
-      ui.alert('✓ Connection Test Passed',
-               `Successfully connected to KREF site.\nHTTP ${code}\n\nThe site is reachable.`,
-               ui.ButtonSet.OK);
-    } else {
-      const preview = response.getContentText().substring(0, 300);
-      ui.alert('⚠ HTTP Error',
-               `Got HTTP ${code} from KREF site.\n\nResponse preview:\n${preview}`,
-               ui.ButtonSet.OK);
-    }
-
-    // Test 2: Try an actual export URL with minimal parameters
-    const opts = readOptions_();
-    const testExportUrl = buildExportUrl_({
-      ContributionSearchType: 'Candidate',
-      CandidateFirstName: 'Test',
-      CandidateLastName: 'Test',
-      MinAmount: 1,
-      MaxAmount: 250,
-      MinimalDate: toKrefDate_(opts.minimalDate),
-      ContributionTypes: 'INDIVIDUAL'
-    });
-
-    Logger.log('Testing export URL: ' + testExportUrl);
-    const exportResponse = UrlFetchApp.fetch(testExportUrl, {
-      method: 'get',
-      headers: {
-        'User-Agent': USER_AGENT,
-        'Accept': 'text/csv,text/plain,*/*'
-      },
-      muteHttpExceptions: true
-    });
-
-    const exportCode = exportResponse.getResponseCode();
-    Logger.log(`Export response code: ${exportCode}`);
-    const exportText = exportResponse.getContentText();
-    Logger.log(`Export response length: ${exportText.length} chars`);
-
-    if (exportCode >= 200 && exportCode < 300) {
-      ui.alert('✓ Export Test Passed',
-               `Successfully fetched export data.\nHTTP ${exportCode}\nReceived ${exportText.length} characters`,
-               ui.ButtonSet.OK);
-    } else {
-      ui.alert('⚠ Export Failed',
-               `HTTP ${exportCode} from export endpoint.\n\nResponse:\n${exportText.substring(0, 500)}`,
-               ui.ButtonSet.OK);
-    }
-
-  } catch (e) {
-    Logger.log('Connection test failed: ' + e.toString());
-    Logger.log('Error stack: ' + e.stack);
-
-    ui.alert('❌ Connection Failed',
-             `Could not connect to KREF site.\n\nError: ${e.message}\n\n` +
-             `This could mean:\n` +
-             `• Kentucky.gov is blocking Apps Script\n` +
-             `• The site is down\n` +
-             `• Network/DNS issues\n` +
-             `• SSL certificate problems\n\n` +
-             `Check View → Logs for details.`,
-             ui.ButtonSet.OK);
-  }
-}
-
 // Output columns
 // A Recipient
 // B DonorFirst
@@ -196,15 +112,7 @@ function exportAllToSheet() {
 
 /** CSV -> SELECTED COLUMNS ONLY, RECIPIENT FROM CSV **/
 function appendReducedCsv_(url, outSheet, multiplier) {
-  let csvText;
-  try {
-    csvText = httpGetText_(url);
-  } catch (e) {
-    Logger.log(`ERROR fetching URL: ${e.toString()}\nURL: ${url}`);
-    // Don't throw - just skip this candidate/org and continue with others
-    SpreadsheetApp.getActive().toast(`⚠️ Failed to fetch data: ${e.message}`, 'Error', 5);
-    return;
-  }
+  const csvText = httpGetText_(url);
   if (!csvText) return;
 
   const rows = Utilities.parseCsv(csvText, ',') || [];
@@ -755,29 +663,10 @@ function toKrefDate_(iso) {
 }
 
 function httpGetText_(url) {
-  try {
-    const res = UrlFetchApp.fetch(url, {
-      method: 'get',
-      headers: {
-        'User-Agent': USER_AGENT,
-        'Accept': 'text/csv,text/plain,*/*',
-        'Accept-Language': 'en-US,en;q=0.9'
-      },
-      muteHttpExceptions: true,
-      validateHttpsCertificates: true
-    });
-    const code = res.getResponseCode();
-    if (code < 200 || code >= 300) {
-      const body = res.getContentText().substring(0, 200);
-      throw new Error(`HTTP ${code} for ${url}\nResponse: ${body}`);
-    }
-    return res.getContentText();
-  } catch (e) {
-    // Log full error details for debugging
-    Logger.log(`httpGetText_ failed: ${e.toString()}`);
-    Logger.log(`URL: ${url}`);
-    throw new Error(`Network error: ${e.message}`);
-  }
+  const res = UrlFetchApp.fetch(url, { method: 'get', headers: {'User-Agent': USER_AGENT}, muteHttpExceptions: true });
+  const code = res.getResponseCode();
+  if (code < 200 || code >= 300) throw new Error('HTTP ' + code + ' for ' + url);
+  return res.getContentText();
 }
 
 // exact match first, then contains match
