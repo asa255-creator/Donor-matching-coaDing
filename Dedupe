@@ -1359,6 +1359,8 @@ function doGet(e) {
       'existing_data = json.loads(existing_model)',
       'is_continuing = False  # Track if we loaded existing data',
       'job_mode = job.get("mode", "full")  # Get job mode (full or incremental)',
+      'print(f"DEBUG: Job mode detected as: {job_mode}")',
+      'print(f"DEBUG: Job keys: {list(job.keys())}")',
       '',
       'if existing_data.get("weights"):',
       '    weights_count = len(existing_data.get("weights", []))',
