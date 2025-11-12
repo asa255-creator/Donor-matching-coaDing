@@ -3168,27 +3168,36 @@ function cd_prepareMatchingJob_() {
   // Export sheets to Drive as CSV
   const mergeData = mergeSheet.getDataRange().getValues();
   const cdData = cdSheet.getDataRange().getValues();
-  
+
   const mergeFile = cd_createTempCsv_(mergeData, 'merge_output');
   const cdFile = cd_createTempCsv_(cdData, 'cd_donors');
-  
+
+  // Make files publicly readable (temporary) for direct download
+  mergeFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  cdFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+
+  // Get direct download URLs (bypassing the web app middleman)
+  const mergeUrl = 'https://drive.google.com/uc?export=download&id=' + mergeFile.getId();
+  const cdUrl = 'https://drive.google.com/uc?export=download&id=' + cdFile.getId();
+
   // Create token
   const token = dl_makeToken_();
   const until = Date.now() + 60 * 60 * 1000; // 1 hour
-  
-  // Store file IDs and token
+
+  // Store file IDs and token (for cleanup later)
   const props = PropertiesService.getDocumentProperties();
   props.setProperty('cd_token', token);
   props.setProperty('cd_token_until', String(until));
   props.setProperty('cd_merge_fileId', mergeFile.getId());
   props.setProperty('cd_cd_fileId', cdFile.getId());
-  
-  // Build terminal command
-  const cmd = 
+
+  // Build terminal command - downloads DIRECTLY from Drive, not through web app
+  const cmd =
     "curl -sSL '" + webAppUrl + "?cd_matcher=1' | " +
-    "python3 - --merge '" + webAppUrl + "?cd_csv=merge&token=" + token + "' " +
-    "--cd '" + webAppUrl + "?cd_csv=cd&token=" + token + "' " +
-    "--result '" + webAppUrl + "?cd_result=1&token=" + token + "'";
+    "python3 - --merge '" + mergeUrl + "' " +
+    "--cd '" + cdUrl + "' " +
+    "--result '" + webAppUrl + "?cd_result=1&token=" + token + "' " +
+    "--model '" + webAppUrl + "?model=1'";
   
   // Show command in dialog
   const html = HtmlService.createHtmlOutput(
@@ -3198,12 +3207,15 @@ function cd_prepareMatchingJob_() {
     '<textarea readonly style="width:100%; height:100px; font-family:monospace;">' + cmd + '</textarea>' +
     '<p style="margin-top:20px;"><strong>What this does:</strong></p>' +
     '<ul>' +
+    '<li>Downloads data <strong>directly from Google Drive</strong> (no size limits!)</li>' +
     '<li>Matches donor clusters to Campaign Deputy PersonIDs</li>' +
-    '<li>Aggregates donation history</li>' +
+    '<li>Aggregates donation history and calculates metrics</li>' +
     '<li>Creates CD_To_Upload sheet for import</li>' +
+    '<li>Automatically cleans up temporary files</li>' +
     '</ul>' +
+    '<p style="margin-top:10px; color:#666; font-size:12px;">Note: CSV files are temporarily shared with "anyone with link" for download, then deleted.</p>' +
     '</div>'
-  ).setWidth(600).setHeight(400);
+  ).setWidth(600).setHeight(480);
   
   SpreadsheetApp.getUi().showModalDialog(html, 'Campaign Deputy Matching');
 }
@@ -3266,6 +3278,47 @@ function cd_validateToken_(token) {
 }
 
 /**
+ * Cleans up temporary CSV files from Drive
+ */
+function cd_cleanupTempFiles_() {
+  try {
+    const props = PropertiesService.getDocumentProperties();
+    const mergeFileId = props.getProperty('cd_merge_fileId');
+    const cdFileId = props.getProperty('cd_cd_fileId');
+
+    if (mergeFileId) {
+      try {
+        const file = DriveApp.getFileById(mergeFileId);
+        file.setTrashed(true);
+        Logger.log('Deleted temporary merge file: ' + mergeFileId);
+      } catch (e) {
+        Logger.log('Could not delete merge file: ' + e.message);
+      }
+    }
+
+    if (cdFileId) {
+      try {
+        const file = DriveApp.getFileById(cdFileId);
+        file.setTrashed(true);
+        Logger.log('Deleted temporary CD file: ' + cdFileId);
+      } catch (e) {
+        Logger.log('Could not delete CD file: ' + e.message);
+      }
+    }
+
+    // Clear the stored file IDs
+    props.deleteProperty('cd_merge_fileId');
+    props.deleteProperty('cd_cd_fileId');
+    props.deleteProperty('cd_token');
+    props.deleteProperty('cd_token_until');
+
+  } catch (error) {
+    Logger.log('Error during cleanup: ' + error.message);
+    // Don't throw - cleanup failures shouldn't break the main workflow
+  }
+}
+
+/**
  * Receives matching results and creates/appends to CD_To_Upload sheet
  * Supports batched uploads to handle large datasets
  */
@@ -3307,6 +3360,9 @@ function cd_receiveResults_(body) {
       for (let i = 1; i <= header.length; i++) {
         uploadSheet.autoResizeColumn(i);
       }
+
+      // Clean up temporary CSV files from Drive
+      cd_cleanupTempFiles_();
     }
 
     const totalRows = uploadSheet.getLastRow() - 1; // Minus header
@@ -3331,7 +3387,7 @@ function cd_receiveResults_(body) {
 function cd_getMatcherScript_() {
   const py = [
     '#!/usr/bin/env python3',
-    'import sys, json, csv, io, urllib.request, argparse, math, re',
+    'import sys, json, csv, io, urllib.request, argparse, math, re, time',
     'from collections import defaultdict',
     'from datetime import datetime',
     '',
@@ -3402,12 +3458,14 @@ function cd_getMatcherScript_() {
     '',
     '# Parse args',
     'ap = argparse.ArgumentParser()',
-    'ap.add_argument("--merge", required=True)',
-    'ap.add_argument("--cd", required=True)',
-    'ap.add_argument("--result", required=True)',
+    'ap.add_argument("--merge", required=True, help="URL to merge output CSV")',
+    'ap.add_argument("--cd", required=True, help="URL to Campaign Deputy CSV")',
+    'ap.add_argument("--result", required=True, help="URL to post results")',
+    'ap.add_argument("--model", required=True, help="URL to get trained model")',
     'args = ap.parse_args()',
     '',
-    'print("Loading data...")',
+    'print("Downloading data from Google Drive...")',
+    'print("(This downloads directly from Drive, bypassing Apps Script limits)")',
     'merge_hdr, merge_rows = parse_csv(http_get(args.merge).decode("utf-8"))',
     'cd_hdr, cd_rows = parse_csv(http_get(args.cd).decode("utf-8"))',
     '',
@@ -3416,8 +3474,7 @@ function cd_getMatcherScript_() {
     '',
     '# Load existing model weights',
     'print("\\nChecking for trained model...")',
-    'model_url = args.merge.split("?")[0] + "?model=1"',
-    'model_data = json.loads(http_get(model_url).decode("utf-8"))',
+    'model_data = json.loads(http_get(args.model).decode("utf-8"))',
     'w = model_data.get("weights")',
     '',
     'if not w:',
