@@ -3897,8 +3897,8 @@ function diagnostic_analyzeMatching() {
   // Build download commands for CSVs, model, and script
   const krefDownload = "curl -L -o kref.csv '" + krefUrl + "'";
   const fecDownload = "curl -L -o fec.csv '" + fecUrl + "'";
-  const modelDownload = "curl -o model.json '" + webAppUrl + "?model=1'";
-  const scriptDownload = "curl -o diagnostic_matching.py '" + webAppUrl + "?script=1'";
+  const modelDownload = "curl -L -o model.json '" + webAppUrl + "?model=1'";
+  const scriptDownload = "curl -L -o diagnostic_matching.py '" + webAppUrl + "?script=1'";
 
   const fullCmd =
     krefDownload + " && \\\n" +
