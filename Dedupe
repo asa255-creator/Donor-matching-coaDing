@@ -41,11 +41,12 @@ const DONOR_CFG = {
  * ========================= */
 const DONOR_TRAINING_HEADER = [
   'Label',
-  'sheet_a','row_a','first_a','last_a','addr_a','city_a','state_a','zip_a','employer_a','occupation_a',
-  'sheet_b','row_b','first_b','last_b','addr_b','city_b','state_b','zip_b','employer_b','occupation_b',
-  'feat_name','feat_first','feat_firstinit','feat_lastsame',
-  'feat_addr','feat_citysame','feat_statesame','feat_zip5','feat_zip3','feat_house','feat_addrstrong',
-  'feat_employer','feat_occupation','feat_firstpairprob'
+  'sheet_a','row_a','first_a','last_a','addr_a','city_a','state_a','zip_a','emp_a','occ_a',
+  'sheet_b','row_b','first_b','last_b','addr_b','city_b','state_b','zip_b','emp_b','occ_b',
+  'feat_name','feat_last','feat_addr','feat_emp','feat_occ','feat_zip','feat_city',
+  'feat_name_last','feat_name_addr','feat_name_emp','feat_name_occ',
+  'feat_last_addr','feat_last_emp','feat_last_occ',
+  'feat_addr_emp','feat_addr_occ','feat_emp_occ'
 ];
 
 /** =========================
@@ -77,9 +78,10 @@ function donor_trainMatcher() {
     return i;
   }
   const featureCols = [
-    'feat_name','feat_first','feat_firstinit','feat_lastsame',
-    'feat_addr','feat_citysame','feat_statesame','feat_zip5','feat_zip3','feat_house','feat_addrstrong',
-    'feat_employer','feat_occupation','feat_firstpairprob'
+    'feat_name','feat_last','feat_addr','feat_emp','feat_occ','feat_zip','feat_city',
+    'feat_name_last','feat_name_addr','feat_name_emp','feat_name_occ',
+    'feat_last_addr','feat_last_emp','feat_last_occ',
+    'feat_addr_emp','feat_addr_occ','feat_emp_occ'
   ];
   const I = featureCols.map(idx);
   const iLabel = idx('Label');
@@ -123,9 +125,10 @@ function donor_assignDonorIds() {
   for (let i = 0; i < pairs.length; i++) {
     const f = pairs[i].features;
     const x = [
-      f.nameSim, f.firstSim, f.firstInitEq, f.lastSame,
-      f.addrSim, f.citySame, f.stateSame, f.zip5Same, f.zip3Same, f.houseMatch, f.addrStrong,
-      f.empSim, f.occSim, f.firstPairProb
+      f.nameSim, f.lastSim, f.addrSim, f.empSim, f.occSim, f.zipMatch, f.cityMatch,
+      f.name_last, f.name_addr, f.name_emp, f.name_occ,
+      f.last_addr, f.last_emp, f.last_occ,
+      f.addr_emp, f.addr_occ, f.emp_occ
     ];
     const prob = donor_predictLogReg_(x, w);
     if (prob >= DONOR_CFG.predictThreshold) {
@@ -172,9 +175,10 @@ function donor_addUncertainPairs() {
     if (seen.has(key)) continue;
     const f = p.features;
     const x = [
-      f.nameSim, f.firstSim, f.firstInitEq, f.lastSame,
-      f.addrSim, f.citySame, f.stateSame, f.zip5Same, f.zip3Same, f.houseMatch, f.addrStrong,
-      f.empSim, f.occSim, f.firstPairProb
+      f.nameSim, f.lastSim, f.addrSim, f.empSim, f.occSim, f.zipMatch, f.cityMatch,
+      f.name_last, f.name_addr, f.name_emp, f.name_occ,
+      f.last_addr, f.last_emp, f.last_occ,
+      f.addr_emp, f.addr_occ, f.emp_occ
     ];
     const prob = donor_predictLogReg_(x, w);
     if (prob >= lower && prob <= upper) {
@@ -295,36 +299,110 @@ function donor_generatePairsFromBlocks_(blocks) {
  * Feature builder
  * ========================= */
 function donor_makeFeatures_(a, b) {
-  const fullNameSim = donor_jaroWinkler_(a.fullName, b.fullName);
-  const firstSim = donor_jaroWinkler_(a.first, b.first);
-  const firstInitEq = (a.first && b.first && a.first[0].toUpperCase() === b.first[0].toUpperCase()) ? 1 : 0;
-  const lastSame = (a.last && b.last && a.last.toUpperCase() === b.last.toUpperCase()) ? 1 : 0;
-  const addrSim = donor_jaroWinkler_(a.addr1, b.addr1);
-  const citySame = (a.city && b.city && a.city.toUpperCase() === b.city.toUpperCase()) ? 1 : 0;
-  const stateSame = (a.state && b.state && a.state.toUpperCase() === b.state.toUpperCase()) ? 1 : 0;
-  const zip5Same = (a.zip && b.zip && a.zip === b.zip) ? 1 : 0;
-  const zip3Same = (a.zip && b.zip && a.zip.slice(0,3) === b.zip.slice(0,3)) ? 1 : 0;
-  const houseMatch = (a.house && b.house && a.house === b.house) ? 1 : 0;
-  const addrStrong = (houseMatch && zip5Same) ? 1 : 0;
-  const empSim = donor_jaroWinkler_(a.employer || '', b.employer || '');
-  const occSim = donor_jaroWinkler_(a.occupation || '', b.occupation || '');
-  const firstPairProb = donor_lookupFirstNamePairProb_(a.first, b.first);
+  // Load learned associations (TODO: cache these)
+  const associations = donor_getLearnedAssociations_();
+
+  // Use enhanced similarity with multiple algorithms
+  const nameSim = donor_enhancedSimilarity_(a.fullName, b.fullName, 'name', associations.first);
+  const lastSim = donor_enhancedSimilarity_(a.last, b.last, 'last', associations.last);
+  const addrSim = donor_enhancedSimilarity_(a.addr1, b.addr1, 'address', associations.address);
+  const empSim = donor_enhancedSimilarity_(a.employer || '', b.employer || '', 'employer', associations.employer);
+  const occSim = donor_enhancedSimilarity_(a.occupation || '', b.occupation || '', 'occupation', associations.occupation);
+
+  // Geographic exact matches
+  const zip_a = (a.zip || '').trim();
+  const zip_b = (b.zip || '').trim();
+  const zipMatch = (zip_a && zip_b && zip_a === zip_b) ? 1.0 : 0.0;
+
+  const city_a = (a.city || '').trim().toUpperCase();
+  const city_b = (b.city || '').trim().toUpperCase();
+  const cityMatch = (city_a && city_b && city_a === city_b) ? 1.0 : 0.0;
+
+  // Interaction features (products of base features)
+  const f0 = nameSim;
+  const f1 = lastSim;
+  const f2 = addrSim;
+  const f3 = empSim;
+  const f4 = occSim;
+  const f5 = zipMatch;
+  const f6 = cityMatch;
+
   return {
-    nameSim: donor_round4_(fullNameSim),
-    firstSim: donor_round4_(firstSim),
-    firstInitEq: firstInitEq,
-    lastSame: lastSame,
-    addrSim: donor_round4_(addrSim),
-    citySame: citySame,
-    stateSame: stateSame,
-    zip5Same: zip5Same,
-    zip3Same: zip3Same,
-    houseMatch: houseMatch,
-    addrStrong: addrStrong,
-    empSim: donor_round4_(empSim),
-    occSim: donor_round4_(occSim),
-    firstPairProb: donor_round4_(firstPairProb)
+    nameSim: donor_round4_(f0),
+    lastSim: donor_round4_(f1),
+    addrSim: donor_round4_(f2),
+    empSim: donor_round4_(f3),
+    occSim: donor_round4_(f4),
+    zipMatch: donor_round4_(f5),
+    cityMatch: donor_round4_(f6),
+    name_last: donor_round4_(f0 * f1),
+    name_addr: donor_round4_(f0 * f2),
+    name_emp: donor_round4_(f0 * f3),
+    name_occ: donor_round4_(f0 * f4),
+    last_addr: donor_round4_(f1 * f2),
+    last_emp: donor_round4_(f1 * f3),
+    last_occ: donor_round4_(f1 * f4),
+    addr_emp: donor_round4_(f2 * f3),
+    addr_occ: donor_round4_(f2 * f4),
+    emp_occ: donor_round4_(f3 * f4)
   };
+}
+
+function donor_getLearnedAssociations_() {
+  // Extract learned associations from training data
+  const sh = SpreadsheetApp.getActive().getSheetByName(DONOR_CFG.trainingSheet);
+  const associations = {
+    first: {},
+    last: {},
+    address: {},
+    employer: {},
+    occupation: {}
+  };
+
+  if (!sh || sh.getLastRow() < 2) return associations;
+
+  const vals = sh.getDataRange().getValues();
+  const h = vals[0].map(s => String(s || '').trim());
+
+  const iLabel = h.indexOf('Label');
+  const iFirstA = h.indexOf('first_a');
+  const iFirstB = h.indexOf('first_b');
+  const iLastA = h.indexOf('last_a');
+  const iLastB = h.indexOf('last_b');
+  const iAddrA = h.indexOf('addr_a');
+  const iAddrB = h.indexOf('addr_b');
+  const iEmpA = h.indexOf('emp_a');
+  const iEmpB = h.indexOf('emp_b');
+  const iOccA = h.indexOf('occ_a');
+  const iOccB = h.indexOf('occ_b');
+
+  if (iLabel === -1) return associations;
+
+  for (let i = 1; i < vals.length; i++) {
+    const row = vals[i];
+    const label = Number(row[iLabel]);
+    if (label !== 1) continue; // Only learn from positive matches
+
+    function addAssoc(dict, idxA, idxB) {
+      if (idxA === -1 || idxB === -1) return;
+      const valA = String(row[idxA] || '').trim().toUpperCase();
+      const valB = String(row[idxB] || '').trim().toUpperCase();
+      if (!valA || !valB || valA === valB) return;
+
+      if (!dict[valA]) dict[valA] = {};
+      if (!dict[valB]) dict[valB] = {};
+      dict[valA][valB] = 1.0;
+      dict[valB][valA] = 1.0;
+    }
+
+    addAssoc(associations.first, iFirstA, iFirstB);
+    addAssoc(associations.last, iLastA, iLastB);
+    addAssoc(associations.address, iAddrA, iAddrB);
+    addAssoc(associations.employer, iEmpA, iEmpB);
+    addAssoc(associations.occupation, iOccA, iOccB);
+  }
+
+  return associations;
 }
 
 /** =========================
@@ -341,9 +419,10 @@ function donor_writeTrainingSheet_(pairs) {
       '',
       p.a.origin, p.a.rowIndex + 2, p.a.first, p.a.last, p.a.addr1, p.a.city, p.a.state, p.a.zip, p.a.employer, p.a.occupation,
       p.b.origin, p.b.rowIndex + 2, p.b.first, p.b.last, p.b.addr1, p.b.city, p.b.state, p.b.zip, p.b.employer, p.b.occupation,
-      f.nameSim, f.firstSim, f.firstInitEq, f.lastSame,
-      f.addrSim, f.citySame, f.stateSame, f.zip5Same, f.zip3Same, f.houseMatch, f.addrStrong,
-      f.empSim, f.occSim, f.firstPairProb
+      f.nameSim, f.lastSim, f.addrSim, f.empSim, f.occSim, f.zipMatch, f.cityMatch,
+      f.name_last, f.name_addr, f.name_emp, f.name_occ,
+      f.last_addr, f.last_emp, f.last_occ,
+      f.addr_emp, f.addr_occ, f.emp_occ
     ]);
   }
   if (data.length) sh.getRange(2, 1, data.length, DONOR_TRAINING_HEADER.length).setValues(data);
@@ -364,9 +443,10 @@ function donor_appendPairsToTraining_(pairs) {
       '',
       p.a.origin, p.a.rowIndex + 2, p.a.first, p.a.last, p.a.addr1, p.a.city, p.a.state, p.a.zip, p.a.employer, p.a.occupation,
       p.b.origin, p.b.rowIndex + 2, p.b.first, p.b.last, p.b.addr1, p.b.city, p.b.state, p.b.zip, p.b.employer, p.b.occupation,
-      f.nameSim, f.firstSim, f.firstInitEq, f.lastSame,
-      f.addrSim, f.citySame, f.stateSame, f.zip5Same, f.zip3Same, f.houseMatch, f.addrStrong,
-      f.empSim, f.occSim, f.firstPairProb
+      f.nameSim, f.lastSim, f.addrSim, f.empSim, f.occSim, f.zipMatch, f.cityMatch,
+      f.name_last, f.name_addr, f.name_emp, f.name_occ,
+      f.last_addr, f.last_emp, f.last_occ,
+      f.addr_emp, f.addr_occ, f.emp_occ
     ]);
   }
   if (data.length) sh.getRange(lastRow + 1, 1, data.length, DONOR_TRAINING_HEADER.length).setValues(data);
@@ -501,6 +581,97 @@ function donor_soundex_(s) {
     prev = code;
   }
   return (out + '000').slice(0, 4);
+}
+function donor_levenshtein_(s1, s2) {
+  s1 = String(s1 || '').toUpperCase();
+  s2 = String(s2 || '').toUpperCase();
+  if (s1.length < s2.length) {
+    const tmp = s1; s1 = s2; s2 = tmp;
+  }
+  if (s2.length === 0) return s1.length;
+
+  let prevRow = [];
+  for (let j = 0; j <= s2.length; j++) prevRow.push(j);
+
+  for (let i = 0; i < s1.length; i++) {
+    const currRow = [i + 1];
+    for (let j = 0; j < s2.length; j++) {
+      const insertions = prevRow[j + 1] + 1;
+      const deletions = currRow[j] + 1;
+      const substitutions = prevRow[j] + (s1[i] !== s2[j] ? 1 : 0);
+      currRow.push(Math.min(insertions, deletions, substitutions));
+    }
+    prevRow = currRow;
+  }
+  return prevRow[prevRow.length - 1];
+}
+function donor_normalizeAddress_(addr) {
+  let s = String(addr || '').toUpperCase().trim();
+  const abbrevs = {
+    'STREET':'ST', 'AVENUE':'AVE', 'ROAD':'RD', 'DRIVE':'DR', 'LANE':'LN',
+    'COURT':'CT', 'PLACE':'PL', 'BOULEVARD':'BLVD', 'CIRCLE':'CIR',
+    'PARKWAY':'PKWY', 'TERRACE':'TER', 'NORTH':'N', 'SOUTH':'S',
+    'EAST':'E', 'WEST':'W', 'APARTMENT':'APT', 'SUITE':'STE', 'NUMBER':'NO'
+  };
+  // Expand abbreviations to full words for better matching
+  Object.keys(abbrevs).forEach(full => {
+    const abbr = abbrevs[full];
+    const re = new RegExp('\\b' + abbr + '\\b', 'g');
+    s = s.replace(re, full);
+  });
+  s = s.replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  return s;
+}
+function donor_enhancedSimilarity_(str1, str2, fieldType, associations) {
+  str1 = String(str1 || '').trim().toUpperCase();
+  str2 = String(str2 || '').trim().toUpperCase();
+
+  // Check learned associations first
+  if (associations && associations[str1] && associations[str1][str2]) {
+    return associations[str1][str2];
+  }
+  if (associations && associations[str2] && associations[str2][str1]) {
+    return associations[str2][str1];
+  }
+
+  if (str1 === str2) return 1.0;
+  if (!str1 && !str2) return 1.0;
+  if (!str1 || !str2) return 0.0;
+
+  // Normalize addresses
+  if (fieldType === 'address') {
+    str1 = donor_normalizeAddress_(str1);
+    str2 = donor_normalizeAddress_(str2);
+    if (str1 === str2) return 1.0;
+  }
+
+  // Jaro-Winkler score
+  const jwScore = donor_jaroWinkler_(str1, str2);
+
+  // Levenshtein score
+  const maxLen = Math.max(str1.length, str2.length);
+  const levDist = donor_levenshtein_(str1, str2);
+  const levScore = maxLen > 0 ? (1.0 - levDist / maxLen) : 1.0;
+
+  // Token-based Jaccard similarity
+  const tokens1 = str1.split(/\s+/).filter(t => t.length > 0);
+  const tokens2 = str2.split(/\s+/).filter(t => t.length > 0);
+  const set1 = new Set(tokens1);
+  const set2 = new Set(tokens2);
+  const intersection = new Set([...set1].filter(t => set2.has(t)));
+  const union = new Set([...set1, ...set2]);
+  const tokenJaccard = union.size > 0 ? intersection.size / union.size : 0.0;
+
+  // Field-specific weights
+  if (fieldType === 'name' || fieldType === 'first' || fieldType === 'last') {
+    const phoneticMatch = donor_soundex_(str1) === donor_soundex_(str2) ? 1.0 : 0.0;
+    const baseScore = jwScore * 0.35 + levScore * 0.25 + tokenJaccard * 0.2 + phoneticMatch * 0.2;
+    return Math.max(baseScore, phoneticMatch * 0.8);
+  } else if (fieldType === 'address') {
+    return jwScore * 0.4 + levScore * 0.3 + tokenJaccard * 0.3;
+  } else {
+    return jwScore * 0.5 + levScore * 0.3 + tokenJaccard * 0.2;
+  }
 }
 function donor_jaroWinkler_(s1, s2) {
   s1 = String(s1 || '').toUpperCase();
