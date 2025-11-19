@@ -613,6 +613,64 @@ function donor_sampleArray_(arr, n) {
   }
   return res;
 }
+
+/** Stratified sampling for training pairs - prioritizes interesting examples */
+function donor_stratifiedSample_(pairs, n) {
+  if (!pairs || pairs.length === 0 || n <= 0) return [];
+  if (pairs.length <= n) return pairs.slice();
+
+  // Score each pair for "interestingness"
+  const scored = pairs.map(p => {
+    const f = p.features;
+    // High-similarity pairs (likely matches like Don/Donald) - MOST IMPORTANT
+    const avgSimilarity = (f.nameSim + f.addrSim + f.empSim) / 3;
+    const sameAddress = f.addrSim > 0.9 ? 1 : 0;
+    const similarName = f.nameSim > 0.5 ? 1 : 0;
+    const sameLastName = f.lastSame;
+
+    // Interestingness score:
+    // - Same address + same last name = very interesting (Don/Donald or Kelly/Steve)
+    // - High name similarity = likely match
+    // - Mid similarity = edge case
+    let score = 0;
+    if (sameAddress && sameLastName) {
+      score = 100 + f.nameSim * 50; // Same address/last name: 100-150 points
+    } else if (avgSimilarity > 0.6) {
+      score = 50 + avgSimilarity * 30; // High similarity: 50-80 points
+    } else if (avgSimilarity > 0.3) {
+      score = 20 + avgSimilarity * 20; // Mid similarity: 20-26 points
+    } else {
+      score = avgSimilarity * 10; // Low similarity: 0-3 points
+    }
+
+    return { pair: p, score: score };
+  });
+
+  // Sort by score (highest first)
+  scored.sort((a, b) => b.score - a.score);
+
+  // Stratified sampling:
+  // - Top 40% of samples from high-scoring pairs (likely matches + edge cases)
+  // - Bottom 60% from mix of mid/low scoring (for balance)
+  const nHigh = Math.ceil(n * 0.4);
+  const nLow = n - nHigh;
+
+  const result = [];
+
+  // Take top high-scoring pairs
+  for (let i = 0; i < nHigh && i < scored.length; i++) {
+    result.push(scored[i].pair);
+  }
+
+  // Randomly sample from remaining pairs
+  const remaining = scored.slice(nHigh);
+  const sampled = donor_sampleArray_(remaining, nLow);
+  for (let i = 0; i < sampled.length; i++) {
+    result.push(sampled[i].pair);
+  }
+
+  return result;
+}
 function donor_pairKey_(a, b) {
   const ka = a.origin + ':' + (a.rowIndex + 2);
   const kb = b.origin + ':' + (b.rowIndex + 2);
@@ -3868,6 +3926,10 @@ function diagnostic_analyzeMatching() {
     return;
   }
 
+  // Read match threshold from Options!J2
+  const optionsSheet = ss.getSheetByName('Options');
+  const threshold = optionsSheet ? Number(optionsSheet.getRange('J2').getValue() || 0.7) : 0.7;
+
   // Export sheets to Drive as CSV
   const krefData = krefSheet.getDataRange().getValues();
   const fecData = fecSheet.getDataRange().getValues();
@@ -3905,7 +3967,7 @@ function diagnostic_analyzeMatching() {
     fecDownload + " && \\\n" +
     modelDownload + " && \\\n" +
     scriptDownload + " && \\\n" +
-    "python3 diagnostic_matching.py kref.csv fec.csv model.json";
+    "python3 diagnostic_matching.py kref.csv fec.csv model.json --threshold " + threshold;
 
   // Show command in dialog
   const html = HtmlService.createHtmlOutput(
@@ -4273,7 +4335,7 @@ def find_obvious_misses(data, weights, threshold=0.7):
     print("\\nLooking for pairs with:")
     print("  - Exact same address")
     print("  - Similar last name (soundex match)")
-    print("  - But confidence < 0.7")
+    print(f"  - But confidence < {threshold}")
 
     address_index = defaultdict(list)
     for donor in data:
@@ -4310,7 +4372,7 @@ def find_obvious_misses(data, weights, threshold=0.7):
     if misses:
         print(f"\\nShowing first 10 misses:")
         for a, b, score in misses[:10]:
-            print(f"\\n  Confidence: {score:.3f} (should be >0.7!)")
+            print(f"\\n  Confidence: {score:.3f} (should be >{threshold}!)")
             print(f"    Person A: {a.get('DonorFirst','')} {a.get('DonorLast','')} | {a.get('Address1','')}")
             print(f"    Person B: {b.get('DonorFirst','')} {b.get('DonorLast','')} | {b.get('Address1','')}")
             feat = features(a, b)
@@ -4319,17 +4381,18 @@ def find_obvious_misses(data, weights, threshold=0.7):
         print("\\n  ✓ No obvious misses found!")
 
 def main():
-    if len(sys.argv) < 4:
-        print("Usage: python3 diagnostic_matching.py <kref_csv> <fec_csv> <model_weights_json>")
-        sys.exit(1)
+    import argparse
+    parser = argparse.ArgumentParser(description='Diagnostic tool for donor matching')
+    parser.add_argument('kref_file', help='KREF CSV file')
+    parser.add_argument('fec_file', help='FEC CSV file')
+    parser.add_argument('model_file', help='Model weights JSON file')
+    parser.add_argument('--threshold', type=float, default=0.7, help='Match confidence threshold (default: 0.7)')
 
-    kref_file = sys.argv[1]
-    fec_file = sys.argv[2]
-    model_file = sys.argv[3]
+    args = parser.parse_args()
 
     print("Loading data...")
-    kref_data = load_csv(kref_file)
-    fec_data = load_csv(fec_file)
+    kref_data = load_csv(args.kref_file)
+    fec_data = load_csv(args.fec_file)
     combined = kref_data + fec_data
 
     print(f"Loaded {len(kref_data)} KREF records")
@@ -4337,7 +4400,7 @@ def main():
     print(f"Total: {len(combined)} records")
 
     print("\\nLoading model weights...")
-    with open(model_file, 'r') as f:
+    with open(args.model_file, 'r') as f:
         model_data = json.load(f)
         weights = model_data.get("weights")
 
@@ -4346,10 +4409,11 @@ def main():
         sys.exit(1)
 
     print(f"Loaded model with {len(weights)} weights")
+    print(f"Using match threshold: {args.threshold}")
 
     # Run diagnostics
     analyze_distribution(combined, weights, sample_size=2000)
-    find_obvious_misses(combined, weights, threshold=0.7)
+    find_obvious_misses(combined, weights, threshold=args.threshold)
 
     print("\\n" + "="*60)
     print("DIAGNOSTIC COMPLETE")
