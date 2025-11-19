@@ -10,23 +10,12 @@
  *   donor_createTrainingPairs_lite
  *   dl_prepareLocalJobAndShowCommand_
  *   dl_showProgressSidebar
- *   diagnostic_analyzeMatching
+ *   diagnostic_analyzeMatching (NEW - add to your menu)
+ *   cd_uploadDialog (NEW - add to your menu)
+ *   cd_prepareMatchingJob_ (NEW - add to your menu)
  *   doGet
  *   doPost
  ****************************************************/
-
-/** =========================
- * Menu setup
- * ========================= */
-function onOpen() {
-  const ui = SpreadsheetApp.getUi();
-  ui.createMenu('Donor Matcher')
-    .addItem('📊 Analyze Matching Quality', 'diagnostic_analyzeMatching')
-    .addSeparator()
-    .addItem('Upload Campaign Deputy Export', 'cd_uploadDialog')
-    .addItem('Match to Campaign Deputy', 'cd_prepareMatchingJob_')
-    .addToUi();
-}
 
 /** =========================
  * Donor Matcher v3 config
