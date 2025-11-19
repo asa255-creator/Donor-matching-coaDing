@@ -16,8 +16,6 @@ function onOpen() {
     .addItem('Continue training: add more labeled pairs', 'dl_prepareIncrementalTrainingJob_')
     .addItem('Open progress sidebar', 'dl_showProgressSidebar')
     .addSeparator()
-    .addItem('📊 Analyze Matching Quality', 'diagnostic_analyzeMatching')
-    .addSeparator()
     .addItem('Upload Campaign Deputy Export', 'cd_uploadDialog')
     .addItem('Match Donors to Campaign Deputy', 'cd_prepareMatchingJob_')
     .addSeparator()
