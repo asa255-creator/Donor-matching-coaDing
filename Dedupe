@@ -1081,18 +1081,33 @@ function donor_ensureNicknamesSheet_() {
     const lines = csvText.split('\n');
     const pairs = [];
 
-    // Parse the CSV - format is: canonical_name,nickname1,nickname2,...
+    // Parse the CSV - format is: name,relationship,nickname (skip header)
+    let isFirstLine = true;
     for (const line of lines) {
       if (!line.trim()) continue;
-      const parts = line.split(',').map(s => s.trim().toUpperCase()).filter(s => s);
-      if (parts.length < 2) continue;
 
-      const canonical = parts[0];
-      // Create pairs between canonical and each nickname
-      for (let i = 1; i < parts.length; i++) {
-        if (parts[i] && parts[i] !== canonical) {
-          pairs.push([canonical, parts[i]]);
-        }
+      // Skip header row
+      if (isFirstLine) {
+        isFirstLine = false;
+        continue;
+      }
+
+      const parts = line.split(',').map(s => s.trim().toUpperCase()).filter(s => s);
+      if (parts.length < 3) continue;
+
+      // Format: NAME, RELATIONSHIP_TYPE, NICKNAME
+      // Only keep actual nickname pairs, skip relationship markers
+      const name = parts[0];
+      const nickname = parts[2];
+
+      // Skip if either is empty or a relationship type
+      if (!name || !nickname) continue;
+      if (name === 'NAME1' || nickname === 'NAME2') continue; // Skip header variants
+      if (nickname === 'HAS_NICKNAME' || name === 'HAS_NICKNAME') continue;
+
+      // Add the pair
+      if (name !== nickname) {
+        pairs.push([name, nickname]);
       }
     }
 
