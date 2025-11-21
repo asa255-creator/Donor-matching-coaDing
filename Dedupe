@@ -495,7 +495,7 @@ const UNIFIED_MATCHING_MODULE = [
   '# END UNIFIED MATCHING MODULE',
   '# ============================================',
   ''
-].join('\\n');
+].join('\n');
 
 /** =========================
  * Step 1: Create Training Pairs
