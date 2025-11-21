@@ -240,7 +240,15 @@ const UNIFIED_MATCHING_MODULE = [
   '    str1 = normalize_name(str1)',
   '    str2 = normalize_name(str2)',
   '    ',
-  '    # Check learned associations first',
+  '    # For name fields, check nickname database first',
+  '    if field_type in ["name", "first"]:',
+  '        # Extract first names for nickname check',
+  '        first1 = str1.split()[0] if str1.split() else ""',
+  '        first2 = str2.split()[0] if str2.split() else ""',
+  '        if check_nickname(first1, first2):',
+  '            return 0.95  # High score for nickname match',
+  '    ',
+  '    # Check learned associations',
   '    if associations and check_association(str1, str2, associations):',
   '        return 0.98',
   '    ',
@@ -296,6 +304,23 @@ const UNIFIED_MATCHING_MODULE = [
   'zip_associations = {}',
   'employer_associations = {}',
   'occupation_associations = {}',
+  '',
+  '# Nickname database (populated from external source)',
+  'nickname_db = {}',
+  '',
+  'def check_nickname(name1, name2):',
+  '    """Check if two names are nicknames of each other."""',
+  '    n1 = normalize_name(name1)',
+  '    n2 = normalize_name(name2)',
+  '    if not n1 or not n2:',
+  '        return False',
+  '    if n1 == n2:',
+  '        return True',
+  '    if n1 in nickname_db and n2 in nickname_db[n1]:',
+  '        return True',
+  '    if n2 in nickname_db and n1 in nickname_db[n2]:',
+  '        return True',
+  '    return False',
   '',
   '# ----------------------------',
   '# FEATURE CALCULATION (17 features)',
@@ -1002,6 +1027,79 @@ function donor_getOrCreateSheet_(name) {
   const ss = SpreadsheetApp.getActive();
   return ss.getSheetByName(name) || ss.insertSheet(name);
 }
+
+/**
+ * Ensures the Nicknames sheet exists and is populated.
+ * Downloads from public source if sheet doesn't exist.
+ * Returns the nickname pairs as array of [name1, name2] arrays.
+ */
+function donor_ensureNicknamesSheet_() {
+  const ss = SpreadsheetApp.getActive();
+  const NICKNAMES_SHEET = 'Nicknames';
+  let sh = ss.getSheetByName(NICKNAMES_SHEET);
+
+  // If sheet exists and has data, return it
+  if (sh && sh.getLastRow() > 1) {
+    const vals = sh.getDataRange().getValues();
+    return vals.slice(1); // Skip header
+  }
+
+  // Create sheet if it doesn't exist
+  if (!sh) {
+    sh = ss.insertSheet(NICKNAMES_SHEET);
+  }
+
+  // Download nickname data from public source
+  // Using a common nickname dataset format: name1,name2 pairs
+  try {
+    // Fetch from GitHub - carltonnorthern/nickname-and-diminutive-names-lookup
+    const url = 'https://raw.githubusercontent.com/carltonnorthern/nickname-and-diminutive-names-lookup/master/names.csv';
+    const response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+
+    if (response.getResponseCode() !== 200) {
+      Logger.log('Failed to download nicknames: ' + response.getResponseCode());
+      // Create empty sheet with header
+      sh.getRange(1, 1, 1, 2).setValues([['Name', 'Nickname']]);
+      return [];
+    }
+
+    const csvText = response.getContentText();
+    const lines = csvText.split('\n');
+    const pairs = [];
+
+    // Parse the CSV - format is: canonical_name,nickname1,nickname2,...
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const parts = line.split(',').map(s => s.trim().toUpperCase()).filter(s => s);
+      if (parts.length < 2) continue;
+
+      const canonical = parts[0];
+      // Create pairs between canonical and each nickname
+      for (let i = 1; i < parts.length; i++) {
+        if (parts[i] && parts[i] !== canonical) {
+          pairs.push([canonical, parts[i]]);
+        }
+      }
+    }
+
+    // Write to sheet
+    sh.clear();
+    sh.getRange(1, 1, 1, 2).setValues([['Name', 'Nickname']]);
+    if (pairs.length > 0) {
+      sh.getRange(2, 1, pairs.length, 2).setValues(pairs);
+    }
+
+    Logger.log('Loaded ' + pairs.length + ' nickname pairs');
+    return pairs;
+
+  } catch (e) {
+    Logger.log('Error downloading nicknames: ' + e.message);
+    // Create empty sheet with header
+    sh.getRange(1, 1, 1, 2).setValues([['Name', 'Nickname']]);
+    return [];
+  }
+}
+
 function donor_normalizeZip_(s) {
   const digits = String(s || '').replace(/\D+/g, '');
   if (digits.length >= 5) return digits.slice(0, 5);
@@ -1789,6 +1887,19 @@ function doGet(e) {
       '# Extract threshold from job config (default to 0.7 if not specified)',
       'predict_threshold = job.get("cfg", {}).get("predictThreshold", 0.7)',
       'print(f"Using prediction threshold: {predict_threshold}")',
+      '',
+      '# Load nickname database',
+      'global nickname_db',
+      'try:',
+      '    nicknames_url = job["modelUrl"].replace("model=1", "nicknames=1")',
+      '    nicknames_json = http_get(nicknames_url).decode("utf-8")',
+      '    nicknames_data = json.loads(nicknames_json)',
+      '    nickname_db = nicknames_data.get("nicknames", {})',
+      '    total_nicknames = sum(len(v) for v in nickname_db.values()) // 2',
+      '    print(f"Loaded {total_nicknames} nickname pairs from database")',
+      'except Exception as e:',
+      '    print(f"Warning: Could not load nicknames: {e}")',
+      '    nickname_db = {}',
       '',
       'hdrK, rowsK = parse_csv(http_get(job["krefUrl"]).decode("utf-8"))',
       'hdrF, rowsF = parse_csv(http_get(job["fecUrl"]).decode("utf-8"))',
@@ -3040,6 +3151,26 @@ function doGet(e) {
     }
 
     return ContentService.createTextOutput(JSON.stringify({ training_rows: trainingRows })).setMimeType(ContentService.MimeType.JSON);
+  }
+
+  // Nicknames endpoint - serve nickname pairs for enhanced matching
+  if (p.nicknames == '1') {
+    const pairs = donor_ensureNicknamesSheet_();
+    // Convert to object format for easy lookup in Python
+    const nicknameMap = {};
+    for (const pair of pairs) {
+      const name1 = String(pair[0] || '').toUpperCase();
+      const name2 = String(pair[1] || '').toUpperCase();
+      if (!name1 || !name2) continue;
+
+      // Add bidirectional mappings
+      if (!nicknameMap[name1]) nicknameMap[name1] = [];
+      if (!nicknameMap[name1].includes(name2)) nicknameMap[name1].push(name2);
+
+      if (!nicknameMap[name2]) nicknameMap[name2] = [];
+      if (!nicknameMap[name2].includes(name1)) nicknameMap[name2].push(name1);
+    }
+    return ContentService.createTextOutput(JSON.stringify({ nicknames: nicknameMap })).setMimeType(ContentService.MimeType.JSON);
   }
 
   // Campaign Deputy CSV endpoints
