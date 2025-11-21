@@ -10,6 +10,9 @@
  *   donor_createTrainingPairs_lite
  *   dl_prepareLocalJobAndShowCommand_
  *   dl_showProgressSidebar
+ *   diagnostic_analyzeMatching (NEW - add to your menu)
+ *   cd_uploadDialog (NEW - add to your menu)
+ *   cd_prepareMatchingJob_ (NEW - add to your menu)
  *   doGet
  *   doPost
  ****************************************************/
@@ -38,11 +41,12 @@ const DONOR_CFG = {
  * ========================= */
 const DONOR_TRAINING_HEADER = [
   'Label',
-  'sheet_a','row_a','first_a','last_a','addr_a','city_a','state_a','zip_a','employer_a','occupation_a',
-  'sheet_b','row_b','first_b','last_b','addr_b','city_b','state_b','zip_b','employer_b','occupation_b',
-  'feat_name','feat_first','feat_firstinit','feat_lastsame',
-  'feat_addr','feat_citysame','feat_statesame','feat_zip5','feat_zip3','feat_house','feat_addrstrong',
-  'feat_employer','feat_occupation','feat_firstpairprob'
+  'sheet_a','row_a','first_a','last_a','addr_a','city_a','state_a','zip_a','emp_a','occ_a',
+  'sheet_b','row_b','first_b','last_b','addr_b','city_b','state_b','zip_b','emp_b','occ_b',
+  'feat_name','feat_last','feat_addr','feat_emp','feat_occ','feat_zip','feat_city',
+  'feat_name_last','feat_name_addr','feat_name_emp','feat_name_occ',
+  'feat_last_addr','feat_last_emp','feat_last_occ',
+  'feat_addr_emp','feat_addr_occ','feat_emp_occ'
 ];
 
 /** =========================
@@ -74,9 +78,10 @@ function donor_trainMatcher() {
     return i;
   }
   const featureCols = [
-    'feat_name','feat_first','feat_firstinit','feat_lastsame',
-    'feat_addr','feat_citysame','feat_statesame','feat_zip5','feat_zip3','feat_house','feat_addrstrong',
-    'feat_employer','feat_occupation','feat_firstpairprob'
+    'feat_name','feat_last','feat_addr','feat_emp','feat_occ','feat_zip','feat_city',
+    'feat_name_last','feat_name_addr','feat_name_emp','feat_name_occ',
+    'feat_last_addr','feat_last_emp','feat_last_occ',
+    'feat_addr_emp','feat_addr_occ','feat_emp_occ'
   ];
   const I = featureCols.map(idx);
   const iLabel = idx('Label');
@@ -120,9 +125,10 @@ function donor_assignDonorIds() {
   for (let i = 0; i < pairs.length; i++) {
     const f = pairs[i].features;
     const x = [
-      f.nameSim, f.firstSim, f.firstInitEq, f.lastSame,
-      f.addrSim, f.citySame, f.stateSame, f.zip5Same, f.zip3Same, f.houseMatch, f.addrStrong,
-      f.empSim, f.occSim, f.firstPairProb
+      f.nameSim, f.lastSim, f.addrSim, f.empSim, f.occSim, f.zipMatch, f.cityMatch,
+      f.name_last, f.name_addr, f.name_emp, f.name_occ,
+      f.last_addr, f.last_emp, f.last_occ,
+      f.addr_emp, f.addr_occ, f.emp_occ
     ];
     const prob = donor_predictLogReg_(x, w);
     if (prob >= DONOR_CFG.predictThreshold) {
@@ -169,9 +175,10 @@ function donor_addUncertainPairs() {
     if (seen.has(key)) continue;
     const f = p.features;
     const x = [
-      f.nameSim, f.firstSim, f.firstInitEq, f.lastSame,
-      f.addrSim, f.citySame, f.stateSame, f.zip5Same, f.zip3Same, f.houseMatch, f.addrStrong,
-      f.empSim, f.occSim, f.firstPairProb
+      f.nameSim, f.lastSim, f.addrSim, f.empSim, f.occSim, f.zipMatch, f.cityMatch,
+      f.name_last, f.name_addr, f.name_emp, f.name_occ,
+      f.last_addr, f.last_emp, f.last_occ,
+      f.addr_emp, f.addr_occ, f.emp_occ
     ];
     const prob = donor_predictLogReg_(x, w);
     if (prob >= lower && prob <= upper) {
@@ -292,36 +299,110 @@ function donor_generatePairsFromBlocks_(blocks) {
  * Feature builder
  * ========================= */
 function donor_makeFeatures_(a, b) {
-  const fullNameSim = donor_jaroWinkler_(a.fullName, b.fullName);
-  const firstSim = donor_jaroWinkler_(a.first, b.first);
-  const firstInitEq = (a.first && b.first && a.first[0].toUpperCase() === b.first[0].toUpperCase()) ? 1 : 0;
-  const lastSame = (a.last && b.last && a.last.toUpperCase() === b.last.toUpperCase()) ? 1 : 0;
-  const addrSim = donor_jaroWinkler_(a.addr1, b.addr1);
-  const citySame = (a.city && b.city && a.city.toUpperCase() === b.city.toUpperCase()) ? 1 : 0;
-  const stateSame = (a.state && b.state && a.state.toUpperCase() === b.state.toUpperCase()) ? 1 : 0;
-  const zip5Same = (a.zip && b.zip && a.zip === b.zip) ? 1 : 0;
-  const zip3Same = (a.zip && b.zip && a.zip.slice(0,3) === b.zip.slice(0,3)) ? 1 : 0;
-  const houseMatch = (a.house && b.house && a.house === b.house) ? 1 : 0;
-  const addrStrong = (houseMatch && zip5Same) ? 1 : 0;
-  const empSim = donor_jaroWinkler_(a.employer || '', b.employer || '');
-  const occSim = donor_jaroWinkler_(a.occupation || '', b.occupation || '');
-  const firstPairProb = donor_lookupFirstNamePairProb_(a.first, b.first);
+  // Load learned associations (TODO: cache these)
+  const associations = donor_getLearnedAssociations_();
+
+  // Use enhanced similarity with multiple algorithms
+  const nameSim = donor_enhancedSimilarity_(a.fullName, b.fullName, 'name', associations.first);
+  const lastSim = donor_enhancedSimilarity_(a.last, b.last, 'last', associations.last);
+  const addrSim = donor_enhancedSimilarity_(a.addr1, b.addr1, 'address', associations.address);
+  const empSim = donor_enhancedSimilarity_(a.employer || '', b.employer || '', 'employer', associations.employer);
+  const occSim = donor_enhancedSimilarity_(a.occupation || '', b.occupation || '', 'occupation', associations.occupation);
+
+  // Geographic exact matches
+  const zip_a = (a.zip || '').trim();
+  const zip_b = (b.zip || '').trim();
+  const zipMatch = (zip_a && zip_b && zip_a === zip_b) ? 1.0 : 0.0;
+
+  const city_a = (a.city || '').trim().toUpperCase();
+  const city_b = (b.city || '').trim().toUpperCase();
+  const cityMatch = (city_a && city_b && city_a === city_b) ? 1.0 : 0.0;
+
+  // Interaction features (products of base features)
+  const f0 = nameSim;
+  const f1 = lastSim;
+  const f2 = addrSim;
+  const f3 = empSim;
+  const f4 = occSim;
+  const f5 = zipMatch;
+  const f6 = cityMatch;
+
   return {
-    nameSim: donor_round4_(fullNameSim),
-    firstSim: donor_round4_(firstSim),
-    firstInitEq: firstInitEq,
-    lastSame: lastSame,
-    addrSim: donor_round4_(addrSim),
-    citySame: citySame,
-    stateSame: stateSame,
-    zip5Same: zip5Same,
-    zip3Same: zip3Same,
-    houseMatch: houseMatch,
-    addrStrong: addrStrong,
-    empSim: donor_round4_(empSim),
-    occSim: donor_round4_(occSim),
-    firstPairProb: donor_round4_(firstPairProb)
+    nameSim: donor_round4_(f0),
+    lastSim: donor_round4_(f1),
+    addrSim: donor_round4_(f2),
+    empSim: donor_round4_(f3),
+    occSim: donor_round4_(f4),
+    zipMatch: donor_round4_(f5),
+    cityMatch: donor_round4_(f6),
+    name_last: donor_round4_(f0 * f1),
+    name_addr: donor_round4_(f0 * f2),
+    name_emp: donor_round4_(f0 * f3),
+    name_occ: donor_round4_(f0 * f4),
+    last_addr: donor_round4_(f1 * f2),
+    last_emp: donor_round4_(f1 * f3),
+    last_occ: donor_round4_(f1 * f4),
+    addr_emp: donor_round4_(f2 * f3),
+    addr_occ: donor_round4_(f2 * f4),
+    emp_occ: donor_round4_(f3 * f4)
   };
+}
+
+function donor_getLearnedAssociations_() {
+  // Extract learned associations from training data
+  const sh = SpreadsheetApp.getActive().getSheetByName(DONOR_CFG.trainingSheet);
+  const associations = {
+    first: {},
+    last: {},
+    address: {},
+    employer: {},
+    occupation: {}
+  };
+
+  if (!sh || sh.getLastRow() < 2) return associations;
+
+  const vals = sh.getDataRange().getValues();
+  const h = vals[0].map(s => String(s || '').trim());
+
+  const iLabel = h.indexOf('Label');
+  const iFirstA = h.indexOf('first_a');
+  const iFirstB = h.indexOf('first_b');
+  const iLastA = h.indexOf('last_a');
+  const iLastB = h.indexOf('last_b');
+  const iAddrA = h.indexOf('addr_a');
+  const iAddrB = h.indexOf('addr_b');
+  const iEmpA = h.indexOf('emp_a');
+  const iEmpB = h.indexOf('emp_b');
+  const iOccA = h.indexOf('occ_a');
+  const iOccB = h.indexOf('occ_b');
+
+  if (iLabel === -1) return associations;
+
+  for (let i = 1; i < vals.length; i++) {
+    const row = vals[i];
+    const label = Number(row[iLabel]);
+    if (label !== 1) continue; // Only learn from positive matches
+
+    function addAssoc(dict, idxA, idxB) {
+      if (idxA === -1 || idxB === -1) return;
+      const valA = String(row[idxA] || '').trim().toUpperCase();
+      const valB = String(row[idxB] || '').trim().toUpperCase();
+      if (!valA || !valB || valA === valB) return;
+
+      if (!dict[valA]) dict[valA] = {};
+      if (!dict[valB]) dict[valB] = {};
+      dict[valA][valB] = 1.0;
+      dict[valB][valA] = 1.0;
+    }
+
+    addAssoc(associations.first, iFirstA, iFirstB);
+    addAssoc(associations.last, iLastA, iLastB);
+    addAssoc(associations.address, iAddrA, iAddrB);
+    addAssoc(associations.employer, iEmpA, iEmpB);
+    addAssoc(associations.occupation, iOccA, iOccB);
+  }
+
+  return associations;
 }
 
 /** =========================
@@ -338,9 +419,10 @@ function donor_writeTrainingSheet_(pairs) {
       '',
       p.a.origin, p.a.rowIndex + 2, p.a.first, p.a.last, p.a.addr1, p.a.city, p.a.state, p.a.zip, p.a.employer, p.a.occupation,
       p.b.origin, p.b.rowIndex + 2, p.b.first, p.b.last, p.b.addr1, p.b.city, p.b.state, p.b.zip, p.b.employer, p.b.occupation,
-      f.nameSim, f.firstSim, f.firstInitEq, f.lastSame,
-      f.addrSim, f.citySame, f.stateSame, f.zip5Same, f.zip3Same, f.houseMatch, f.addrStrong,
-      f.empSim, f.occSim, f.firstPairProb
+      f.nameSim, f.lastSim, f.addrSim, f.empSim, f.occSim, f.zipMatch, f.cityMatch,
+      f.name_last, f.name_addr, f.name_emp, f.name_occ,
+      f.last_addr, f.last_emp, f.last_occ,
+      f.addr_emp, f.addr_occ, f.emp_occ
     ]);
   }
   if (data.length) sh.getRange(2, 1, data.length, DONOR_TRAINING_HEADER.length).setValues(data);
@@ -361,9 +443,10 @@ function donor_appendPairsToTraining_(pairs) {
       '',
       p.a.origin, p.a.rowIndex + 2, p.a.first, p.a.last, p.a.addr1, p.a.city, p.a.state, p.a.zip, p.a.employer, p.a.occupation,
       p.b.origin, p.b.rowIndex + 2, p.b.first, p.b.last, p.b.addr1, p.b.city, p.b.state, p.b.zip, p.b.employer, p.b.occupation,
-      f.nameSim, f.firstSim, f.firstInitEq, f.lastSame,
-      f.addrSim, f.citySame, f.stateSame, f.zip5Same, f.zip3Same, f.houseMatch, f.addrStrong,
-      f.empSim, f.occSim, f.firstPairProb
+      f.nameSim, f.lastSim, f.addrSim, f.empSim, f.occSim, f.zipMatch, f.cityMatch,
+      f.name_last, f.name_addr, f.name_emp, f.name_occ,
+      f.last_addr, f.last_emp, f.last_occ,
+      f.addr_emp, f.addr_occ, f.emp_occ
     ]);
   }
   if (data.length) sh.getRange(lastRow + 1, 1, data.length, DONOR_TRAINING_HEADER.length).setValues(data);
@@ -498,6 +581,97 @@ function donor_soundex_(s) {
     prev = code;
   }
   return (out + '000').slice(0, 4);
+}
+function donor_levenshtein_(s1, s2) {
+  s1 = String(s1 || '').toUpperCase();
+  s2 = String(s2 || '').toUpperCase();
+  if (s1.length < s2.length) {
+    const tmp = s1; s1 = s2; s2 = tmp;
+  }
+  if (s2.length === 0) return s1.length;
+
+  let prevRow = [];
+  for (let j = 0; j <= s2.length; j++) prevRow.push(j);
+
+  for (let i = 0; i < s1.length; i++) {
+    const currRow = [i + 1];
+    for (let j = 0; j < s2.length; j++) {
+      const insertions = prevRow[j + 1] + 1;
+      const deletions = currRow[j] + 1;
+      const substitutions = prevRow[j] + (s1[i] !== s2[j] ? 1 : 0);
+      currRow.push(Math.min(insertions, deletions, substitutions));
+    }
+    prevRow = currRow;
+  }
+  return prevRow[prevRow.length - 1];
+}
+function donor_normalizeAddress_(addr) {
+  let s = String(addr || '').toUpperCase().trim();
+  const abbrevs = {
+    'STREET':'ST', 'AVENUE':'AVE', 'ROAD':'RD', 'DRIVE':'DR', 'LANE':'LN',
+    'COURT':'CT', 'PLACE':'PL', 'BOULEVARD':'BLVD', 'CIRCLE':'CIR',
+    'PARKWAY':'PKWY', 'TERRACE':'TER', 'NORTH':'N', 'SOUTH':'S',
+    'EAST':'E', 'WEST':'W', 'APARTMENT':'APT', 'SUITE':'STE', 'NUMBER':'NO'
+  };
+  // Expand abbreviations to full words for better matching
+  Object.keys(abbrevs).forEach(full => {
+    const abbr = abbrevs[full];
+    const re = new RegExp('\\b' + abbr + '\\b', 'g');
+    s = s.replace(re, full);
+  });
+  s = s.replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  return s;
+}
+function donor_enhancedSimilarity_(str1, str2, fieldType, associations) {
+  str1 = String(str1 || '').trim().toUpperCase();
+  str2 = String(str2 || '').trim().toUpperCase();
+
+  // Check learned associations first
+  if (associations && associations[str1] && associations[str1][str2]) {
+    return associations[str1][str2];
+  }
+  if (associations && associations[str2] && associations[str2][str1]) {
+    return associations[str2][str1];
+  }
+
+  if (str1 === str2) return 1.0;
+  if (!str1 && !str2) return 1.0;
+  if (!str1 || !str2) return 0.0;
+
+  // Normalize addresses
+  if (fieldType === 'address') {
+    str1 = donor_normalizeAddress_(str1);
+    str2 = donor_normalizeAddress_(str2);
+    if (str1 === str2) return 1.0;
+  }
+
+  // Jaro-Winkler score
+  const jwScore = donor_jaroWinkler_(str1, str2);
+
+  // Levenshtein score
+  const maxLen = Math.max(str1.length, str2.length);
+  const levDist = donor_levenshtein_(str1, str2);
+  const levScore = maxLen > 0 ? (1.0 - levDist / maxLen) : 1.0;
+
+  // Token-based Jaccard similarity
+  const tokens1 = str1.split(/\s+/).filter(t => t.length > 0);
+  const tokens2 = str2.split(/\s+/).filter(t => t.length > 0);
+  const set1 = new Set(tokens1);
+  const set2 = new Set(tokens2);
+  const intersection = new Set([...set1].filter(t => set2.has(t)));
+  const union = new Set([...set1, ...set2]);
+  const tokenJaccard = union.size > 0 ? intersection.size / union.size : 0.0;
+
+  // Field-specific weights
+  if (fieldType === 'name' || fieldType === 'first' || fieldType === 'last') {
+    const phoneticMatch = donor_soundex_(str1) === donor_soundex_(str2) ? 1.0 : 0.0;
+    const baseScore = jwScore * 0.35 + levScore * 0.25 + tokenJaccard * 0.2 + phoneticMatch * 0.2;
+    return Math.max(baseScore, phoneticMatch * 0.8);
+  } else if (fieldType === 'address') {
+    return jwScore * 0.4 + levScore * 0.3 + tokenJaccard * 0.3;
+  } else {
+    return jwScore * 0.5 + levScore * 0.3 + tokenJaccard * 0.2;
+  }
 }
 function donor_jaroWinkler_(s1, s2) {
   s1 = String(s1 || '').toUpperCase();
@@ -941,6 +1115,145 @@ function doGet(e) {
       '        l += 1',
       '    return j + l*0.1*(1.0 - j)',
       '',
+      '# Levenshtein distance (edit distance)',
+      'def levenshtein(s1, s2):',
+      '    s1 = (s1 or "").upper()',
+      '    s2 = (s2 or "").upper()',
+      '    if len(s1) < len(s2):',
+      '        return levenshtein(s2, s1)',
+      '    if len(s2) == 0:',
+      '        return len(s1)',
+      '    previous_row = range(len(s2) + 1)',
+      '    for i, c1 in enumerate(s1):',
+      '        current_row = [i + 1]',
+      '        for j, c2 in enumerate(s2):',
+      '            insertions = previous_row[j + 1] + 1',
+      '            deletions = current_row[j] + 1',
+      '            substitutions = previous_row[j] + (c1 != c2)',
+      '            current_row.append(min(insertions, deletions, substitutions))',
+      '        previous_row = current_row',
+      '    return previous_row[-1]',
+      '',
+      '# Soundex phonetic encoding',
+      'def soundex(s):',
+      '    s = (s or "").upper()',
+      '    if not s:',
+      '        return "0000"',
+      '    # Remove non-alphabetic characters',
+      '    s = "".join(c for c in s if c.isalpha())',
+      '    if not s:',
+      '        return "0000"',
+      '    # Soundex mapping',
+      '    soundex_map = {',
+      '        "B": "1", "F": "1", "P": "1", "V": "1",',
+      '        "C": "2", "G": "2", "J": "2", "K": "2", "Q": "2", "S": "2", "X": "2", "Z": "2",',
+      '        "D": "3", "T": "3",',
+      '        "L": "4",',
+      '        "M": "5", "N": "5",',
+      '        "R": "6"',
+      '    }',
+      '    # Keep first letter',
+      '    result = s[0]',
+      '    prev_code = soundex_map.get(s[0], "0")',
+      '    for char in s[1:]:',
+      '        code = soundex_map.get(char, "0")',
+      '        if code != "0" and code != prev_code:',
+      '            result += code',
+      '        prev_code = code',
+      '        if len(result) == 4:',
+      '            break',
+      '    # Pad with zeros',
+      '    result = (result + "000")[:4]',
+      '    return result',
+      '',
+      '# Normalize addresses for matching',
+      'def normalize_address(addr):',
+      '    import re',
+      '    addr = (addr or "").strip().upper()',
+      '    if not addr:',
+      '        return addr',
+      '    # Remove punctuation',
+      '    addr = re.sub(r"[.,#;]", "", addr)',
+      '    # Expand common abbreviations',
+      '    abbrev_map = [',
+      '        (r"\\bST\\b", "STREET"),',
+      '        (r"\\bAVE\\b", "AVENUE"),',
+      '        (r"\\bAVENU\\b", "AVENUE"),',
+      '        (r"\\bRD\\b", "ROAD"),',
+      '        (r"\\bDR\\b", "DRIVE"),',
+      '        (r"\\bBLVD\\b", "BOULEVARD"),',
+      '        (r"\\bLN\\b", "LANE"),',
+      '        (r"\\bCT\\b", "COURT"),',
+      '        (r"\\bPL\\b", "PLACE"),',
+      '        (r"\\bPKWY\\b", "PARKWAY"),',
+      '        (r"\\bCIR\\b", "CIRCLE"),',
+      '        (r"\\bTER\\b", "TERRACE"),',
+      '        (r"\\bTRL\\b", "TRAIL"),',
+      '        (r"\\bHWY\\b", "HIGHWAY"),',
+      '        (r"\\bAPT\\b", "APARTMENT"),',
+      '        (r"\\bN\\b", "NORTH"),',
+      '        (r"\\bS\\b", "SOUTH"),',
+      '        (r"\\bE\\b", "EAST"),',
+      '        (r"\\bW\\b", "WEST"),',
+      '    ]',
+      '    for pattern, replacement in abbrev_map:',
+      '        addr = re.sub(pattern, replacement, addr)',
+      '    # Normalize whitespace',
+      '    addr = " ".join(addr.split())',
+      '    return addr',
+      '',
+      '# Enhanced similarity using multiple algorithms',
+      'def enhanced_similarity(str1, str2, field_type, associations=None):',
+      '    """',
+      '    Multi-algorithm similarity scoring with learned associations.',
+      '    field_type: "name", "first", "last", "address", "employer", "occupation"',
+      '    """',
+      '    str1 = (str1 or "").strip().upper()',
+      '    str2 = (str2 or "").strip().upper()',
+      '    ',
+      '    # Check learned associations first',
+      '    if associations:',
+      '        if check_association(str1, str2, associations):',
+      '            return 0.98',
+      '    ',
+      '    # Exact match',
+      '    if str1 == str2:',
+      '        return 1.0',
+      '    ',
+      '    # Empty strings',
+      '    if not str1 and not str2:',
+      '        return 1.0',
+      '    if not str1 or not str2:',
+      '        return 0.0',
+      '    ',
+      '    # 1. Jaro-Winkler (good for typos, prefix matching)',
+      '    jw_score = jaro_winkler(str1, str2)',
+      '    ',
+      '    # 2. Levenshtein/edit distance (good for insertions/deletions)',
+      '    max_len = max(len(str1), len(str2))',
+      '    lev_distance = levenshtein(str1, str2)',
+      '    lev_score = 1.0 - (lev_distance / max_len) if max_len > 0 else 1.0',
+      '    ',
+      '    # 3. Token-based similarity (good for word order, abbreviations)',
+      '    tokens1 = set(str1.split())',
+      '    tokens2 = set(str2.split())',
+      '    token_jaccard = len(tokens1 & tokens2) / len(tokens1 | tokens2) if (tokens1 or tokens2) else 0.0',
+      '    ',
+      '    # 4. Combine based on field type',
+      '    if field_type in ["name", "first", "last"]:',
+      '        # Add phonetic matching for names',
+      '        phonetic_match = 1.0 if soundex(str1) == soundex(str2) else 0.0',
+      '        # Weighted combination for names',
+      '        base_score = jw_score * 0.35 + lev_score * 0.25 + token_jaccard * 0.2 + phonetic_match * 0.2',
+      '        # Strong phonetic match is good evidence',
+      '        return max(base_score, phonetic_match * 0.8)',
+      '    elif field_type == "address":',
+      '        # For addresses, prioritize token matching (handles word order)',
+      '        return jw_score * 0.4 + lev_score * 0.3 + token_jaccard * 0.3',
+      '    else:',
+      '        # For other fields (employer, occupation)',
+      '        return jw_score * 0.5 + lev_score * 0.3 + token_jaccard * 0.2',
+      '',
       'def sigmoid(z):',
       '    return 1.0/(1.0+math.exp(-z))',
       '',
@@ -1072,65 +1385,58 @@ function doGet(e) {
       'occupation_associations = {}',
       '',
       '# ----------------------------',
-      '# Features with interactions',
+      '# Features with interactions (using enhanced similarity)',
       'def features(a, b):',
-      '    # First name with learned associations (for nicknames like Bob/Robert)',
-      '    first_sim = jaro_winkler(a.get("DonorFirst",""), b.get("DonorFirst",""))',
-      '    if first_sim < 0.9 and check_association(a.get("DonorFirst",""), b.get("DonorFirst",""), first_associations):',
-      '        first_sim = 0.95  # Boost for learned nicknames',
+      '    # Use enhanced similarity with multiple algorithms and learned associations',
+      '    # Full name (first + last combined)',
+      '    full_a = (a.get("DonorFirst","") + " " + a.get("DonorLast","")).strip()',
+      '    full_b = (b.get("DonorFirst","") + " " + b.get("DonorLast","")).strip()',
+      '    f0 = enhanced_similarity(full_a, full_b, "name", first_associations)',
       '    ',
-      '    # Last name with learned associations',
-      '    last_sim = jaro_winkler(a.get("DonorLast",""), b.get("DonorLast",""))',
-      '    if last_sim < 0.9 and check_association(a.get("DonorLast",""), b.get("DonorLast",""), last_associations):',
-      '        last_sim = 0.95  # Boost for variants',
+      '    # Last name',
+      '    f1 = enhanced_similarity(a.get("DonorLast",""), b.get("DonorLast",""), "last", last_associations)',
       '    ',
-      '    # Full name combines first and last with association boosts',
-      '    full_a = (a.get("DonorFirst","")+" "+a.get("DonorLast","")).strip()',
-      '    full_b = (b.get("DonorFirst","")+" "+b.get("DonorLast","")).strip()',
-      '    f0 = jaro_winkler(full_a, full_b)  # name',
-      '    # Boost full name if components are associated',
-      '    if first_sim >= 0.95 or last_sim >= 0.95:',
-      '        f0 = max(f0, (first_sim + last_sim) / 2.0)',
+      '    # Address (with address normalization built into enhanced_similarity)',
+      '    f2 = enhanced_similarity(a.get("Address1",""), b.get("Address1",""), "address", address_associations)',
       '    ',
-      '    f1 = last_sim  # last',
+      '    # Employer',
+      '    f3 = enhanced_similarity(a.get("Employer",""), b.get("Employer",""), "employer", employer_associations)',
       '    ',
-      '    # Address with learned associations',
-      '    f2 = jaro_winkler(a.get("Address1",""), b.get("Address1",""))',
-      '    if f2 < 0.9 and check_association(a.get("Address1",""), b.get("Address1",""), address_associations):',
-      '        f2 = 0.95  # Boost for learned address variations',
+      '    # Occupation',
+      '    f4 = enhanced_similarity(a.get("Occupation",""), b.get("Occupation",""), "occupation", occupation_associations)',
       '    ',
-      '    # Employer with learned associations',
-      '    f3 = jaro_winkler(a.get("Employer",""), b.get("Employer",""))',
-      '    if f3 < 0.9 and check_association(a.get("Employer",""), b.get("Employer",""), employer_associations):',
-      '        f3 = 0.95  # Boost score for learned synonyms',
+      '    # Geographic exact matches (new features)',
+      '    zip_a = (a.get("Zip","") or "").strip()[:5]',
+      '    zip_b = (b.get("Zip","") or "").strip()[:5]',
+      '    f5 = 1.0 if (zip_a and zip_b and zip_a == zip_b) else 0.0  # Zip exact match',
       '    ',
-      '    # Occupation with learned associations',
-      '    f4 = jaro_winkler(a.get("Occupation",""), b.get("Occupation",""))',
-      '    if f4 < 0.9 and check_association(a.get("Occupation",""), b.get("Occupation",""), occupation_associations):',
-      '        f4 = 0.95  # Boost score for learned synonyms',
+      '    city_a = (a.get("City","") or "").strip().upper()',
+      '    city_b = (b.get("City","") or "").strip().upper()',
+      '    f6 = 1.0 if (city_a and city_b and city_a == city_b) else 0.0  # City exact match',
       '    ',
-      '    # Interaction features [5-14]',
-      '    f5 = f0 * f1   # name * last',
-      '    f6 = f0 * f2   # name * address',
-      '    f7 = f0 * f3   # name * employer',
-      '    f8 = f0 * f4   # name * occupation',
-      '    f9 = f1 * f2   # last * address',
-      '    f10 = f1 * f3  # last * employer',
-      '    f11 = f1 * f4  # last * occupation',
-      '    f12 = f2 * f3  # address * employer',
-      '    f13 = f2 * f4  # address * occupation',
-      '    f14 = f3 * f4  # employer * occupation',
+      '    # Interaction features [7-16]',
+      '    f7 = f0 * f1   # name * last',
+      '    f8 = f0 * f2   # name * address',
+      '    f9 = f0 * f3   # name * employer',
+      '    f10 = f0 * f4  # name * occupation',
+      '    f11 = f1 * f2  # last * address',
+      '    f12 = f1 * f3  # last * employer',
+      '    f13 = f1 * f4  # last * occupation',
+      '    f14 = f2 * f3  # address * employer',
+      '    f15 = f2 * f4  # address * occupation',
+      '    f16 = f3 * f4  # employer * occupation',
       '    ',
-      '    return [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13, f14]',
+      '    return [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13, f14, f15, f16]',
       '',
       'def features_dict(a, b):',
       '    """Return features as a dict for storage in training data."""',
       '    f = features(a, b)',
       '    return {',
       '        "nameSim": f[0], "lastSim": f[1], "addrSim": f[2], "empSim": f[3], "occSim": f[4],',
-      '        "name_last": f[5], "name_addr": f[6], "name_emp": f[7], "name_occ": f[8],',
-      '        "last_addr": f[9], "last_emp": f[10], "last_occ": f[11],',
-      '        "addr_emp": f[12], "addr_occ": f[13], "emp_occ": f[14]',
+      '        "zipMatch": f[5], "cityMatch": f[6],',
+      '        "name_last": f[7], "name_addr": f[8], "name_emp": f[9], "name_occ": f[10],',
+      '        "last_addr": f[11], "last_emp": f[12], "last_occ": f[13],',
+      '        "addr_emp": f[14], "addr_occ": f[15], "emp_occ": f[16]',
       '    }',
       '',
       '# ----------------------------',
@@ -1511,12 +1817,12 @@ function doGet(e) {
       '# Session storage',
       'training_rows = []',
       'seen_pairs = set()',
-      'w = [0.0]*16  # 15 features (5 base + 10 interactions) + bias',
+      'w = [0.0]*18  # 17 features (5 similarity + 2 geographic + 10 interactions) + bias',
       'selected_donors = []  # Progressive random sample',
       'remaining_pool = list(COMBINED)  # Pool of not-yet-selected donors',
       'random.shuffle(remaining_pool)  # Shuffle once at start',
       'donor_usage_count = {}  # Track how many times each donor appears in training',
-      'feature_names = ["name", "last", "addr", "employer", "occupation", "name*last", "name*addr", "name*employer", "name*occupation", "last*addr", "last*employer", "last*occupation", "addr*employer", "addr*occupation", "employer*occupation"]',
+      'feature_names = ["name", "last", "addr", "employer", "occupation", "zip", "city", "name*last", "name*addr", "name*employer", "name*occupation", "last*addr", "last*employer", "last*occupation", "addr*employer", "addr*occupation", "employer*occupation"]',
       'loaded_training_count = 0  # Track how many training rows were loaded (vs newly added)',
       '',
       '# ----------------------------',
@@ -1542,7 +1848,25 @@ function doGet(e) {
       '        ',
       '        if training_data.get("training_rows"):',
       '            training_rows = training_data["training_rows"]',
-      '            w = existing_data["weights"]',
+      '            old_w = existing_data["weights"]',
+      '            ',
+      '            # Handle model version compatibility',
+      '            if len(old_w) == 16:',
+      '                print("  Detected old model format (15 features + bias)")',
+      '                print("  Upgrading to new model format (17 features + bias)")',
+      '                print("  Adding 2 new geographic features (zip, city)")',
+      '                # Expand weights: old had 15 features + bias, new has 17 features + bias',
+      '                # Insert zeros at positions 5 and 6 (zip and city features)',
+      '                w = old_w[:5] + [0.0, 0.0] + old_w[5:]',
+      '                print(f"  Expanded weights from {len(old_w)} to {len(w)} elements")',
+      '            elif len(old_w) == 18:',
+      '                print("  Model already in new format (17 features + bias)")',
+      '                w = old_w',
+      '            else:',
+      '                print(f"  WARNING: Unexpected weight count: {len(old_w)}")',
+      '                print(f"  Starting fresh with {18} zero weights")',
+      '                w = [0.0] * 18',
+      '            ',
       '            # NOTE: is_continuing stays False so we run training loop',
       '            loaded_training_count = len(training_rows)',
       '            ',
@@ -1599,7 +1923,25 @@ function doGet(e) {
       '                ',
       '                if training_data.get("training_rows"):',
       '                    training_rows = training_data["training_rows"]',
-      '                    w = existing_data["weights"]',
+      '                    old_w = existing_data["weights"]',
+      '                    ',
+      '                    # Handle model version compatibility',
+      '                    if len(old_w) == 16:',
+      '                        print("  Detected old model format (15 features + bias)")',
+      '                        print("  Upgrading to new model format (17 features + bias)")',
+      '                        print("  Adding 2 new geographic features (zip, city)")',
+      '                        # Expand weights: old had 15 features + bias, new has 17 features + bias',
+      '                        # Insert zeros at positions 5 and 6 (zip and city features)',
+      '                        w = old_w[:5] + [0.0, 0.0] + old_w[5:]',
+      '                        print(f"  Expanded weights from {len(old_w)} to {len(w)} elements")',
+      '                    elif len(old_w) == 18:',
+      '                        print("  Model already in new format (17 features + bias)")',
+      '                        w = old_w',
+      '                    else:',
+      '                        print(f"  WARNING: Unexpected weight count: {len(old_w)}")',
+      '                        print(f"  Starting fresh with {18} zero weights")',
+      '                        w = [0.0] * 18',
+      '                    ',
       '                    is_continuing = True  # Mark as continuing (skip training loop)',
       '                    loaded_training_count = len(training_rows)  # Track how many we loaded',
       '                    ',
@@ -1671,9 +2013,10 @@ function doGet(e) {
       '        shuffled = list(training_rows)',
       '        random.shuffle(shuffled)',
       '        for row in shuffled:',
-      '            # Extract all 15 features from stored training row',
+      '            # Extract all 17 features from stored training row',
       '            f = row.get("features", {})',
       '            x = [f.get("nameSim",0), f.get("lastSim",0), f.get("addrSim",0), f.get("empSim",0), f.get("occSim",0),',
+      '                 f.get("zipMatch",0), f.get("cityMatch",0),',
       '                 f.get("name_last",0), f.get("name_addr",0), f.get("name_emp",0), f.get("name_occ",0),',
       '                 f.get("last_addr",0), f.get("last_emp",0), f.get("last_occ",0),',
       '                 f.get("addr_emp",0), f.get("addr_occ",0), f.get("emp_occ",0)]',
@@ -2035,8 +2378,8 @@ function doGet(e) {
       '    # Normalize: uppercase, strip, remove extra whitespace',
       '    name = (donor.get("DonorFirst","") + " " + donor.get("DonorLast","")).strip().upper()',
       '    name = " ".join(name.split())  # Remove extra whitespace',
-      '    addr = donor.get("Address1","").strip().upper()',
-      '    addr = " ".join(addr.split())',
+      '    # Use enhanced address normalization (handles abbreviations)',
+      '    addr = normalize_address(donor.get("Address1",""))',
       '    key = f"{name}|{addr}"',
       '    if key and name and addr:  # Skip empty keys',
       '        if key not in exact_blocks:',
@@ -2375,6 +2718,11 @@ function doGet(e) {
     return ContentService.createTextOutput(JSON.stringify(body)).setMimeType(ContentService.MimeType.JSON);
   }
 
+  // Diagnostic script endpoint
+  if (p.script == '1') {
+    return diagnostic_getScript_();
+  }
+
   // Clear model endpoint - delete saved weights
   if (p.clear == '1') {
     const props = PropertiesService.getDocumentProperties();
@@ -2460,6 +2808,11 @@ function doGet(e) {
   // Campaign Deputy matcher Python script
   if (p.cd_matcher == '1') {
     return cd_getMatcherScript_();
+  }
+
+  // Diagnostic analysis Python script
+  if (p.diagnostic == '1') {
+    return diagnostic_getScript_();
   }
 
   return ContentService.createTextOutput('Invalid query').setMimeType(ContentService.MimeType.TEXT);
@@ -3658,6 +4011,544 @@ function cd_cleanupTempFiles_() {
   }
 }
 
+// ========================================
+// Diagnostic Functions
+// ========================================
+
+/**
+ * Prepares diagnostic analysis job
+ */
+function diagnostic_analyzeMatching() {
+  const ss = SpreadsheetApp.getActive();
+
+  // Validate required sheets exist
+  const krefSheet = ss.getSheetByName('KREF_Exports');
+  const fecSheet = ss.getSheetByName('FEC_Exports');
+
+  if (!krefSheet || !fecSheet) {
+    SpreadsheetApp.getUi().alert('KREF_Exports or FEC_Exports sheet not found. Please ensure your data is loaded.');
+    return;
+  }
+
+  // Get web app URL
+  const webAppUrl = dl_getExecUrlFromOptions_();
+  if (!webAppUrl) {
+    SpreadsheetApp.getUi().alert(
+      'Put your Web App URL ending with /exec in Options!I2.\nExample:\nhttps://script.google.com/macros/s/AKfycb.../exec'
+    );
+    return;
+  }
+
+  // Read match threshold from Options!J2
+  const optionsSheet = ss.getSheetByName('Options');
+  const threshold = optionsSheet ? Number(optionsSheet.getRange('J2').getValue() || 0.7) : 0.7;
+
+  // Export sheets to Drive as CSV
+  const krefData = krefSheet.getDataRange().getValues();
+  const fecData = fecSheet.getDataRange().getValues();
+
+  const krefFile = cd_createTempCsv_(krefData, 'kref_export');
+  const fecFile = cd_createTempCsv_(fecData, 'fec_export');
+
+  // Make files publicly readable (temporary) for direct download
+  krefFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  fecFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+
+  // Get direct download URLs
+  const krefUrl = 'https://drive.google.com/uc?export=download&id=' + krefFile.getId();
+  const fecUrl = 'https://drive.google.com/uc?export=download&id=' + fecFile.getId();
+
+  // Create token
+  const token = dl_makeToken_();
+  const until = Date.now() + 30 * 60 * 1000; // 30 minutes
+
+  // Store file IDs and token
+  const props = PropertiesService.getDocumentProperties();
+  props.setProperty('diag_token', token);
+  props.setProperty('diag_token_until', String(until));
+  props.setProperty('diag_kref_fileId', krefFile.getId());
+  props.setProperty('diag_fec_fileId', fecFile.getId());
+
+  // Build download commands for CSVs, model, and script
+  const krefDownload = "curl -L -o kref.csv '" + krefUrl + "'";
+  const fecDownload = "curl -L -o fec.csv '" + fecUrl + "'";
+  const modelDownload = "curl -L -o model.json '" + webAppUrl + "?model=1'";
+  const scriptDownload = "curl -L -o diagnostic_matching.py '" + webAppUrl + "?script=1'";
+
+  const fullCmd =
+    krefDownload + " && \\\n" +
+    fecDownload + " && \\\n" +
+    modelDownload + " && \\\n" +
+    scriptDownload + " && \\\n" +
+    "python3 diagnostic_matching.py kref.csv fec.csv model.json --threshold " + threshold;
+
+  // Show command in dialog
+  const html = HtmlService.createHtmlOutput(
+    '<div style="font-family:monospace; padding:20px; word-wrap:break-word;">' +
+    '<h3>🔍 Matching Quality Diagnostic</h3>' +
+    '<p><strong>Step 1:</strong> Ensure you have the diagnostic script:</p>' +
+    '<pre style="background:#f5f5f5; padding:10px; overflow-x:auto;">' +
+    'cd Donor-matching-coaDing\n' +
+    'git pull  # Get latest version' +
+    '</pre>' +
+    '<p><strong>Step 2:</strong> Copy and paste this command into Terminal:</p>' +
+    '<textarea readonly style="width:100%; height:120px; font-family:monospace; font-size:11px;">' + fullCmd + '</textarea>' +
+    '<p style="margin-top:20px;"><strong>What this does:</strong></p>' +
+    '<ul style="font-size:13px;">' +
+    '<li>Downloads KREF and FEC data from Google Drive</li>' +
+    '<li>Downloads your trained model weights</li>' +
+    '<li>Runs diagnostic analysis</li>' +
+    '</ul>' +
+    '<p><strong>Expected Output:</strong></p>' +
+    '<ul style="font-size:13px;">' +
+    '<li>📊 Distribution histogram (should show bimodal pattern)</li>' +
+    '<li>⚠️ List of obvious misses (same address + similar names)</li>' +
+    '<li>📋 Example pairs at different confidence levels</li>' +
+    '<li>💡 Recommendations for improving the model</li>' +
+    '</ul>' +
+    '<p style="color:#666; font-size:12px;"><em>Downloads expire in 30 minutes</em></p>' +
+    '</div>'
+  ).setWidth(650).setHeight(550);
+
+  SpreadsheetApp.getUi().showModalDialog(html, 'Diagnostic Analysis');
+}
+
+/**
+ * Returns the diagnostic Python script
+ */
+function diagnostic_getScript_() {
+  const script = `#!/usr/bin/env python3
+"""
+Diagnostic tool for analyzing donor matching confidence distributions.
+
+This script helps identify issues with the matching model by:
+1. Analyzing the distribution of confidence scores
+2. Identifying cases where obvious matches are missed
+3. Finding high-confidence false positives
+4. Providing insights for model improvement
+
+Usage:
+    python3 diagnostic_matching.py <kref_csv> <fec_csv> <model_weights_json>
+"""
+
+import sys
+import json
+import csv
+import random
+from collections import defaultdict
+import math
+
+# Copy similarity functions from Dedupe
+def jaro_winkler(a, b):
+    a = (a or "").upper()
+    b = (b or "").upper()
+    if not a and not b: return 1.0
+    if not a or not b: return 0.0
+    if a == b: return 1.0
+
+    m_dist = max(0, max(len(a), len(b))//2 - 1)
+    a_m = [False]*len(a)
+    b_m = [False]*len(b)
+    matches = 0
+
+    for i in range(len(a)):
+        start = max(0, i - m_dist)
+        end = min(i + m_dist + 1, len(b))
+        for j in range(start, end):
+            if b_m[j] or a[i] != b[j]:
+                continue
+            a_m[i] = True
+            b_m[j] = True
+            matches += 1
+            break
+
+    if matches == 0: return 0.0
+
+    t = 0
+    k = 0
+    for i in range(len(a)):
+        if not a_m[i]:
+            continue
+        while not b_m[k]:
+            k += 1
+        if a[i] != b[k]:
+            t += 1
+        k += 1
+    t = t / 2.0
+
+    j = (matches/len(a) + matches/len(b) + (matches - t)/matches) / 3.0
+    l = 0
+    while l < 4 and l < len(a) and l < len(b) and a[l] == b[l]:
+        l += 1
+
+    return j + l*0.1*(1.0 - j)
+
+def levenshtein(s1, s2):
+    s1 = (s1 or "").upper()
+    s2 = (s2 or "").upper()
+    if len(s1) < len(s2):
+        return levenshtein(s2, s1)
+    if len(s2) == 0:
+        return len(s1)
+
+    previous_row = list(range(len(s2) + 1))
+    for i, c1 in enumerate(s1):
+        current_row = [i + 1]
+        for j, c2 in enumerate(s2):
+            insertions = previous_row[j + 1] + 1
+            deletions = current_row[j] + 1
+            substitutions = previous_row[j] + (c1 != c2)
+            current_row.append(min(insertions, deletions, substitutions))
+        previous_row = current_row
+
+    return previous_row[-1]
+
+def soundex(s):
+    s = (s or "").upper()
+    if not s:
+        return "0000"
+    s = "".join(c for c in s if c.isalpha())
+    if not s:
+        return "0000"
+
+    soundex_map = {
+        "B": "1", "F": "1", "P": "1", "V": "1",
+        "C": "2", "G": "2", "J": "2", "K": "2", "Q": "2", "S": "2", "X": "2", "Z": "2",
+        "D": "3", "T": "3",
+        "L": "4",
+        "M": "5", "N": "5",
+        "R": "6"
+    }
+
+    result = s[0]
+    prev_code = soundex_map.get(s[0], "0")
+    for char in s[1:]:
+        code = soundex_map.get(char, "0")
+        if code != "0" and code != prev_code:
+            result += code
+        prev_code = code
+        if len(result) == 4:
+            break
+
+    result = (result + "000")[:4]
+    return result
+
+def extract_house_number(addr):
+    """Extract house number from address."""
+    addr = (addr or "").strip()
+    if not addr:
+        return ""
+    parts = addr.split()
+    if parts and parts[0].isdigit():
+        return parts[0]
+    return ""
+
+def normalize_zip(z):
+    """Normalize zip to 5 digits."""
+    z = str(z or "").strip()
+    if "-" in z:
+        z = z.split("-")[0]
+    return z[:5] if z.isdigit() else ""
+
+def features(a, b):
+    """Calculate 14 features matching the training code exactly."""
+    # Extract fields
+    first_a = (a.get("DonorFirst","") or "").strip()
+    first_b = (b.get("DonorFirst","") or "").strip()
+    last_a = (a.get("DonorLast","") or "").strip()
+    last_b = (b.get("DonorLast","") or "").strip()
+    addr_a = (a.get("Address1","") or "").strip()
+    addr_b = (b.get("Address1","") or "").strip()
+    city_a = (a.get("City","") or "").strip().upper()
+    city_b = (b.get("City","") or "").strip().upper()
+    state_a = (a.get("State","") or "").strip().upper()
+    state_b = (b.get("State","") or "").strip().upper()
+    zip_a = normalize_zip(a.get("Zip",""))
+    zip_b = normalize_zip(b.get("Zip",""))
+    emp_a = (a.get("Employer","") or "").strip()
+    emp_b = (b.get("Employer","") or "").strip()
+    occ_a = (a.get("Occupation","") or "").strip()
+    occ_b = (b.get("Occupation","") or "").strip()
+
+    full_a = (first_a + " " + last_a).strip()
+    full_b = (first_b + " " + last_b).strip()
+
+    house_a = extract_house_number(addr_a)
+    house_b = extract_house_number(addr_b)
+
+    # Feature 0: nameSim - full name Jaro-Winkler
+    f0 = jaro_winkler(full_a, full_b)
+
+    # Feature 1: firstSim - first name Jaro-Winkler
+    f1 = jaro_winkler(first_a, first_b)
+
+    # Feature 2: firstInitEq - first initial exact match
+    f2 = 1.0 if (first_a and first_b and first_a[0].upper() == first_b[0].upper()) else 0.0
+
+    # Feature 3: lastSame - exact last name match
+    f3 = 1.0 if (last_a and last_b and last_a.upper() == last_b.upper()) else 0.0
+
+    # Feature 4: addrSim - address Jaro-Winkler
+    f4 = jaro_winkler(addr_a, addr_b)
+
+    # Feature 5: citySame - exact city match
+    f5 = 1.0 if (city_a and city_b and city_a == city_b) else 0.0
+
+    # Feature 6: stateSame - exact state match
+    f6 = 1.0 if (state_a and state_b and state_a == state_b) else 0.0
+
+    # Feature 7: zip5Same - exact zip match
+    f7 = 1.0 if (zip_a and zip_b and zip_a == zip_b) else 0.0
+
+    # Feature 8: zip3Same - zip prefix match
+    f8 = 1.0 if (zip_a and zip_b and len(zip_a) >= 3 and len(zip_b) >= 3 and zip_a[:3] == zip_b[:3]) else 0.0
+
+    # Feature 9: houseMatch - house number match
+    f9 = 1.0 if (house_a and house_b and house_a == house_b) else 0.0
+
+    # Feature 10: addrStrong - house + zip match
+    f10 = 1.0 if (f9 == 1.0 and f7 == 1.0) else 0.0
+
+    # Feature 11: empSim - employer Jaro-Winkler
+    f11 = jaro_winkler(emp_a, emp_b)
+
+    # Feature 12: occSim - occupation Jaro-Winkler
+    f12 = jaro_winkler(occ_a, occ_b)
+
+    # Feature 13: firstPairProb - first name association (set to 0 for diagnostic)
+    f13 = 0.0
+
+    return [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13]
+
+def predict(a, b, weights):
+    """Calculate match probability."""
+    x = features(a, b)
+    z = weights[-1]  # bias
+    for i in range(len(x)):
+        z += weights[i] * x[i]
+    return 1.0 / (1.0 + math.exp(-z))
+
+def load_csv(filename):
+    """Load CSV file."""
+    with open(filename, 'r') as f:
+        reader = csv.DictReader(f)
+        return list(reader)
+
+def analyze_distribution(data, weights, sample_size=1000):
+    """Analyze the confidence score distribution."""
+    print("\\n" + "="*60)
+    print("CONFIDENCE SCORE DISTRIBUTION ANALYSIS")
+    print("="*60)
+
+    # Sample pairs
+    print(f"\\nSampling {sample_size} random pairs...")
+    scores = []
+    examples_low = []  # < 0.3
+    examples_mid = []  # 0.4-0.6
+    examples_high = []  # > 0.7
+
+    for _ in range(sample_size):
+        a = random.choice(data)
+        b = random.choice(data)
+
+        if a == b:
+            continue
+
+        score = predict(a, b, weights)
+        scores.append(score)
+
+        # Collect examples
+        if score < 0.3 and len(examples_low) < 5:
+            examples_low.append((a, b, score))
+        elif 0.4 <= score <= 0.6 and len(examples_mid) < 5:
+            examples_mid.append((a, b, score))
+        elif score > 0.7 and len(examples_high) < 5:
+            examples_high.append((a, b, score))
+
+    # Statistics
+    scores.sort()
+    n = len(scores)
+    mean = sum(scores) / n
+    median = scores[n//2]
+
+    # Distribution buckets
+    buckets = {
+        "0.0-0.1": 0,
+        "0.1-0.2": 0,
+        "0.2-0.3": 0,
+        "0.3-0.4": 0,
+        "0.4-0.5": 0,
+        "0.5-0.6": 0,
+        "0.6-0.7": 0,
+        "0.7-0.8": 0,
+        "0.8-0.9": 0,
+        "0.9-1.0": 0
+    }
+
+    for score in scores:
+        bucket_idx = min(int(score * 10), 9)
+        bucket_key = f"{bucket_idx/10:.1f}-{(bucket_idx+1)/10:.1f}"
+        buckets[bucket_key] += 1
+
+    # Print statistics
+    print(f"\\nStatistics:")
+    print(f"  Mean:   {mean:.3f}")
+    print(f"  Median: {median:.3f}")
+    print(f"  Min:    {scores[0]:.3f}")
+    print(f"  Max:    {scores[-1]:.3f}")
+
+    print(f"\\nDistribution (expecting bimodal - peaks at <0.3 and >0.7):")
+    max_count = max(buckets.values())
+    for bucket, count in buckets.items():
+        pct = count / n * 100
+        bar_len = int(count / max_count * 50)
+        bar = "█" * bar_len
+        print(f"  {bucket}: {bar} {count:4d} ({pct:5.1f}%)")
+
+    # Check for bimodal
+    low_conf = sum(1 for s in scores if s < 0.3)
+    mid_conf = sum(1 for s in scores if 0.3 <= s <= 0.7)
+    high_conf = sum(1 for s in scores if s > 0.7)
+
+    print(f"\\nBimodal Analysis:")
+    print(f"  Low confidence  (<0.3): {low_conf:4d} ({low_conf/n*100:5.1f}%)")
+    print(f"  Mid confidence (0.3-0.7): {mid_conf:4d} ({mid_conf/n*100:5.1f}%)")
+    print(f"  High confidence (>0.7): {high_conf:4d} ({high_conf/n*100:5.1f}%)")
+
+    if mid_conf > low_conf and mid_conf > high_conf:
+        print("\\n  ⚠️  WARNING: Distribution is NOT bimodal!")
+        print("      Most scores are in the uncertain middle range.")
+        print("      This suggests the model is not confident in its predictions.")
+    else:
+        print("\\n  ✓  Distribution appears bimodal (good!)")
+
+    # Print example pairs
+    print("\\n" + "="*60)
+    print("EXAMPLE PAIRS")
+    print("="*60)
+
+    def print_pair(a, b, score, label):
+        print(f"\\n{label} (confidence: {score:.3f})")
+        print(f"  Person A: {a.get('DonorFirst','')} {a.get('DonorLast','')} | {a.get('Address1','')} | {a.get('City','')} {a.get('Zip','')}")
+        print(f"  Person B: {b.get('DonorFirst','')} {b.get('DonorLast','')} | {b.get('Address1','')} | {b.get('City','')} {b.get('Zip','')}")
+
+        # Show feature breakdown
+        feat = features(a, b)
+        print(f"  Features: name={feat[0]:.2f}, first={feat[1]:.2f}, lastSame={feat[3]:.0f}, addr={feat[4]:.2f}, zip={feat[7]:.0f}, house={feat[9]:.0f}")
+
+    print("\\n--- LOW CONFIDENCE EXAMPLES (should be clear non-matches) ---")
+    for a, b, score in examples_low:
+        print_pair(a, b, score, "Low confidence")
+
+    print("\\n--- MID CONFIDENCE EXAMPLES (uncertain) ---")
+    for a, b, score in examples_mid:
+        print_pair(a, b, score, "Mid confidence")
+
+    print("\\n--- HIGH CONFIDENCE EXAMPLES (should be clear matches) ---")
+    for a, b, score in examples_high:
+        print_pair(a, b, score, "High confidence")
+
+def find_obvious_misses(data, weights, threshold=0.7):
+    """Find pairs that should obviously match but don't."""
+    print("\\n" + "="*60)
+    print("SEARCHING FOR OBVIOUS MISSES")
+    print("="*60)
+
+    # Look for same address + similar name
+    print("\\nLooking for pairs with:")
+    print("  - Exact same address")
+    print("  - Similar last name (soundex match)")
+    print(f"  - But confidence < {threshold}")
+
+    address_index = defaultdict(list)
+    for donor in data:
+        addr = (donor.get("Address1","") or "").strip().upper()
+        if addr:
+            address_index[addr].append(donor)
+
+    misses = []
+    checked = 0
+
+    for addr, donors in address_index.items():
+        if len(donors) < 2:
+            continue
+
+        for i in range(len(donors)):
+            for j in range(i+1, len(donors)):
+                a = donors[i]
+                b = donors[j]
+
+                # Check if last names sound similar
+                last_a = a.get("DonorLast","")
+                last_b = b.get("DonorLast","")
+
+                if soundex(last_a) == soundex(last_b):
+                    score = predict(a, b, weights)
+                    checked += 1
+
+                    if score < threshold:
+                        misses.append((a, b, score))
+
+    print(f"\\nChecked {checked} pairs with same address + phonetic last name match")
+    print(f"Found {len(misses)} with confidence < {threshold}")
+
+    if misses:
+        print(f"\\nShowing first 10 misses:")
+        for a, b, score in misses[:10]:
+            print(f"\\n  Confidence: {score:.3f} (should be >{threshold}!)")
+            print(f"    Person A: {a.get('DonorFirst','')} {a.get('DonorLast','')} | {a.get('Address1','')}")
+            print(f"    Person B: {b.get('DonorFirst','')} {b.get('DonorLast','')} | {b.get('Address1','')}")
+            feat = features(a, b)
+            print(f"    Features: name={feat[0]:.2f}, first={feat[1]:.2f}, lastSame={feat[3]:.0f}, addr={feat[4]:.2f}")
+    else:
+        print("\\n  ✓ No obvious misses found!")
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description='Diagnostic tool for donor matching')
+    parser.add_argument('kref_file', help='KREF CSV file')
+    parser.add_argument('fec_file', help='FEC CSV file')
+    parser.add_argument('model_file', help='Model weights JSON file')
+    parser.add_argument('--threshold', type=float, default=0.7, help='Match confidence threshold (default: 0.7)')
+
+    args = parser.parse_args()
+
+    print("Loading data...")
+    kref_data = load_csv(args.kref_file)
+    fec_data = load_csv(args.fec_file)
+    combined = kref_data + fec_data
+
+    print(f"Loaded {len(kref_data)} KREF records")
+    print(f"Loaded {len(fec_data)} FEC records")
+    print(f"Total: {len(combined)} records")
+
+    print("\\nLoading model weights...")
+    with open(args.model_file, 'r') as f:
+        model_data = json.load(f)
+        weights = model_data.get("weights")
+
+    if not weights:
+        print("ERROR: No weights found in model file!")
+        sys.exit(1)
+
+    print(f"Loaded model with {len(weights)} weights")
+    print(f"Using match threshold: {args.threshold}")
+
+    # Run diagnostics
+    analyze_distribution(combined, weights, sample_size=2000)
+    find_obvious_misses(combined, weights, threshold=args.threshold)
+
+    print("\\n" + "="*60)
+    print("DIAGNOSTIC COMPLETE")
+    print("="*60)
+
+if __name__ == "__main__":
+    main()
+`;
+
+  return ContentService.createTextOutput(script).setMimeType(ContentService.MimeType.TEXT);
+}
+
 /**
  * Receives matching results and creates/appends to CD_To_Upload sheet
  * Supports batched uploads to handle large datasets
@@ -3827,13 +4718,110 @@ function cd_getMatcherScript_() {
     '# Load existing model weights',
     'print("\\nChecking for trained model...")',
     'model_data = json.loads(http_get(args.model).decode("utf-8"))',
-    'w = model_data.get("weights")',
+    'old_w = model_data.get("weights")',
     '',
-    'if not w:',
+    'if not old_w:',
     '    print("ERROR: No trained model found. Please run donor matching first to train the model.")',
     '    sys.exit(1)',
     '',
-    'print(f"Using existing model with {len(w)} weights")',
+    '# Handle model version compatibility',
+    'if len(old_w) == 16:',
+    '    print("  Detected old model format (15 features + bias)")',
+    '    print("  Upgrading to new model format (17 features + bias)")',
+    '    print("  Adding 2 new geographic features (zip, city)")',
+    '    # Expand weights: old had 15 features + bias, new has 17 features + bias',
+    '    # Insert zeros at positions 5 and 6 (zip and city features)',
+    '    w = old_w[:5] + [0.0, 0.0] + old_w[5:]',
+    '    print(f"  Expanded weights from {len(old_w)} to {len(w)} elements")',
+    'elif len(old_w) == 18:',
+    '    print("  Model already in new format (17 features + bias)")',
+    '    w = old_w',
+    'else:',
+    '    print(f"  ERROR: Unexpected weight count: {len(old_w)}")',
+    '    print(f"  Expected 16 (old format) or 18 (new format)")',
+    '    sys.exit(1)',
+    '',
+    'print(f"Using model with {len(w)} weights")',
+    '',
+    '# Load learned associations from training data',
+    'print("\\nLoading learned associations from training data...")',
+    'try:',
+    '    training_url = args.model.replace("model=1", "training=1")',
+    '    training_json = http_get(training_url).decode("utf-8")',
+    '    training_data = json.loads(training_json)',
+    '    training_rows = training_data.get("training_rows", [])',
+    '    ',
+    '    # Learn associations using same function as donor dedup',
+    '    def learn_associations_cd(training_rows):',
+    '        """Analyze matched pairs to learn which terms co-occur."""',
+    '        first_cooccur = defaultdict(lambda: defaultdict(int))',
+    '        last_cooccur = defaultdict(lambda: defaultdict(int))',
+    '        address_cooccur = defaultdict(lambda: defaultdict(int))',
+    '        employer_cooccur = defaultdict(lambda: defaultdict(int))',
+    '        occupation_cooccur = defaultdict(lambda: defaultdict(int))',
+    '        ',
+    '        for row in training_rows:',
+    '            if row.get("label") != 1:  # Only learn from matches',
+    '                continue',
+    '            ',
+    '            def normalize(val):',
+    '                if not val: return "EMPTY"',
+    '                s = str(val).strip().upper()',
+    '                if s in ["", "N/A", "NA", "NULL", "NONE", "UNKNOWN"]: return "EMPTY"',
+    '                return s',
+    '            ',
+    '            first_a = normalize(row["a"].get("first", ""))',
+    '            first_b = normalize(row["b"].get("first", ""))',
+    '            last_a = normalize(row["a"].get("last", ""))',
+    '            last_b = normalize(row["b"].get("last", ""))',
+    '            addr_a = normalize(row["a"].get("addr", ""))',
+    '            addr_b = normalize(row["b"].get("addr", ""))',
+    '            emp_a = normalize(row["a"].get("employer", ""))',
+    '            emp_b = normalize(row["b"].get("employer", ""))',
+    '            occ_a = normalize(row["a"].get("occupation", ""))',
+    '            occ_b = normalize(row["b"].get("occupation", ""))',
+    '            ',
+    '            if first_a != first_b:',
+    '                first_cooccur[first_a][first_b] += 1',
+    '                first_cooccur[first_b][first_a] += 1',
+    '            if last_a != last_b:',
+    '                last_cooccur[last_a][last_b] += 1',
+    '                last_cooccur[last_b][last_a] += 1',
+    '            if addr_a != addr_b:',
+    '                address_cooccur[addr_a][addr_b] += 1',
+    '                address_cooccur[addr_b][addr_a] += 1',
+    '            if emp_a != emp_b:',
+    '                employer_cooccur[emp_a][emp_b] += 1',
+    '                employer_cooccur[emp_b][emp_a] += 1',
+    '            if occ_a != occ_b:',
+    '                occupation_cooccur[occ_a][occ_b] += 1',
+    '                occupation_cooccur[occ_b][occ_a] += 1',
+    '        ',
+    '        return (dict(first_cooccur), dict(last_cooccur), dict(address_cooccur),',
+    '                dict(employer_cooccur), dict(occupation_cooccur))',
+    '    ',
+    '    (first_associations, last_associations, address_associations,',
+    '     employer_associations, occupation_associations) = learn_associations_cd(training_rows)',
+    '    ',
+    '    first_pairs = sum(len(v) for v in first_associations.values()) // 2',
+    '    last_pairs = sum(len(v) for v in last_associations.values()) // 2',
+    '    addr_pairs = sum(len(v) for v in address_associations.values()) // 2',
+    '    emp_pairs = sum(len(v) for v in employer_associations.values()) // 2',
+    '    occ_pairs = sum(len(v) for v in occupation_associations.values()) // 2',
+    '    ',
+    '    print(f"  Learned {first_pairs} first name associations")',
+    '    print(f"  Learned {last_pairs} last name associations")',
+    '    print(f"  Learned {addr_pairs} address associations")',
+    '    print(f"  Learned {emp_pairs} employer associations")',
+    '    print(f"  Learned {occ_pairs} occupation associations")',
+    'except Exception as e:',
+    '    print(f"  Warning: Could not load training data: {e}")',
+    '    print(f"  Proceeding without learned associations")',
+    '    first_associations = {}',
+    '    last_associations = {}',
+    '    address_associations = {}',
+    '    employer_associations = {}',
+    '    occupation_associations = {}',
     '',
     '# Parse merge output into donor groups',
     'print("\\nGrouping donations by DonorID...")',
@@ -3882,14 +4870,199 @@ function cd_getMatcherScript_() {
     '        else: break',
     '    return jaro + prefix * 0.1 * (1 - jaro)',
     '',
-    '# Features for matching',
+    '# Levenshtein distance (edit distance)',
+    'def levenshtein(s1, s2):',
+    '    s1 = (s1 or "").upper()',
+    '    s2 = (s2 or "").upper()',
+    '    if len(s1) < len(s2):',
+    '        return levenshtein(s2, s1)',
+    '    if len(s2) == 0:',
+    '        return len(s1)',
+    '    previous_row = range(len(s2) + 1)',
+    '    for i, c1 in enumerate(s1):',
+    '        current_row = [i + 1]',
+    '        for j, c2 in enumerate(s2):',
+    '            insertions = previous_row[j + 1] + 1',
+    '            deletions = current_row[j] + 1',
+    '            substitutions = previous_row[j] + (c1 != c2)',
+    '            current_row.append(min(insertions, deletions, substitutions))',
+    '        previous_row = current_row',
+    '    return previous_row[-1]',
+    '',
+    '# Soundex phonetic encoding',
+    'def soundex(s):',
+    '    s = (s or "").upper()',
+    '    if not s:',
+    '        return "0000"',
+    '    # Remove non-alphabetic characters',
+    '    s = "".join(c for c in s if c.isalpha())',
+    '    if not s:',
+    '        return "0000"',
+    '    # Soundex mapping',
+    '    soundex_map = {',
+    '        "B": "1", "F": "1", "P": "1", "V": "1",',
+    '        "C": "2", "G": "2", "J": "2", "K": "2", "Q": "2", "S": "2", "X": "2", "Z": "2",',
+    '        "D": "3", "T": "3",',
+    '        "L": "4",',
+    '        "M": "5", "N": "5",',
+    '        "R": "6"',
+    '    }',
+    '    # Keep first letter',
+    '    result = s[0]',
+    '    prev_code = soundex_map.get(s[0], "0")',
+    '    for char in s[1:]:',
+    '        code = soundex_map.get(char, "0")',
+    '        if code != "0" and code != prev_code:',
+    '            result += code',
+    '        prev_code = code',
+    '        if len(result) == 4:',
+    '            break',
+    '    # Pad with zeros',
+    '    result = (result + "000")[:4]',
+    '    return result',
+    '',
+    '# Normalize addresses for matching',
+    'def normalize_address(addr):',
+    '    import re',
+    '    addr = (addr or "").strip().upper()',
+    '    if not addr:',
+    '        return addr',
+    '    # Remove punctuation',
+    '    addr = re.sub(r"[.,#;]", "", addr)',
+    '    # Expand common abbreviations',
+    '    abbrev_map = [',
+    '        (r"\\bST\\b", "STREET"),',
+    '        (r"\\bAVE\\b", "AVENUE"),',
+    '        (r"\\bAVENU\\b", "AVENUE"),',
+    '        (r"\\bRD\\b", "ROAD"),',
+    '        (r"\\bDR\\b", "DRIVE"),',
+    '        (r"\\bBLVD\\b", "BOULEVARD"),',
+    '        (r"\\bLN\\b", "LANE"),',
+    '        (r"\\bCT\\b", "COURT"),',
+    '        (r"\\bPL\\b", "PLACE"),',
+    '        (r"\\bPKWY\\b", "PARKWAY"),',
+    '        (r"\\bCIR\\b", "CIRCLE"),',
+    '        (r"\\bTER\\b", "TERRACE"),',
+    '        (r"\\bTRL\\b", "TRAIL"),',
+    '        (r"\\bHWY\\b", "HIGHWAY"),',
+    '        (r"\\bAPT\\b", "APARTMENT"),',
+    '        (r"\\bN\\b", "NORTH"),',
+    '        (r"\\bS\\b", "SOUTH"),',
+    '        (r"\\bE\\b", "EAST"),',
+    '        (r"\\bW\\b", "WEST"),',
+    '    ]',
+    '    for pattern, replacement in abbrev_map:',
+    '        addr = re.sub(pattern, replacement, addr)',
+    '    # Normalize whitespace',
+    '    addr = " ".join(addr.split())',
+    '    return addr',
+    '',
+    '# Check if two terms are associated (learned from training)',
+    'def check_association(t1, t2, associations, threshold=2):',
+    '    """Check if two terms co-occur in training data."""',
+    '    if not associations:',
+    '        return False',
+    '    ',
+    '    def normalize(val):',
+    '        if not val: return "EMPTY"',
+    '        s = str(val).strip().upper()',
+    '        if s in ["", "N/A", "NA", "NULL", "NONE", "UNKNOWN"]: return "EMPTY"',
+    '        return s',
+    '    ',
+    '    t1 = normalize(t1)',
+    '    t2 = normalize(t2)',
+    '    ',
+    '    if t1 == t2: return True  # Exact match',
+    '    ',
+    '    # Check if terms co-occur in training data',
+    '    if t1 in associations and t2 in associations[t1]:',
+    '        return associations[t1][t2] >= threshold',
+    '    ',
+    '    return False',
+    '',
+    '# Enhanced similarity using multiple algorithms',
+    'def enhanced_similarity(str1, str2, field_type, associations=None):',
+    '    """',
+    '    Multi-algorithm similarity scoring with learned associations.',
+    '    field_type: "name", "first", "last", "address", "employer", "occupation"',
+    '    """',
+    '    str1 = (str1 or "").strip().upper()',
+    '    str2 = (str2 or "").strip().upper()',
+    '    ',
+    '    # Check learned associations first',
+    '    if associations:',
+    '        if check_association(str1, str2, associations):',
+    '            return 0.98',
+    '    ',
+    '    # Exact match',
+    '    if str1 == str2:',
+    '        return 1.0',
+    '    ',
+    '    # Empty strings',
+    '    if not str1 and not str2:',
+    '        return 1.0',
+    '    if not str1 or not str2:',
+    '        return 0.0',
+    '    ',
+    '    # 1. Jaro-Winkler (good for typos, prefix matching)',
+    '    jw_score = jaro_winkler(str1, str2)',
+    '    ',
+    '    # 2. Levenshtein/edit distance (good for insertions/deletions)',
+    '    max_len = max(len(str1), len(str2))',
+    '    lev_distance = levenshtein(str1, str2)',
+    '    lev_score = 1.0 - (lev_distance / max_len) if max_len > 0 else 1.0',
+    '    ',
+    '    # 3. Token-based similarity (good for word order, abbreviations)',
+    '    tokens1 = set(str1.split())',
+    '    tokens2 = set(str2.split())',
+    '    token_jaccard = len(tokens1 & tokens2) / len(tokens1 | tokens2) if (tokens1 or tokens2) else 0.0',
+    '    ',
+    '    # 4. Combine based on field type',
+    '    if field_type in ["name", "first", "last"]:',
+    '        # Add phonetic matching for names',
+    '        phonetic_match = 1.0 if soundex(str1) == soundex(str2) else 0.0',
+    '        # Weighted combination for names',
+    '        base_score = jw_score * 0.35 + lev_score * 0.25 + token_jaccard * 0.2 + phonetic_match * 0.2',
+    '        # Strong phonetic match is good evidence',
+    '        return max(base_score, phonetic_match * 0.8)',
+    '    elif field_type == "address":',
+    '        # For addresses, prioritize token matching (handles word order)',
+    '        return jw_score * 0.4 + lev_score * 0.3 + token_jaccard * 0.3',
+    '    else:',
+    '        # For other fields (employer, occupation)',
+    '        return jw_score * 0.5 + lev_score * 0.3 + token_jaccard * 0.2',
+    '',
+    '# Features for matching (using enhanced similarity with associations)',
     'def features(donor_rec, cd_rec):',
-    '    f0 = jaro_winkler(donor_rec.get("DonorFirst",""), cd_rec.get("NameFirst",""))',
-    '    f1 = jaro_winkler(donor_rec.get("DonorLast",""), cd_rec.get("NameLast",""))',
-    '    f2 = jaro_winkler(donor_rec.get("Address1",""), cd_rec.get("DeliveryLine1",""))',
-    '    f3 = jaro_winkler(donor_rec.get("Employer",""), cd_rec.get("Employer",""))',
-    '    f4 = jaro_winkler(donor_rec.get("Occupation",""), cd_rec.get("Occupation",""))',
-    '    return [f0, f1, f2, f3, f4,',
+    '    # Use enhanced similarity with multiple algorithms and learned associations',
+    '    # Full name (first + last combined)',
+    '    donor_name = (donor_rec.get("DonorFirst","") + " " + donor_rec.get("DonorLast","")).strip()',
+    '    cd_name = (cd_rec.get("NameFirst","") + " " + cd_rec.get("NameLast","")).strip()',
+    '    f0 = enhanced_similarity(donor_name, cd_name, "name", first_associations)',
+    '    ',
+    '    # Last name',
+    '    f1 = enhanced_similarity(donor_rec.get("DonorLast",""), cd_rec.get("NameLast",""), "last", last_associations)',
+    '    ',
+    '    # Address',
+    '    f2 = enhanced_similarity(donor_rec.get("Address1",""), cd_rec.get("DeliveryLine1",""), "address", address_associations)',
+    '    ',
+    '    # Employer',
+    '    f3 = enhanced_similarity(donor_rec.get("Employer",""), cd_rec.get("Employer",""), "employer", employer_associations)',
+    '    ',
+    '    # Occupation',
+    '    f4 = enhanced_similarity(donor_rec.get("Occupation",""), cd_rec.get("Occupation",""), "occupation", occupation_associations)',
+    '    ',
+    '    # Geographic exact matches',
+    '    zip_donor = (donor_rec.get("Zip","") or "").strip()[:5]',
+    '    zip_cd = (cd_rec.get("NameZip","") or "").strip()[:5]',
+    '    f5 = 1.0 if (zip_donor and zip_cd and zip_donor == zip_cd) else 0.0',
+    '    ',
+    '    city_donor = (donor_rec.get("City","") or "").strip().upper()',
+    '    city_cd = (cd_rec.get("NameCity","") or "").strip().upper()',
+    '    f6 = 1.0 if (city_donor and city_cd and city_donor == city_cd) else 0.0',
+    '    ',
+    '    # Interaction features',
+    '    return [f0, f1, f2, f3, f4, f5, f6,',
     '            f0*f1, f0*f2, f0*f3, f0*f4,',
     '            f1*f2, f1*f3, f1*f4,',
     '            f2*f3, f2*f4, f3*f4]',
@@ -3933,7 +5106,8 @@ function cd_getMatcherScript_() {
     '        # Create exact match key from normalized fields',
     '        first = (cd_rec.get("NameFirst", "") or "").strip().upper()',
     '        last = (cd_rec.get("NameLast", "") or "").strip().upper()',
-    '        addr = (cd_rec.get("DeliveryLine1", "") or "").strip().upper()',
+    '        # Use enhanced address normalization (handles abbreviations)',
+    '        addr = normalize_address(cd_rec.get("DeliveryLine1", ""))',
     '        if first and last and addr:',
     '            exact_key = (first, last, addr)',
     '            if exact_key not in cd_exact_index:',
@@ -3957,7 +5131,8 @@ function cd_getMatcherScript_() {
     '    donor_rec = records[0]',
     '    first = (donor_rec.get("DonorFirst", "") or "").strip().upper()',
     '    last = (donor_rec.get("DonorLast", "") or "").strip().upper()',
-    '    addr = (donor_rec.get("Address1", "") or "").strip().upper()',
+    '    # Use enhanced address normalization (handles abbreviations)',
+    '    addr = normalize_address(donor_rec.get("Address1", ""))',
     '',
     '    exact_key = (first, last, addr)',
     '    if exact_key in cd_exact_index:',
