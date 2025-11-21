@@ -322,6 +322,20 @@ const UNIFIED_MATCHING_MODULE = [
   '        return True',
   '    return False',
   '',
+  'def load_nickname_db(base_url):',
+  '    """Load nickname database from web app endpoint."""',
+  '    global nickname_db',
+  '    try:',
+  '        nicknames_url = base_url.replace("model=1", "nicknames=1")',
+  '        nicknames_json = http_get(nicknames_url).decode("utf-8")',
+  '        nicknames_data = json.loads(nicknames_json)',
+  '        nickname_db = nicknames_data.get("nicknames", {})',
+  '        total_nicknames = sum(len(v) for v in nickname_db.values()) // 2',
+  '        print(f"Loaded {total_nicknames} nickname pairs from database")',
+  '    except Exception as e:',
+  '        print(f"Warning: Could not load nicknames: {e}")',
+  '        nickname_db = {}',
+  '',
   '# ----------------------------',
   '# FEATURE CALCULATION (17 features)',
   '# ----------------------------',
@@ -1889,17 +1903,7 @@ function doGet(e) {
       'print(f"Using prediction threshold: {predict_threshold}")',
       '',
       '# Load nickname database',
-      'global nickname_db',
-      'try:',
-      '    nicknames_url = job["modelUrl"].replace("model=1", "nicknames=1")',
-      '    nicknames_json = http_get(nicknames_url).decode("utf-8")',
-      '    nicknames_data = json.loads(nicknames_json)',
-      '    nickname_db = nicknames_data.get("nicknames", {})',
-      '    total_nicknames = sum(len(v) for v in nickname_db.values()) // 2',
-      '    print(f"Loaded {total_nicknames} nickname pairs from database")',
-      'except Exception as e:',
-      '    print(f"Warning: Could not load nicknames: {e}")',
-      '    nickname_db = {}',
+      'load_nickname_db(job["modelUrl"])',
       '',
       'hdrK, rowsK = parse_csv(http_get(job["krefUrl"]).decode("utf-8"))',
       'hdrF, rowsF = parse_csv(http_get(job["fecUrl"]).decode("utf-8"))',
@@ -4517,6 +4521,12 @@ import random
 from collections import defaultdict
 import math
 import re
+import urllib.request
+
+# Simple http_get for nickname loading
+def http_get(url):
+    with urllib.request.urlopen(url, timeout=30) as r:
+        return r.read()
 
 ` + UNIFIED_MATCHING_MODULE + `
 
@@ -4706,32 +4716,20 @@ def find_obvious_misses(data, weights, threshold=0.7):
 
 def main():
     import argparse
-    import urllib.request
     parser = argparse.ArgumentParser(description='Diagnostic tool for donor matching')
     parser.add_argument('kref_file', help='KREF CSV file')
     parser.add_argument('fec_file', help='FEC CSV file')
     parser.add_argument('model_file', help='Model weights JSON file')
     parser.add_argument('--threshold', type=float, default=0.7, help='Match confidence threshold (default: 0.7)')
-    parser.add_argument('--nicknames-url', help='URL to fetch nicknames (e.g., webapp_url?nicknames=1)')
+    parser.add_argument('--webapp-url', help='Web app base URL (e.g., webapp_url?model=1)')
 
     args = parser.parse_args()
 
     # Load nickname database if URL provided
-    global nickname_db
-    if args.nicknames_url:
-        try:
-            print("Loading nickname database...")
-            with urllib.request.urlopen(args.nicknames_url, timeout=30) as r:
-                nicknames_data = json.loads(r.read().decode("utf-8"))
-                nickname_db = nicknames_data.get("nicknames", {})
-                total_nicknames = sum(len(v) for v in nickname_db.values()) // 2
-                print(f"Loaded {total_nicknames} nickname pairs from database")
-        except Exception as e:
-            print(f"Warning: Could not load nicknames: {e}")
-            nickname_db = {}
+    if args.webapp_url:
+        load_nickname_db(args.webapp_url)
     else:
-        print("No nickname URL provided, skipping nickname database")
-        nickname_db = {}
+        print("No webapp URL provided, skipping nickname database")
 
     print("Loading data...")
     kref_data = load_csv(args.kref_file)
@@ -4964,17 +4962,7 @@ function cd_getMatcherScript_() {
     'print(f"Using model with {len(w)} weights")',
     '',
     '# Load nickname database',
-    'global nickname_db',
-    'try:',
-    '    nicknames_url = args.model.replace("model=1", "nicknames=1")',
-    '    nicknames_json = http_get(nicknames_url).decode("utf-8")',
-    '    nicknames_data = json.loads(nicknames_json)',
-    '    nickname_db = nicknames_data.get("nicknames", {})',
-    '    total_nicknames = sum(len(v) for v in nickname_db.values()) // 2',
-    '    print(f"Loaded {total_nicknames} nickname pairs from database")',
-    'except Exception as e:',
-    '    print(f"Warning: Could not load nicknames: {e}")',
-    '    nickname_db = {}',
+    'load_nickname_db(args.model)',
     '',
     '# Load learned associations from training data',
     'print("\\nLoading learned associations from training data...")',
