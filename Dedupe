@@ -4706,13 +4706,32 @@ def find_obvious_misses(data, weights, threshold=0.7):
 
 def main():
     import argparse
+    import urllib.request
     parser = argparse.ArgumentParser(description='Diagnostic tool for donor matching')
     parser.add_argument('kref_file', help='KREF CSV file')
     parser.add_argument('fec_file', help='FEC CSV file')
     parser.add_argument('model_file', help='Model weights JSON file')
     parser.add_argument('--threshold', type=float, default=0.7, help='Match confidence threshold (default: 0.7)')
+    parser.add_argument('--nicknames-url', help='URL to fetch nicknames (e.g., webapp_url?nicknames=1)')
 
     args = parser.parse_args()
+
+    # Load nickname database if URL provided
+    global nickname_db
+    if args.nicknames_url:
+        try:
+            print("Loading nickname database...")
+            with urllib.request.urlopen(args.nicknames_url, timeout=30) as r:
+                nicknames_data = json.loads(r.read().decode("utf-8"))
+                nickname_db = nicknames_data.get("nicknames", {})
+                total_nicknames = sum(len(v) for v in nickname_db.values()) // 2
+                print(f"Loaded {total_nicknames} nickname pairs from database")
+        except Exception as e:
+            print(f"Warning: Could not load nicknames: {e}")
+            nickname_db = {}
+    else:
+        print("No nickname URL provided, skipping nickname database")
+        nickname_db = {}
 
     print("Loading data...")
     kref_data = load_csv(args.kref_file)
@@ -4943,6 +4962,19 @@ function cd_getMatcherScript_() {
     '    sys.exit(1)',
     '',
     'print(f"Using model with {len(w)} weights")',
+    '',
+    '# Load nickname database',
+    'global nickname_db',
+    'try:',
+    '    nicknames_url = args.model.replace("model=1", "nicknames=1")',
+    '    nicknames_json = http_get(nicknames_url).decode("utf-8")',
+    '    nicknames_data = json.loads(nicknames_json)',
+    '    nickname_db = nicknames_data.get("nicknames", {})',
+    '    total_nicknames = sum(len(v) for v in nickname_db.values()) // 2',
+    '    print(f"Loaded {total_nicknames} nickname pairs from database")',
+    'except Exception as e:',
+    '    print(f"Warning: Could not load nicknames: {e}")',
+    '    nickname_db = {}',
     '',
     '# Load learned associations from training data',
     'print("\\nLoading learned associations from training data...")',
