@@ -3166,9 +3166,11 @@ function donor_applyResult_trainingRows_(rows) {
       label,
       String(a.origin || ''), Number(a.row || 2), String(a.first || ''), String(a.last || ''), String(a.addr || ''), String(a.city || ''), String(a.state || ''), String(a.zip || ''), String(a.employer || ''), String(a.occupation || ''),
       String(b.origin || ''), Number(b.row || 2), String(b.first || ''), String(b.last || ''), String(b.addr || ''), String(b.city || ''), String(b.state || ''), String(b.zip || ''), String(b.employer || ''), String(b.occupation || ''),
-      Number(f.nameSim||0), Number(f.firstSim||0), Number(f.firstInitEq||0), Number(f.lastSame||0),
-      Number(f.addrSim||0), Number(f.citySame||0), Number(f.stateSame||0), Number(f.zip5Same||0), Number(f.zip3Same||0), Number(f.houseMatch||0), Number(f.addrStrong||0),
-      Number(f.empSim||0), Number(f.occSim||0), Number(f.firstPairProb||0)
+      Number(f.nameSim||0), Number(f.lastSim||0), Number(f.addrSim||0), Number(f.empSim||0), Number(f.occSim||0),
+      Number(f.zipMatch||0), Number(f.cityMatch||0),
+      Number(f.name_last||0), Number(f.name_addr||0), Number(f.name_emp||0), Number(f.name_occ||0),
+      Number(f.last_addr||0), Number(f.last_emp||0), Number(f.last_occ||0),
+      Number(f.addr_emp||0), Number(f.addr_occ||0), Number(f.emp_occ||0)
     ]);
   }
   if (data.length) sh.getRange(lastRow + 1, 1, data.length, DONOR_TRAINING_HEADER.length).setValues(data);
