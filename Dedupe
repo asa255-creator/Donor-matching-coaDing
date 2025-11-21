@@ -2420,7 +2420,8 @@ function doGet(e) {
       '        return False',
       '    ',
       '    # Generate candidate pairs from current selected set',
-      '    if round_num == 1:',
+      '    # Skip cold start if we loaded existing training data',
+      '    if round_num == 1 and loaded_training_count == 0:',
       '        ask = 15',
       '        batch = cold_start_candidates(selected_donors, ask, seen_pairs, donor_usage_count)',
       '    else:',
@@ -3149,12 +3150,16 @@ function doPost(e) {
 /** Apply helpers for POST payloads */
 function donor_applyResult_trainingRows_(rows) {
   const sh = donor_getOrCreateSheet_(DONOR_CFG.trainingSheet);
-  let lastRow = sh.getLastRow();
-  if (lastRow === 0) {
-    sh.getRange(1, 1, 1, DONOR_TRAINING_HEADER.length).setValues([DONOR_TRAINING_HEADER]);
-    sh.setFrozenRows(1);
-    lastRow = 1;
-  }
+
+  // Clear the sheet and rewrite everything to remove duplicates
+  sh.clear();
+  sh.getRange(1, 1, 1, DONOR_TRAINING_HEADER.length).setValues([DONOR_TRAINING_HEADER]);
+  sh.setFrozenRows(1);
+  sh.getRange(1, 1, 1, DONOR_TRAINING_HEADER.length)
+    .setFontWeight('bold')
+    .setBackground('#4285f4')
+    .setFontColor('#ffffff');
+
   const data = [];
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
@@ -3173,7 +3178,7 @@ function donor_applyResult_trainingRows_(rows) {
       Number(f.addr_emp||0), Number(f.addr_occ||0), Number(f.emp_occ||0)
     ]);
   }
-  if (data.length) sh.getRange(lastRow + 1, 1, data.length, DONOR_TRAINING_HEADER.length).setValues(data);
+  if (data.length) sh.getRange(2, 1, data.length, DONOR_TRAINING_HEADER.length).setValues(data);
 }
 
 function donor_applyResult_modelWeights_(weights) {
