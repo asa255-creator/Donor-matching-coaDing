@@ -4526,22 +4526,53 @@ This script helps identify issues with the matching model by:
 4. Providing insights for model improvement
 
 Usage:
-    python3 diagnostic_matching.py <kref_csv> <fec_csv> <model_weights_json>
+    python3 diagnostic_matching.py --bundle BUNDLE_URL [--threshold 0.7]
 """
 
 import sys
 import json
 import csv
+import io
 import random
 from collections import defaultdict
 import math
 import re
 import urllib.request
+import time
 
-# Simple http_get for nickname loading
+# HTTP helpers with retry logic (same as training/CD matcher)
 def http_get(url):
-    with urllib.request.urlopen(url, timeout=30) as r:
-        return r.read()
+    max_retries = 4
+    delays = [2, 4, 8, 16]
+
+    url_display = url if len(url) <= 100 else url[:97] + "..."
+    print(f"\\nFetching: {url_display}")
+    start_time = time.time()
+
+    for attempt in range(max_retries + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=300) as r:
+                data = r.read()
+                elapsed = time.time() - start_time
+                size_mb = len(data) / (1024 * 1024)
+                print(f"✓ Received {size_mb:.2f} MB in {elapsed:.1f}s")
+                return data
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < max_retries:
+                delay = delays[attempt]
+                print(f"HTTP 429 rate limit. Retrying in {delay}s...")
+                time.sleep(delay)
+            else:
+                raise
+    raise Exception("Max retries exceeded")
+
+def parse_csv(text):
+    f = io.StringIO(text)
+    rdr = csv.reader(f)
+    rows = list(rdr)
+    if not rows: return [], []
+    header = rows[0]
+    return header, rows[1:]
 
 ` + UNIFIED_MATCHING_MODULE + `
 
@@ -4553,12 +4584,6 @@ def features(a, b):
 def diagnostic_predict(a, b, weights):
     """Calculate match probability using unified predict."""
     return predict(a, b, weights)
-
-def load_csv(filename):
-    """Load CSV file."""
-    with open(filename, 'r') as f:
-        reader = csv.DictReader(f)
-        return list(reader)
 
 def analyze_distribution(data, weights, sample_size=1000):
     """Analyze the confidence score distribution."""
@@ -4732,36 +4757,38 @@ def find_obvious_misses(data, weights, threshold=0.7):
 def main():
     import argparse
     parser = argparse.ArgumentParser(description='Diagnostic tool for donor matching')
-    parser.add_argument('kref_file', help='KREF CSV file')
-    parser.add_argument('fec_file', help='FEC CSV file')
-    parser.add_argument('model_file', help='Model weights JSON file')
+    parser.add_argument('--bundle', required=True, help='Bundle URL from web app')
     parser.add_argument('--threshold', type=float, default=0.7, help='Match confidence threshold (default: 0.7)')
-    parser.add_argument('--webapp-url', help='Web app base URL (e.g., webapp_url?model=1)')
 
     args = parser.parse_args()
 
-    # Load nickname database if URL provided
-    if args.webapp_url:
-        load_nickname_db(args.webapp_url)
-    else:
-        print("No webapp URL provided, skipping nickname database")
+    # Fetch job configuration (same as training/CD matcher)
+    job = json.loads(http_get(args.bundle).decode("utf-8"))
 
-    print("Loading data...")
-    kref_data = load_csv(args.kref_file)
-    fec_data = load_csv(args.fec_file)
+    # Load nickname database (automatic, like other scripts)
+    load_nickname_db(job["modelUrl"])
+
+    # Fetch data from web app (same sources as training)
+    print("\\nLoading data from web app...")
+    hdrK, rowsK = parse_csv(http_get(job["krefUrl"]).decode("utf-8"))
+    hdrF, rowsF = parse_csv(http_get(job["fecUrl"]).decode("utf-8"))
+
+    # Convert to dict format
+    kref_data = [dict(zip(hdrK, row)) for row in rowsK]
+    fec_data = [dict(zip(hdrF, row)) for row in rowsF]
     combined = kref_data + fec_data
 
     print(f"Loaded {len(kref_data)} KREF records")
     print(f"Loaded {len(fec_data)} FEC records")
     print(f"Total: {len(combined)} records")
 
+    # Fetch model weights
     print("\\nLoading model weights...")
-    with open(args.model_file, 'r') as f:
-        model_data = json.load(f)
-        weights = model_data.get("weights")
+    model_data = json.loads(http_get(job["modelUrl"]).decode("utf-8"))
+    weights = model_data.get("weights")
 
     if not weights:
-        print("ERROR: No weights found in model file!")
+        print("ERROR: No weights found in model!")
         sys.exit(1)
 
     print(f"Loaded model with {len(weights)} weights")
