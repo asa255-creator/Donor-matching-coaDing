@@ -4660,7 +4660,7 @@ def analyze_distribution(data, weights, sample_size=1000):
 
         # Show feature breakdown
         feat = features(a, b)
-        print(f"  Features: name={feat[0]:.2f}, first={feat[1]:.2f}, lastSame={feat[3]:.0f}, addr={feat[4]:.2f}, zip={feat[7]:.0f}, house={feat[9]:.0f}")
+        print(f"  Features: name={feat[0]:.2f}, last={feat[1]:.2f}, addr={feat[2]:.2f}, emp={feat[3]:.2f}, occ={feat[4]:.2f}, zip={feat[5]:.0f}, city={feat[6]:.0f}")
 
     print("\\n--- LOW CONFIDENCE EXAMPLES (should be clear non-matches) ---")
     for a, b, score in examples_low:
@@ -4725,7 +4725,7 @@ def find_obvious_misses(data, weights, threshold=0.7):
             print(f"    Person A: {a.get('DonorFirst','')} {a.get('DonorLast','')} | {a.get('Address1','')}")
             print(f"    Person B: {b.get('DonorFirst','')} {b.get('DonorLast','')} | {b.get('Address1','')}")
             feat = features(a, b)
-            print(f"    Features: name={feat[0]:.2f}, first={feat[1]:.2f}, lastSame={feat[3]:.0f}, addr={feat[4]:.2f}")
+            print(f"    Features: name={feat[0]:.2f}, last={feat[1]:.2f}, addr={feat[2]:.2f}, zip={feat[5]:.0f}, city={feat[6]:.0f}")
     else:
         print("\\n  ✓ No obvious misses found!")
 
