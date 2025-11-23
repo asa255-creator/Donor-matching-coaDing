@@ -3065,6 +3065,14 @@ function doGet(e) {
     return ContentService.createTextOutput(job).setMimeType(ContentService.MimeType.JSON);
   }
 
+  // Diagnostic job bundle endpoint
+  if (p.diag_job == '1') {
+    const chk = dl_validateToken_(p.token);
+    if (!chk.ok) return ContentService.createTextOutput(chk.msg).setMimeType(ContentService.MimeType.TEXT);
+    const job = PropertiesService.getDocumentProperties().getProperty('diag_job_json') || '{}';
+    return ContentService.createTextOutput(job).setMimeType(ContentService.MimeType.JSON);
+  }
+
   // CSV endpoints for runner input
   if (p.csv == 'kref' || p.csv == 'fec') {
     const chk = dl_validateToken_(p.token);
@@ -4460,25 +4468,26 @@ function diagnostic_analyzeMatching() {
   const token = dl_makeToken_();
   const until = Date.now() + 30 * 60 * 1000; // 30 minutes
 
-  // Store file IDs and token
+  // Create diagnostic job (same pattern as training)
+  const job = {
+    krefUrl: webAppUrl + '?csv=kref&token=' + encodeURIComponent(token),
+    fecUrl: webAppUrl + '?csv=fec&token=' + encodeURIComponent(token),
+    modelUrl: webAppUrl + '?model=1'
+  };
+
+  // Store file IDs, token, and job (use dl_ prefix for compatibility with existing endpoints)
   const props = PropertiesService.getDocumentProperties();
-  props.setProperty('diag_token', token);
-  props.setProperty('diag_token_until', String(until));
-  props.setProperty('diag_kref_fileId', krefFile.getId());
-  props.setProperty('diag_fec_fileId', fecFile.getId());
+  props.setProperty('dl_token', token);
+  props.setProperty('dl_token_until', String(until));
+  props.setProperty('dl_kref_fileId', krefFile.getId());
+  props.setProperty('dl_fec_fileId', fecFile.getId());
+  props.setProperty('diag_job_json', JSON.stringify(job));
 
-  // Build download commands for CSVs, model, and script
-  const krefDownload = "curl -L -o kref.csv '" + krefUrl + "'";
-  const fecDownload = "curl -L -o fec.csv '" + fecUrl + "'";
-  const modelDownload = "curl -L -o model.json '" + webAppUrl + "?model=1'";
-  const scriptDownload = "curl -L -o diagnostic_matching.py '" + webAppUrl + "?script=1'";
-
+  // Build command using bundle (same pattern as training)
   const fullCmd =
-    krefDownload + " && \\\n" +
-    fecDownload + " && \\\n" +
-    modelDownload + " && \\\n" +
-    scriptDownload + " && \\\n" +
-    "python3 diagnostic_matching.py kref.csv fec.csv model.json --threshold " + threshold;
+    "curl -sSL '" + webAppUrl + "?diagnostic=1' | " +
+    "python3 - --bundle '" + webAppUrl + "?diag_job=1&token=" + token + "' " +
+    "--threshold " + threshold;
 
   // Show command in dialog
   const html = HtmlService.createHtmlOutput(
