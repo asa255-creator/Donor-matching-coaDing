@@ -2998,7 +2998,7 @@ function doGet(e) {
       '    if phase3_iteration > 50:',
       '        print("  Stopping Phase 3 after 50 iterations to avoid infinite loops.")',
       '        break',
-      ''
+      '',
       'print(f"  Checked {phase3_checked} pairs, found {phase3_matches} matches")',
       'matches_found += phase3_matches',
       'pairs_checked += phase3_checked',
