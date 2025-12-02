@@ -5335,7 +5335,7 @@ function cd_getMatcherScript_() {
     '        ',
     '        # Find best match',
     '        for i, cd_rec in candidates:',
-    '            prob = predict(donor_rec, cd_rec)',
+    '            prob = cd_predict(donor_rec, cd_rec)',
     '            if prob >= threshold and prob > best_prob:',
     '                best_prob = prob',
     '                best_match = cd_rec.get("PersonID", "")',
