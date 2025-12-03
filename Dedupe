@@ -3039,7 +3039,7 @@ function doGet(e) {
       'print("\\n" + "="*60)',
       'print("PHASE 3: Exhaustive Matching")',
       'print("="*60)',
-      'print("TIP: Press \\'1\\' and hit Enter at any time to stop searching and output current matches")',
+      'print("TIP: Press \'1\' and hit Enter at any time to stop searching and output current matches")',
       'print("="*60)',
       'top_features_phase3 = weight_analysis[:5]  # Use top 5 features',
       'max_phase3_block_size = 1000',
