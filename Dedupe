@@ -2918,7 +2918,7 @@ function doGet(e) {
       '# ----------------------------',
 
       '# PHASE 3: Exhaustive matching (unlimited block size)',
-      'print("\n" + "="*60)',
+      'print("\\n" + "="*60)',
       'print("PHASE 3: Exhaustive Matching")',
       'print("="*60)',
       'top_features_phase3 = weight_analysis[:5]  # Use top 5 features',
