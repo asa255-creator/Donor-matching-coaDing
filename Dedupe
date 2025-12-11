@@ -3735,9 +3735,37 @@ function doGet(e) {
     const props = PropertiesService.getDocumentProperties();
     const w = props.getProperty('donor_model_weights');
     const fp = props.getProperty('donor_first_pair_table');
+
+    // Read blocking rules from BlockingRules sheet
+    const ss = SpreadsheetApp.getActive();
+    const blockingSheet = ss.getSheetByName('BlockingRules');
+    let blockingRules = [];
+
+    if (blockingSheet && blockingSheet.getLastRow() > 1) {
+      const vals = blockingSheet.getDataRange().getValues();
+      // Skip header row
+      for (let i = 1; i < vals.length; i++) {
+        const row = vals[i];
+        const ruleName = String(row[0] || '');
+        const fieldsStr = String(row[1] || '');
+        const transformsStr = String(row[2] || '');
+        const separator = String(row[3] || '|');
+
+        if (ruleName) {
+          blockingRules.push({
+            name: ruleName,
+            fields: fieldsStr.split(',').map(s => s.trim()).filter(s => s),
+            transforms: transformsStr.split(',').map(s => s.trim()).filter(s => s),
+            separator: separator
+          });
+        }
+      }
+    }
+
     const body = {
       weights: w ? JSON.parse(w) : null,
-      first_pair_table: fp ? JSON.parse(fp) : {}
+      first_pair_table: fp ? JSON.parse(fp) : {},
+      blocking_rules: blockingRules
     };
     return ContentService.createTextOutput(JSON.stringify(body)).setMimeType(ContentService.MimeType.JSON);
   }
@@ -3913,6 +3941,11 @@ function doPost(e) {
     responseData.weights_saved = body.model_weights.length;
   }
 
+  if (Array.isArray(body.blocking_rules) && body.blocking_rules.length) {
+    donor_applyResult_blockingRules_(body.blocking_rules);
+    responseData.blocking_rules_saved = body.blocking_rules.length;
+  }
+
   if (body.id_map && typeof body.id_map === 'object') {
     donor_applyResult_assignedIds_(body.id_map);
   }
@@ -4025,6 +4058,62 @@ function donor_applyResult_trainingRows_(rows) {
 function donor_applyResult_modelWeights_(weights) {
   PropertiesService.getDocumentProperties()
     .setProperty('donor_model_weights', JSON.stringify(weights));
+}
+
+function donor_applyResult_blockingRules_(rules) {
+  const ss = SpreadsheetApp.getActive();
+  const sheetName = 'BlockingRules';
+
+  // Get or create the BlockingRules sheet
+  let sheet = ss.getSheetByName(sheetName);
+  if (!sheet) {
+    sheet = ss.insertSheet(sheetName);
+    Logger.log('Created new BlockingRules sheet');
+  } else {
+    // Clear existing content
+    sheet.clear();
+    Logger.log('Cleared existing BlockingRules sheet');
+  }
+
+  // Define headers
+  const headers = [
+    'Rule Name',
+    'Fields',
+    'Transforms',
+    'Separator'
+  ];
+
+  // Write headers
+  sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  sheet.getRange(1, 1, 1, headers.length)
+    .setFontWeight('bold')
+    .setBackground('#4285f4')
+    .setFontColor('#ffffff');
+  sheet.setFrozenRows(1);
+
+  // Build rows from rules
+  const rows = [];
+  for (let i = 0; i < rules.length; i++) {
+    const rule = rules[i];
+    rows.push([
+      rule.name || '',
+      (rule.fields || []).join(', '),
+      (rule.transforms || []).join(', '),
+      rule.separator || '|'
+    ]);
+  }
+
+  // Write data rows
+  if (rows.length > 0) {
+    sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
+  }
+
+  // Auto-resize columns
+  for (let col = 1; col <= headers.length; col++) {
+    sheet.autoResizeColumn(col);
+  }
+
+  Logger.log('Saved ' + rules.length + ' blocking rules to BlockingRules sheet');
 }
 
 function donor_applyResult_assignedIds_(idMapObj) {
