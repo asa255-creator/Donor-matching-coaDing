@@ -1558,7 +1558,7 @@ function dl_prepareIncrementalTrainingJob_() {
   SpreadsheetApp.getUi().showModalDialog(html, 'Continue Training Locally');
 }
 
-/** Evolve Blocking Rules: Download current rules and provide script to evolve them */
+/** Evolve Blocking Rules: Run evolution locally with one command */
 function dl_evolveBlockingRules_() {
   const ss = SpreadsheetApp.getActive();
   const ui = SpreadsheetApp.getUi();
@@ -1575,7 +1575,7 @@ function dl_evolveBlockingRules_() {
     return;
   }
 
-  //Get web app URL
+  // Get web app URL
   const webAppUrl = dl_getExecUrlFromOptions_();
   if (!webAppUrl) {
     ui.alert(
@@ -1583,15 +1583,6 @@ function dl_evolveBlockingRules_() {
     );
     return;
   }
-
-  // Export BlockingRules sheet as CSV to Drive
-  const csvContent = exportSheetToCsvString_(sheet);
-  const csvBlob = Utilities.newBlob(csvContent, 'text/csv', 'blocking_rules.csv');
-
-  // Create CSV file in Drive
-  const folder = dl_getStagingFolder_();
-  const csvFile = folder.createFile(csvBlob);
-  const csvUrl = 'https://drive.google.com/uc?export=download&id=' + csvFile.getId();
 
   // Generate token for data access
   const token = dl_makeToken_();
@@ -1605,73 +1596,44 @@ function dl_evolveBlockingRules_() {
   const modelUrl = webAppUrl + '?model=1';
   const krefUrl = webAppUrl + '?csv=kref&token=' + encodeURIComponent(token);
   const fecUrl = webAppUrl + '?csv=fec&token=' + encodeURIComponent(token);
+  const rulesUrl = webAppUrl + '?csv=blocking_rules&token=' + encodeURIComponent(token);
 
-  // Commands
-  const downloadCmd =
-    'curl -o blocking_rules.csv "' + csvUrl + '"';
+  // Build one-line command (same pattern as training)
+  const cmd =
+    "curl -sSL '" + webAppUrl + "?evolve_runner=1' | " +
+    "python3 - " +
+    "--model-url '" + modelUrl + "' " +
+    "--kref-url '" + krefUrl + "' " +
+    "--fec-url '" + fecUrl + "' " +
+    "--rules-url '" + rulesUrl + "'";
 
-  const evolveCmd =
-    'python3 evolve_blocking_rules.py ' +
-    '--rules blocking_rules.csv ' +
-    '--model-url "' + modelUrl + '" ' +
-    '--kref-url "' + krefUrl + '" ' +
-    '--fec-url "' + fecUrl + '"';
-
-  // Show instructions dialog
+  // Show command dialog
   const html = HtmlService.createHtmlOutput(
-    '<div style="font-family:system-ui,Arial;padding:16px;max-width:740px">' +
+    '<div style="font-family:system-ui,Arial;padding:12px;max-width:720px">' +
       '<h3 style="margin:0 0 12px 0">🧬 Evolve Blocking Rules</h3>' +
-      '<div style="margin:8px 0;color:#666;font-size:13px">' +
-        'Follow these steps to evolve your blocking rules locally.' +
+      '<div style="margin:6px 0">Token expires in about ' + DL_CFG.tokenMinutes + ' minutes</div>' +
+      '<div style="margin:6px 0">Copy this command into your Mac Terminal:</div>' +
+      '<textarea id="cmd" style="width:100%;height:160px;font-family:monospace;font-size:11px" readonly>' +
+        dl_htmlEscape_(cmd) +
+      '</textarea>' +
+      '<div style="margin-top:8px">' +
+        '<button onclick="navigator.clipboard.writeText(document.getElementById(\'cmd\').value)">Copy to clipboard</button>' +
       '</div>' +
-
-      '<div style="margin:12px 0;padding:12px;background:#e3f2fd;border-left:3px solid #2196f3">' +
-        '<strong>Step 1:</strong> Download the Python evolution script<br>' +
-        '<div style="margin-top:8px;font-size:12px">' +
-          'Download <code>evolve_blocking_rules.py</code> from:<br>' +
-          '<a href="https://github.com/asa255-creator/Donor-matching-coaDing/raw/main/evolve_blocking_rules.py" target="_blank">' +
-          'https://github.com/asa255-creator/Donor-matching-coaDing/raw/main/evolve_blocking_rules.py</a>' +
-        '</div>' +
-        '<div style="margin-top:8px;font-size:11px;color:#666">' +
-          'Save it to your Downloads or working directory.' +
-        '</div>' +
+      '<div style="margin-top:12px;padding:10px;background:#fff3cd;border-left:3px solid #ffc107;font-size:12px">' +
+        '<strong>How it works:</strong> Evolution will continuously improve your 50 blocking rules ' +
+        'organized into 5 cohorts (10 rules each). Press <strong>Ctrl+C</strong> anytime to stop and save results to ' +
+        '<code>blocking_rules_evolved.csv</code>.' +
       '</div>' +
-
-      '<div style="margin:12px 0;padding:12px;background:#fff8e1;border-left:3px solid #ffc107">' +
-        '<strong>Step 2:</strong> Download your current blocking rules<br>' +
-        '<textarea id="dlCmd" style="width:100%;height:40px;margin-top:8px;font-family:monospace;font-size:10px" readonly>' +
-          dl_htmlEscape_(downloadCmd) +
-        '</textarea>' +
-        '<button onclick="navigator.clipboard.writeText(document.getElementById(\'dlCmd\').value)" style="margin-top:4px;padding:4px 8px;font-size:11px">Copy</button>' +
+      '<div style="margin-top:8px;padding:10px;background:#fce4ec;border-left:3px solid #c2185b;font-size:12px">' +
+        '<strong>After evolution:</strong> Open the <code>blocking_rules_evolved.csv</code> file, ' +
+        'copy all rows (including header), and paste into BlockingRules sheet (A1) to replace existing rules.' +
       '</div>' +
-
-      '<div style="margin:12px 0;padding:12px;background:#f1f8e9;border-left:3px solid #7cb342">' +
-        '<strong>Step 3:</strong> Run evolution (Terminal command)<br>' +
-        '<textarea id="evolveCmd" style="width:100%;height:80px;margin-top:8px;font-family:monospace;font-size:10px" readonly>' +
-          dl_htmlEscape_(evolveCmd) +
-        '</textarea>' +
-        '<button onclick="navigator.clipboard.writeText(document.getElementById(\'evolveCmd\').value)" style="margin-top:4px;padding:4px 8px;font-size:11px">Copy</button>' +
-        '<div style="margin-top:8px;font-size:11px;color:#666">' +
-          'Press Ctrl+C anytime to stop and save results.' +
-        '</div>' +
-      '</div>' +
-
-      '<div style="margin:12px 0;padding:12px;background:#fce4ec;border-left:3px solid #c2185b">' +
-        '<strong>Step 4:</strong> Copy evolved rules back to sheet<br>' +
-        '<ol style="margin:4px 0;padding-left:20px;font-size:12px">' +
-          '<li>Open <code>blocking_rules_evolved.csv</code></li>' +
-          '<li>Copy all rows (including header)</li>' +
-          '<li>Paste into BlockingRules sheet (A1)</li>' +
-        '</ol>' +
-      '</div>' +
-
-      '<div style="margin-top:12px;padding:10px;background:#f5f5f5;font-size:11px;border-radius:4px">' +
-        '<strong>⚠️ Important:</strong> Token expires in ' + DL_CFG.tokenMinutes + ' minutes. ' +
-        'Evolution scores rules by finding matches in 100k comparisons. ' +
-        'Cohort 1 optimizes for performance, cohorts 2-5 maintain diversity.' +
+      '<div style="margin-top:8px;color:#666;font-size:11px">' +
+        'Evolution scores rules by finding matches within a 100,000 comparison budget. ' +
+        'Cohort 1 optimizes for pure performance, cohorts 2-5 maintain diversity.' +
       '</div>' +
     '</div>'
-  ).setWidth(780).setHeight(680);
+  ).setWidth(740).setHeight(480);
 
   ui.showModalDialog(html, '🧬 Evolve Blocking Rules');
 }
@@ -4176,6 +4138,364 @@ function doGet(e) {
     return ContentService.createTextOutput(py).setMimeType(ContentService.MimeType.TEXT);
   }
 
+  // Evolution runner payload
+  if (p.evolve_runner == '1') {
+    const py = [
+      '#!/usr/bin/env python3',
+      'import sys, json, csv, io, urllib.request, argparse, time, math, random, signal',
+      'from collections import defaultdict',
+      '',
+      '# Global flag for graceful shutdown',
+      'should_stop = False',
+      '',
+      'def signal_handler(sig, frame):',
+      '    global should_stop',
+      '    print("\\n" + "="*60)',
+      '    print("STOPPING - Saving best rules...")',
+      '    print("="*60)',
+      '    should_stop = True',
+      '',
+      'signal.signal(signal.SIGINT, signal_handler)',
+      ''
+    ];
+
+    // Add the complete evolution script from evolve_blocking_rules.py
+    // (This will be a long array - I'll continue adding the script content)
+    py.push(...UNIFIED_MATCHING_MODULE);  // Reuse soundex, jaro_winkler, features
+
+    py.push(
+      '',
+      '# Blocking key generation',
+      'def generate_blocking_key_from_rule(donor, rule):',
+      '    fields = rule.get("fields", [])',
+      '    transforms = rule.get("transforms", [])',
+      '    separator = rule.get("separator", "|")',
+      '    parts = []',
+      '    for i, field in enumerate(fields):',
+      '        value = donor.get(field, "").strip()',
+      '        if not value:',
+      '            return None',
+      '        transform = transforms[i] if i < len(transforms) else "none"',
+      '        if transform == "soundex":',
+      '            value = soundex(value)',
+      '        elif transform == "lower":',
+      '            value = value.lower()',
+      '        elif transform == "first2":',
+      '            value = value[:2].upper()',
+      '        elif transform == "first3":',
+      '            value = value[:3].upper()',
+      '        elif transform == "first4":',
+      '            value = value[:4].upper()',
+      '        elif transform == "first5":',
+      '            value = value[:5].upper()',
+      '        elif transform == "first_token":',
+      '            tokens = value.split()',
+      '            value = tokens[0].upper() if tokens else ""',
+      '        elif transform == "none":',
+      '            value = value.upper()',
+      '        if not value:',
+      '            return None',
+      '        parts.append(value)',
+      '    return separator.join(parts)',
+      '',
+      '# Exact match condensation',
+      'def condense_exact_matches(donors):',
+      '    exact_map = {}',
+      '    uf_parent = {}',
+      '    uf_rank = {}',
+      '    def uf_find(x):',
+      '        if x not in uf_parent:',
+      '            uf_parent[x] = x',
+      '            uf_rank[x] = 0',
+      '        if uf_parent[x] != x:',
+      '            uf_parent[x] = uf_find(uf_parent[x])',
+      '        return uf_parent[x]',
+      '    def uf_union(x, y):',
+      '        px, py = uf_find(x), uf_find(y)',
+      '        if px == py:',
+      '            return',
+      '        if uf_rank[px] < uf_rank[py]:',
+      '            uf_parent[px] = py',
+      '        elif uf_rank[px] > uf_rank[py]:',
+      '            uf_parent[py] = px',
+      '        else:',
+      '            uf_parent[py] = px',
+      '            uf_rank[px] += 1',
+      '    for idx, donor in enumerate(donors):',
+      '        first = (donor.get("DonorFirst") or "").strip().upper()',
+      '        last = (donor.get("DonorLast") or "").strip().upper()',
+      '        addr = (donor.get("Address1") or "").strip().upper()',
+      '        city = (donor.get("City") or "").strip().upper()',
+      '        state = (donor.get("State") or "").strip().upper()',
+      '        zip_code = (donor.get("Zip") or "").strip()',
+      '        if first and last and addr:',
+      '            key = (first, last, addr, city, state, zip_code)',
+      '            if key in exact_map:',
+      '                uf_union(idx, exact_map[key])',
+      '            else:',
+      '                exact_map[key] = idx',
+      '    representatives = {}',
+      '    for idx in range(len(donors)):',
+      '        root = uf_find(idx)',
+      '        if root not in representatives:',
+      '            representatives[root] = donors[idx]',
+      '    condensed = list(representatives.values())',
+      '    print(f"Condensed {len(donors)} donors → {len(condensed)} unique donors")',
+      '    return condensed',
+      '',
+      '# Rule evaluation',
+      'def evaluate_blocking_rule(rule, donors, w, comparison_budget):',
+      '    blocks = {}',
+      '    for donor in donors:',
+      '        key = generate_blocking_key_from_rule(donor, rule)',
+      '        if key:',
+      '            if key not in blocks:',
+      '                blocks[key] = []',
+      '            blocks[key].append(donor)',
+      '    if not blocks:',
+      '        return 0.0',
+      '    total_pairs_available = sum(len(block) * (len(block) - 1) // 2 for block in blocks.values())',
+      '    if total_pairs_available == 0:',
+      '        return 0.0',
+      '    pairs_to_compare = []',
+      '    for block_key, block_donors in blocks.items():',
+      '        block_size = len(block_donors)',
+      '        if block_size < 2:',
+      '            continue',
+      '        block_pairs_available = block_size * (block_size - 1) // 2',
+      '        num_from_block = int(comparison_budget * block_pairs_available / total_pairs_available)',
+      '        block_pairs = []',
+      '        for i in range(block_size):',
+      '            for j in range(i + 1, block_size):',
+      '                block_pairs.append((block_donors[i], block_donors[j]))',
+      '        if num_from_block < len(block_pairs):',
+      '            sampled = random.sample(block_pairs, num_from_block)',
+      '        else:',
+      '            sampled = block_pairs',
+      '        pairs_to_compare.extend(sampled)',
+      '    if len(pairs_to_compare) > comparison_budget:',
+      '        pairs_to_compare = random.sample(pairs_to_compare, comparison_budget)',
+      '    threshold = 0.7',
+      '    matches_found = 0',
+      '    for a, b in pairs_to_compare:',
+      '        x = features(a, b)',
+      '        z = w[-1]',
+      '        for t in range(len(x)):',
+      '            z += w[t] * x[t]',
+      '        p = 1.0 / (1.0 + math.exp(-z))',
+      '        if p >= threshold:',
+      '            matches_found += 1',
+      '    return float(matches_found)',
+      '',
+      '# Rule mutation',
+      'def mutate_rule(rule):',
+      '    new_rule = {',
+      '        "name": rule["name"] + "_mut",',
+      '        "fields": rule["fields"][:],',
+      '        "transforms": rule["transforms"][:],',
+      '        "separator": rule["separator"],',
+      '        "cohort": rule["cohort"],',
+      '        "score": 0.0',
+      '    }',
+      '    mutation_type = random.choice(["change_transform", "add_field", "remove_field"])',
+      '    all_fields = ["DonorFirst", "DonorLast", "Address1", "City", "State", "Zip"]',
+      '    all_transforms = ["soundex", "lower", "first2", "first3", "first4", "first5", "first_token", "none"]',
+      '    if mutation_type == "change_transform" and new_rule["transforms"]:',
+      '        idx = random.randint(0, len(new_rule["transforms"]) - 1)',
+      '        new_rule["transforms"][idx] = random.choice(all_transforms)',
+      '    elif mutation_type == "add_field" and len(new_rule["fields"]) < 3:',
+      '        available = [f for f in all_fields if f not in new_rule["fields"]]',
+      '        if available:',
+      '            new_field = random.choice(available)',
+      '            new_rule["fields"].append(new_field)',
+      '            new_rule["transforms"].append(random.choice(all_transforms))',
+      '    elif mutation_type == "remove_field" and len(new_rule["fields"]) > 1:',
+      '        idx = random.randint(0, len(new_rule["fields"]) - 1)',
+      '        del new_rule["fields"][idx]',
+      '        del new_rule["transforms"][idx]',
+      '    new_rule["name"] = " + ".join([f"{t}({f})" if t != "none" else f for f, t in zip(new_rule["fields"], new_rule["transforms"])])',
+      '    return new_rule',
+      '',
+      '# Rule crossover',
+      'def crossover_rules(rule1, rule2):',
+      '    all_fields = list(set(rule1["fields"] + rule2["fields"]))',
+      '    if len(all_fields) > 3:',
+      '        all_fields = random.sample(all_fields, 3)',
+      '    transforms = []',
+      '    all_transforms = ["soundex", "lower", "first2", "first3", "first4", "first5", "first_token", "none"]',
+      '    for field in all_fields:',
+      '        if field in rule1["fields"]:',
+      '            idx = rule1["fields"].index(field)',
+      '            transforms.append(rule1["transforms"][idx])',
+      '        elif field in rule2["fields"]:',
+      '            idx = rule2["fields"].index(field)',
+      '            transforms.append(rule2["transforms"][idx])',
+      '        else:',
+      '            transforms.append(random.choice(all_transforms))',
+      '    name = " + ".join([f"{t}({f})" if t != "none" else f for f, t in zip(all_fields, transforms)])',
+      '    return {"name": name, "fields": all_fields, "transforms": transforms, "separator": "|", "cohort": rule1["cohort"], "score": 0.0}',
+      '',
+      '# Rule similarity',
+      'def calculate_rule_similarity(rule1, rule2):',
+      '    fields1 = set(rule1.get("fields", []))',
+      '    fields2 = set(rule2.get("fields", []))',
+      '    if not fields1 and not fields2:',
+      '        return 1.0',
+      '    if not fields1 or not fields2:',
+      '        return 0.0',
+      '    intersection = len(fields1 & fields2)',
+      '    union = len(fields1 | fields2)',
+      '    return intersection / union if union > 0 else 0.0',
+      '',
+      '# Cohort selection',
+      'def select_cohort_survivors(cohorts):',
+      '    all_survivors = []',
+      '    for cohort_idx, cohort_rules in enumerate(cohorts):',
+      '        if cohort_idx == 0:',
+      '            cohort_rules.sort(key=lambda x: x[0], reverse=True)',
+      '            survivors = cohort_rules[:5]',
+      '            all_survivors.append(survivors)',
+      '            print(f"  Cohort 1: Top 5 by performance")',
+      '            for i, (score, rule) in enumerate(survivors, 1):',
+      '                print(f"    {i}. {score:.1f} matches - {rule[\\'name\\']}")',
+      '        else:',
+      '            adjusted_scores = []',
+      '            for score, rule in cohort_rules:',
+      '                max_similarity = 0.0',
+      '                for prev_cohort in all_survivors:',
+      '                    for (prev_score, prev_rule) in prev_cohort:',
+      '                        similarity = calculate_rule_similarity(rule, prev_rule)',
+      '                        max_similarity = max(max_similarity, similarity)',
+      '                diversity_bonus = (1 - max_similarity) * 30',
+      '                adjusted_score = score + diversity_bonus',
+      '                adjusted_scores.append((adjusted_score, score, rule))',
+      '            adjusted_scores.sort(key=lambda x: x[0], reverse=True)',
+      '            survivors = [(raw_score, rule) for (adj, raw_score, rule) in adjusted_scores[:5]]',
+      '            all_survivors.append(survivors)',
+      '            print(f"  Cohort {cohort_idx + 1}: Top 5 with diversity")',
+      '            for i, (score, rule) in enumerate(survivors, 1):',
+      '                print(f"    {i}. {score:.1f} matches - {rule[\\'name\\']}")',
+      '    return all_survivors',
+      '',
+      '# Main',
+      'parser = argparse.ArgumentParser()',
+      'parser.add_argument("--model-url", required=True)',
+      'parser.add_argument("--kref-url", required=True)',
+      'parser.add_argument("--fec-url", required=True)',
+      'parser.add_argument("--rules-url", required=True)',
+      'args = parser.parse_args()',
+      '',
+      'print("="*60)',
+      'print("EVOLUTIONARY BLOCKING RULE OPTIMIZATION")',
+      'print("="*60)',
+      '',
+      '# Load model',
+      'print("\\nLoading model data...")',
+      'with urllib.request.urlopen(args.model_url) as response:',
+      '    model_data = json.loads(response.read().decode("utf-8"))',
+      'w = model_data.get("weights")',
+      'if not w:',
+      '    print("✗ No model weights found. Train a model first.")',
+      '    sys.exit(1)',
+      'print(f"✓ Loaded model with {len(w)} weights")',
+      '',
+      '# Load donors',
+      'print("\\nLoading donor data...")',
+      'with urllib.request.urlopen(args.kref_url) as response:',
+      '    kref_data = response.read().decode("utf-8")',
+      '    kref_donors = list(csv.DictReader(io.StringIO(kref_data)))',
+      'print(f"✓ Loaded {len(kref_donors)} KREF donors")',
+      'with urllib.request.urlopen(args.fec_url) as response:',
+      '    fec_data = response.read().decode("utf-8")',
+      '    fec_donors = list(csv.DictReader(io.StringIO(fec_data)))',
+      'print(f"✓ Loaded {len(fec_donors)} FEC donors")',
+      'donors = kref_donors + fec_donors',
+      'print(f"✓ Total donors: {len(donors)}")',
+      '',
+      '# Load rules',
+      'print("\\nLoading initial rules...")',
+      'with urllib.request.urlopen(args.rules_url) as response:',
+      '    rules_data = response.read().decode("utf-8")',
+      '    rules_reader = csv.DictReader(io.StringIO(rules_data))',
+      '    rules = []',
+      '    for row in rules_reader:',
+      '        rules.append({',
+      '            "name": row["Rule Name"],',
+      '            "fields": [f.strip() for f in row["Fields"].split(",")],',
+      '            "transforms": [t.strip() for t in row["Transforms"].split(",")],',
+      '            "separator": row["Separator"],',
+      '            "cohort": int(row["Cohort"]),',
+      '            "score": float(row["Score"])',
+      '        })',
+      'print(f"✓ Loaded {len(rules)} rules")',
+      '',
+      '# Condense',
+      'print("\\nCondensing exact matches...")',
+      'donors = condense_exact_matches(donors)',
+      '',
+      '# Evolution',
+      'round_num = 0',
+      'comparison_budget = 100000',
+      'print(f"\\nStarting evolution (budget: {comparison_budget:,} comparisons per rule)")',
+      'print("Press Ctrl+C to stop and save results\\n")',
+      '',
+      'while not should_stop:',
+      '    round_num += 1',
+      '    print(f"\\n{\\'=\\'*60}")',
+      '    print(f"ROUND {round_num}")',
+      '    print(f"{\\'=\\'*60}")',
+      '    print("\\nEvaluating all 50 rules...")',
+      '    for rule in rules:',
+      '        rule["score"] = evaluate_blocking_rule(rule, donors, w, comparison_budget)',
+      '    cohorts = [[] for _ in range(5)]',
+      '    for rule in rules:',
+      '        cohort_idx = rule["cohort"] - 1',
+      '        cohorts[cohort_idx].append((rule["score"], rule))',
+      '    survivors = select_cohort_survivors(cohorts)',
+      '    new_rules = []',
+      '    for cohort_idx, cohort_survivors in enumerate(survivors):',
+      '        print(f"\\nGenerating 5 new rules for Cohort {cohort_idx + 1}...")',
+      '        parent_rules = [rule for (score, rule) in cohort_survivors]',
+      '        for _ in range(5):',
+      '            if random.random() < 0.7:',
+      '                parent = random.choice(parent_rules)',
+      '                new_rule = mutate_rule(parent)',
+      '            else:',
+      '                parent1, parent2 = random.sample(parent_rules, 2)',
+      '                new_rule = crossover_rules(parent1, parent2)',
+      '            new_rule["cohort"] = cohort_idx + 1',
+      '            new_rules.append(new_rule)',
+      '    rules = []',
+      '    for cohort_survivors in survivors:',
+      '        rules.extend([rule for (score, rule) in cohort_survivors])',
+      '    rules.extend(new_rules)',
+      '    print(f"\\n✓ Round {round_num} complete. Population: {len(rules)} rules")',
+      '    time.sleep(0.1)',
+      '',
+      '# Save',
+      'output_csv = "blocking_rules_evolved.csv"',
+      'print(f"\\nSaving results to {output_csv}...")',
+      'with open(output_csv, "w", newline="") as f:',
+      '    writer = csv.writer(f)',
+      '    writer.writerow(["Rule Name", "Fields", "Transforms", "Separator", "Cohort", "Score"])',
+      '    for rule in rules:',
+      '        writer.writerow([',
+      '            rule["name"],',
+      '            ", ".join(rule["fields"]),',
+      '            ", ".join(rule["transforms"]),',
+      '            rule["separator"],',
+      '            rule["cohort"],',
+      '            rule["score"]',
+      '        ])',
+      'print(f"✓ Saved {len(rules)} evolved rules to {output_csv}")',
+      'print("\\n" + "="*60)',
+      'print("EVOLUTION COMPLETE")',
+      'print("="*60)'
+    );
+
+    return ContentService.createTextOutput(py.join('\n')).setMimeType(ContentService.MimeType.TEXT);
+  }
+
   // Job bundle for the runner
   if (p.job == '1') {
     const chk = dl_validateToken_(p.token);
@@ -4201,6 +4521,21 @@ function doGet(e) {
     if (!fileId) return ContentService.createTextOutput('No CSV file id').setMimeType(ContentService.MimeType.TEXT);
     const file = DriveApp.getFileById(fileId);
     const out = ContentService.createTextOutput(file.getBlob().getDataAsString());
+    out.setMimeType(ContentService.MimeType.CSV);
+    return out;
+  }
+
+  // Blocking rules CSV endpoint
+  if (p.csv == 'blocking_rules') {
+    const chk = dl_validateToken_(p.token);
+    if (!chk.ok) return ContentService.createTextOutput(chk.msg).setMimeType(ContentService.MimeType.TEXT);
+    const ss = SpreadsheetApp.getActive();
+    const sheet = ss.getSheetByName('BlockingRules');
+    if (!sheet || sheet.getLastRow() < 2) {
+      return ContentService.createTextOutput('No blocking rules found').setMimeType(ContentService.MimeType.TEXT);
+    }
+    const csvContent = exportSheetToCsvString_(sheet);
+    const out = ContentService.createTextOutput(csvContent);
     out.setMimeType(ContentService.MimeType.CSV);
     return out;
   }
