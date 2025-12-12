@@ -87,7 +87,7 @@ function initializeRequiredSheets_() {
       frozenRows: 1
     },
     'BlockingRules': {
-      header: ['Rule Name', 'Fields', 'Transforms', 'Separator', 'Cohort', 'Score'],
+      header: ['Rule Name', 'Fields', 'Transforms', 'Separator', 'Required Fields', 'Cohort', 'Score'],
       frozenRows: 1,
       defaultRules: true  // Flag to populate with default rules
     }
@@ -152,74 +152,75 @@ function initializeRequiredSheets_() {
 }
 
 /**
- * Populate BlockingRules sheet with default starting rules
+ * Populate BlockingRules sheet with smarter default rules
  * @private
  */
 function populateDefaultBlockingRules_(sheet) {
-  // Define 50 diverse initial blocking rules (10 per cohort)
+  // Define 50 intelligent blocking rules with conditional logic
+  // Format: [Name, Fields, Transforms, Separator, Required Fields, Cohort, Score]
   const defaultRules = [
-    // Cohort 1: High-performance single/double field rules (10 rules)
-    ['Soundex First + Last', 'DonorFirst, DonorLast', 'soundex, soundex', '|', 1, 0],
-    ['Soundex Last + Zip', 'DonorLast, Zip', 'soundex, none', '|', 1, 0],
-    ['First 3 First + Soundex Last', 'DonorFirst, DonorLast', 'first3, soundex', '|', 1, 0],
-    ['Soundex First + First 5 Address', 'DonorFirst, Address1', 'soundex, first5', '|', 1, 0],
-    ['First Token Last + Zip', 'DonorLast, Zip', 'first_token, none', '|', 1, 0],
-    ['Soundex First + City', 'DonorFirst, City', 'soundex, lower', '|', 1, 0],
-    ['First 2 First + First 2 Last', 'DonorFirst, DonorLast', 'first2, first2', '|', 1, 0],
-    ['Soundex Last + City', 'DonorLast, City', 'soundex, lower', '|', 1, 0],
-    ['First Token Address + Zip', 'Address1, Zip', 'first_token, none', '|', 1, 0],
-    ['First 4 First + Soundex Last', 'DonorFirst, DonorLast', 'first4, soundex', '|', 1, 0],
+    // Cohort 1: Core name+location blocking (10 rules)
+    ['Soundex Name + ZIP3', 'DonorFirst, DonorLast, Zip', 'soundex, soundex, zip3', '|', '', 1, 0],
+    ['Soundex Last + Full ZIP', 'DonorLast, Zip', 'soundex, none', '|', 'Zip', 1, 0],
+    ['Name + Address (if addr)', 'DonorFirst, DonorLast, Address1', 'first3, soundex, first5', '|', 'Address1', 1, 0],
+    ['Name + City (fallback)', 'DonorFirst, DonorLast, City', 'first3, soundex, lower', '|', 'City', 1, 0],
+    ['Last Token Name + ZIP', 'DonorFirst, DonorLast, Zip', 'last_token, last_token, none', '|', '', 1, 0],
+    ['Soundex First + Address', 'DonorFirst, Address1, Zip', 'soundex, first5, zip3', '|', 'Address1', 1, 0],
+    ['Full Name Initials + ZIP', 'DonorFirst, DonorLast, Zip', 'first2, first3, none', '|', '', 1, 0],
+    ['Soundex Name + City', 'DonorFirst, DonorLast, City', 'soundex, soundex, lower', '|', '', 1, 0],
+    ['First Token Names + State', 'DonorFirst, DonorLast, State', 'first_token, first_token, none', '|', '', 1, 0],
+    ['Name Prefixes + ZIP3', 'DonorFirst, DonorLast, Zip', 'first4, first4, zip3', '|', 'Zip', 1, 0],
 
-    // Cohort 2: Name-focused variations (10 rules)
-    ['First 2 First + First 3 Last', 'DonorFirst, DonorLast', 'first2, first3', '|', 2, 0],
-    ['Soundex First + First Token Last', 'DonorFirst, DonorLast', 'soundex, first_token', '|', 2, 0],
-    ['First 3 First + First 3 Last + Zip', 'DonorFirst, DonorLast, Zip', 'first3, first3, none', '|', 2, 0],
-    ['First Token First + Soundex Last', 'DonorFirst, DonorLast', 'first_token, soundex', '|', 2, 0],
-    ['First 4 First + First 4 Last', 'DonorFirst, DonorLast', 'first4, first4', '|', 2, 0],
-    ['Soundex First + First 2 Last + State', 'DonorFirst, DonorLast, State', 'soundex, first2, none', '|', 2, 0],
-    ['First 5 First + Soundex Last', 'DonorFirst, DonorLast', 'first5, soundex', '|', 2, 0],
-    ['First Token First + First Token Last', 'DonorFirst, DonorLast', 'first_token, first_token', '|', 2, 0],
-    ['First 3 First + City', 'DonorFirst, City', 'first3, lower', '|', 2, 0],
-    ['Soundex Last + First 2 First + State', 'DonorLast, DonorFirst, State', 'soundex, first2, none', '|', 2, 0],
+    // Cohort 2: Employer-based blocking (10 rules)
+    ['Soundex Name + Employer', 'DonorFirst, DonorLast, Employer', 'soundex, soundex, employer_token', '|', 'Employer', 2, 0],
+    ['Last + Employer + ZIP3', 'DonorLast, Employer, Zip', 'soundex, employer_token, zip3', '|', 'Employer,Zip', 2, 0],
+    ['First + Employer Token', 'DonorFirst, Employer', 'first3, employer_token', '|', 'Employer', 2, 0],
+    ['Employer + City', 'Employer, City', 'employer_token, lower', '|', 'Employer,City', 2, 0],
+    ['Employer + Occupation + ZIP', 'Employer, Occupation, Zip', 'employer_token, first_token, zip3', '|', 'Employer,Occupation', 2, 0],
+    ['Name + Occupation', 'DonorLast, Occupation', 'soundex, first_token', '|', 'Occupation', 2, 0],
+    ['Employer + State', 'Employer, State', 'employer_token, none', '|', 'Employer', 2, 0],
+    ['Last + Employer + State', 'DonorLast, Employer, State', 'first3, employer_token, none', '|', 'Employer', 2, 0],
+    ['Occupation + City', 'Occupation, City', 'first_token, lower', '|', 'Occupation,City', 2, 0],
+    ['First + Occupation + ZIP', 'DonorFirst, Occupation, Zip', 'soundex, first_token, zip3', '|', 'Occupation', 2, 0],
 
-    // Cohort 3: Address-focused variations (10 rules)
-    ['First 5 Address + City', 'Address1, City', 'first5, lower', '|', 3, 0],
-    ['First Token Address + City', 'Address1, City', 'first_token, lower', '|', 3, 0],
-    ['First 3 Address + Zip', 'Address1, Zip', 'first3, none', '|', 3, 0],
-    ['First Token Address + State', 'Address1, State', 'first_token, none', '|', 3, 0],
-    ['First 4 Address + City', 'Address1, City', 'first4, lower', '|', 3, 0],
-    ['First 2 Address + Zip', 'Address1, Zip', 'first2, none', '|', 3, 0],
-    ['First Token Address + Soundex Last', 'Address1, DonorLast', 'first_token, soundex', '|', 3, 0],
-    ['First 5 Address + State', 'Address1, State', 'first5, none', '|', 3, 0],
-    ['First 3 Address + City', 'Address1, City', 'first3, lower', '|', 3, 0],
-    ['First Token Address + First 2 Last', 'Address1, DonorLast', 'first_token, first2', '|', 3, 0],
+    // Cohort 3: Address-heavy blocking (10 rules)
+    ['Address + Name', 'Address1, DonorLast', 'first5, soundex', '|', 'Address1', 3, 0],
+    ['Address Token + ZIP', 'Address1, Zip', 'first_token, none', '|', 'Address1,Zip', 3, 0],
+    ['Address + City + Last', 'Address1, City, DonorLast', 'first4, lower, first3', '|', 'Address1,City', 3, 0],
+    ['Address Prefix + State', 'Address1, State', 'first3, none', '|', 'Address1', 3, 0],
+    ['Address + Soundex Name', 'Address1, DonorFirst, DonorLast', 'first_token, soundex, soundex', '|', 'Address1', 3, 0],
+    ['City + Address Token', 'City, Address1', 'lower, first_token', '|', 'Address1,City', 3, 0],
+    ['ZIP3 + Address + Last', 'Zip, Address1, DonorLast', 'zip3, first5, soundex', '|', 'Address1', 3, 0],
+    ['Address + State + First', 'Address1, State, DonorFirst', 'first5, none, first3', '|', 'Address1', 3, 0],
+    ['Address Last Token + ZIP', 'Address1, Zip', 'last_token, none', '|', 'Address1,Zip', 3, 0],
+    ['Address + Name Initials', 'Address1, DonorFirst, DonorLast', 'first4, first2, first2', '|', 'Address1', 3, 0],
 
-    // Cohort 4: Geographic-focused variations (10 rules)
-    ['City + Zip', 'City, Zip', 'lower, none', '|', 4, 0],
-    ['State + Zip', 'State, Zip', 'none, none', '|', 4, 0],
-    ['City + Soundex Last', 'City, DonorLast', 'lower, soundex', '|', 4, 0],
-    ['Zip + First 3 Last', 'Zip, DonorLast', 'none, first3', '|', 4, 0],
-    ['City + First 2 First', 'City, DonorFirst', 'lower, first2', '|', 4, 0],
-    ['State + Soundex First + Soundex Last', 'State, DonorFirst, DonorLast', 'none, soundex, soundex', '|', 4, 0],
-    ['Zip + First Token Last', 'Zip, DonorLast', 'none, first_token', '|', 4, 0],
-    ['City + First Token First', 'City, DonorFirst', 'lower, first_token', '|', 4, 0],
-    ['State + First 3 First + First 3 Last', 'State, DonorFirst, DonorLast', 'none, first3, first3', '|', 4, 0],
-    ['Zip + First 2 First', 'Zip, DonorFirst', 'none, first2', '|', 4, 0],
+    // Cohort 4: Geographic clustering (10 rules)
+    ['City + Soundex Names', 'City, DonorFirst, DonorLast', 'lower, soundex, soundex', '|', 'City', 4, 0],
+    ['ZIP3 + Last + First Init', 'Zip, DonorLast, DonorFirst', 'zip3, soundex, first2', '|', 'Zip', 4, 0],
+    ['State + Name Tokens', 'State, DonorFirst, DonorLast', 'none, first_token, first_token', '|', '', 4, 0],
+    ['City + ZIP3 + Last', 'City, Zip, DonorLast', 'lower, zip3, first3', '|', 'City,Zip', 4, 0],
+    ['ZIP + Name Prefixes', 'Zip, DonorFirst, DonorLast', 'none, first3, first3', '|', 'Zip', 4, 0],
+    ['State + City + Last', 'State, City, DonorLast', 'none, lower, soundex', '|', 'City', 4, 0],
+    ['City + Last Token Name', 'City, DonorLast', 'lower, last_token', '|', 'City', 4, 0],
+    ['ZIP3 + First Token Names', 'Zip, DonorFirst, DonorLast', 'zip3, first_token, first_token', '|', 'Zip', 4, 0],
+    ['State + Soundex Last', 'State, DonorLast', 'none, soundex', '|', '', 4, 0],
+    ['City + Name Initials', 'City, DonorFirst, DonorLast', 'lower, first2, first3', '|', 'City', 4, 0],
 
-    // Cohort 5: Three-field combinations (10 rules)
-    ['Soundex First + Soundex Last + City', 'DonorFirst, DonorLast, City', 'soundex, soundex, lower', '|', 5, 0],
-    ['First 3 First + First 3 Last + City', 'DonorFirst, DonorLast, City', 'first3, first3, lower', '|', 5, 0],
-    ['Soundex First + First 3 Address + Zip', 'DonorFirst, Address1, Zip', 'soundex, first3, none', '|', 5, 0],
-    ['First Token First + First Token Last + State', 'DonorFirst, DonorLast, State', 'first_token, first_token, none', '|', 5, 0],
-    ['First 2 First + Soundex Last + Zip', 'DonorFirst, DonorLast, Zip', 'first2, soundex, none', '|', 5, 0],
-    ['Soundex Last + First Token Address + City', 'DonorLast, Address1, City', 'soundex, first_token, lower', '|', 5, 0],
-    ['First 3 First + First 3 Address + State', 'DonorFirst, Address1, State', 'first3, first3, none', '|', 5, 0],
-    ['First Token First + City + Zip', 'DonorFirst, City, Zip', 'first_token, lower, none', '|', 5, 0],
-    ['Soundex First + First 2 Last + City', 'DonorFirst, DonorLast, City', 'soundex, first2, lower', '|', 5, 0],
-    ['First 2 First + First 2 Last + State', 'DonorFirst, DonorLast, State', 'first2, first2, none', '|', 5, 0]
+    // Cohort 5: Multi-field combinations (10 rules)
+    ['Name + Addr + Employer', 'DonorLast, Address1, Employer', 'soundex, first4, employer_token', '|', 'Address1,Employer', 5, 0],
+    ['ZIP3 + Name + Occupation', 'Zip, DonorLast, Occupation', 'zip3, soundex, first_token', '|', 'Occupation', 5, 0],
+    ['City + Name + Employer', 'City, DonorFirst, DonorLast, Employer', 'lower, first3, soundex, employer_token', '|', 'Employer', 5, 0],
+    ['Addr + City + Last', 'Address1, City, DonorLast', 'first5, lower, soundex', '|', 'Address1,City', 5, 0],
+    ['Name + ZIP + Employer', 'DonorFirst, DonorLast, Zip, Employer', 'first3, soundex, zip3, employer_token', '|', 'Employer', 5, 0],
+    ['State + Name + Occupation', 'State, DonorLast, Occupation', 'none, soundex, first_token', '|', 'Occupation', 5, 0],
+    ['Addr + ZIP + Name', 'Address1, Zip, DonorFirst, DonorLast', 'first_token, none, first3, first3', '|', 'Address1', 5, 0],
+    ['City + ZIP + Employer', 'City, Zip, Employer', 'lower, zip3, employer_token', '|', 'Employer', 5, 0],
+    ['Name + City + Occupation', 'DonorFirst, DonorLast, City, Occupation', 'soundex, soundex, lower, first_token', '|', 'Occupation', 5, 0],
+    ['Soundex All + ZIP3', 'DonorFirst, DonorLast, City, Zip', 'soundex, soundex, lower, zip3', '|', '', 5, 0]
   ];
 
-  // Write the default rules starting from row 2
-  sheet.getRange(2, 1, defaultRules.length, 6).setValues(defaultRules);
-  Logger.log('Populated BlockingRules sheet with 50 default rules (10 per cohort)');
+  // Write the default rules starting from row 2 (7 columns now)
+  sheet.getRange(2, 1, defaultRules.length, 7).setValues(defaultRules);
+  Logger.log('Populated BlockingRules sheet with 50 intelligent conditional rules');
 }
