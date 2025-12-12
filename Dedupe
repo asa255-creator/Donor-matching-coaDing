@@ -1558,6 +1558,126 @@ function dl_prepareIncrementalTrainingJob_() {
   SpreadsheetApp.getUi().showModalDialog(html, 'Continue Training Locally');
 }
 
+/** Evolve Blocking Rules: Download current rules and provide script to evolve them */
+function dl_evolveBlockingRules_() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+
+  // Check if BlockingRules sheet exists
+  let sheet = ss.getSheetByName('BlockingRules');
+  if (!sheet || sheet.getLastRow() < 2) {
+    ui.alert(
+      'No Blocking Rules Found',
+      'The BlockingRules sheet is empty. The sheet will be populated with 50 default rules on next open. ' +
+      'Please close and reopen the spreadsheet to initialize the sheet.',
+      ui.ButtonSet.OK
+    );
+    return;
+  }
+
+  //Get web app URL
+  const webAppUrl = dl_getExecUrlFromOptions_();
+  if (!webAppUrl) {
+    ui.alert(
+      'Put your Web App URL ending with /exec in Options!I2.\nExample:\nhttps://script.google.com/macros/s/AKfycb.../exec'
+    );
+    return;
+  }
+
+  // Export BlockingRules sheet as CSV
+  const csvContent = exportSheetToCsvString_(sheet);
+  const csvBlob = Utilities.newBlob(csvContent, 'text/csv', 'blocking_rules.csv');
+
+  // Create CSV file in Drive
+  const folder = dl_getStagingFolder_();
+  const csvFile = folder.createFile(csvBlob);
+  const csvUrl = 'https://drive.google.com/uc?export=download&id=' + csvFile.getId();
+
+  // Generate token for data access
+  const token = dl_makeToken_();
+  const until = Date.now() + DL_CFG.tokenMinutes * 60 * 1000;
+
+  const props = PropertiesService.getDocumentProperties();
+  props.setProperty('dl_token', token);
+  props.setProperty('dl_token_until', String(until));
+
+  // Build command
+  const modelUrl = webAppUrl + '?model=1';
+  const krefUrl = webAppUrl + '?csv=kref&token=' + encodeURIComponent(token);
+  const fecUrl = webAppUrl + '?csv=fec&token=' + encodeURIComponent(token);
+
+  const scriptUrl = 'https://raw.githubusercontent.com/YOUR_REPO/evolve_blocking_rules.py';
+  const cmd =
+    'curl -o blocking_rules.csv "' + csvUrl + '" && ' +
+    'curl -o evolve_blocking_rules.py "' + scriptUrl + '" && ' +
+    'python3 evolve_blocking_rules.py ' +
+    '--rules blocking_rules.csv ' +
+    '--model-url "' + modelUrl + '" ' +
+    '--kref-url "' + krefUrl + '" ' +
+    '--fec-url "' + fecUrl + '"';
+
+  // Show instructions dialog
+  const html = HtmlService.createHtmlOutput(
+    '<div style="font-family:system-ui,Arial;padding:16px;max-width:720px">' +
+      '<h3 style="margin:0 0 12px 0">🧬 Evolve Blocking Rules</h3>' +
+      '<div style="margin:8px 0;color:#666;font-size:13px">' +
+        'This will download your current blocking rules and evolution script, then run evolution locally.' +
+      '</div>' +
+      '<div style="margin:12px 0;padding:12px;background:#f1f8e9;border-left:3px solid #7cb342">' +
+        '<strong>Copy this command into your Mac Terminal:</strong><br>' +
+        '<textarea id="cmd" style="width:100%;height:180px;margin-top:8px;font-family:monospace;font-size:11px" readonly>' +
+          dl_htmlEscape_(cmd) +
+        '</textarea>' +
+        '<button onclick="navigator.clipboard.writeText(document.getElementById(\'cmd\').value)" style="margin-top:8px;padding:6px 12px">Copy to clipboard</button>' +
+      '</div>' +
+      '<div style="margin:12px 0;padding:12px;background:#fff3cd;border-left:3px solid #ffc107">' +
+        '<strong>⚠️ Important:</strong><br>' +
+        '<ul style="margin:4px 0;padding-left:20px;font-size:12px">' +
+          '<li>Token expires in ' + DL_CFG.tokenMinutes + ' minutes</li>' +
+          '<li>Press Ctrl+C to stop evolution and save results</li>' +
+          '<li>Results will be saved to <code>blocking_rules_evolved.csv</code></li>' +
+        '</ul>' +
+      '</div>' +
+      '<div style="margin:12px 0;padding:12px;background:#fce4ec;border-left:3px solid #c2185b">' +
+        '<strong>After evolution completes:</strong><br>' +
+        '<ol style="margin:4px 0;padding-left:20px;font-size:12px">' +
+          '<li>Open <code>blocking_rules_evolved.csv</code></li>' +
+          '<li>Copy all rows (including header)</li>' +
+          '<li>Paste into BlockingRules sheet (A1), overwriting existing data</li>' +
+        '</ol>' +
+      '</div>' +
+      '<div style="margin-top:12px;padding:12px;background:#f5f5f5;font-size:11px">' +
+        '<strong>How it works:</strong> Evolution continuously improves your 50 blocking rules (5 cohorts × 10 rules). ' +
+        'Cohort 1 optimizes for pure performance, cohorts 2-5 maintain diversity. Rules are scored by finding matches ' +
+        'within a fixed comparison budget (100,000 comparisons per rule).' +
+      '</div>' +
+    '</div>'
+  ).setWidth(760).setHeight(620);
+
+  ui.showModalDialog(html, '🧬 Evolve Blocking Rules');
+}
+
+/** Helper to export sheet to CSV string */
+function exportSheetToCsvString_(sheet) {
+  const data = sheet.getDataRange().getValues();
+  const csvRows = [];
+
+  for (let i = 0; i < data.length; i++) {
+    const row = data[i];
+    const csvRow = row.map(cell => {
+      // Convert to string and escape quotes
+      const cellStr = String(cell);
+      if (cellStr.includes(',') || cellStr.includes('"') || cellStr.includes('\n')) {
+        return '"' + cellStr.replace(/"/g, '""') + '"';
+      }
+      return cellStr;
+    }).join(',');
+    csvRows.push(csvRow);
+  }
+
+  return csvRows.join('\n');
+}
+
 /** Progress sidebar */
 function dl_showProgressSidebar() {
   const html = HtmlService.createHtmlOutput(
@@ -2771,16 +2891,12 @@ function doGet(e) {
       'existing_data = json.loads(existing_model)',
       '',
       '# Load blocking rules if available',
-      '# ALL_BLOCKING_RULES = all 50 rules for evolution',
-      '# LEARNED_BLOCKING_RULES = top 3 per cohort (15 rules) for matching',
-      'ALL_BLOCKING_RULES = existing_data.get("all_blocking_rules", [])',
+      '# LEARNED_BLOCKING_RULES = blocking rules for matching (loaded from BlockingRules sheet)',
       'LEARNED_BLOCKING_RULES = existing_data.get("blocking_rules", [])',
-      'if ALL_BLOCKING_RULES:',
-      '    print(f"✓ Loaded {len(ALL_BLOCKING_RULES)} total blocking rules for evolution")',
       'if LEARNED_BLOCKING_RULES:',
-      '    print(f"✓ Loaded {len(LEARNED_BLOCKING_RULES)} blocking rules for matching (top 3 per cohort)")',
+      '    print(f"✓ Loaded {len(LEARNED_BLOCKING_RULES)} blocking rules for matching")',
       'else:',
-      '    print("⚠ No learned blocking rules found - will generate from scratch")',
+      '    print("⚠ No blocking rules found - will use hardcoded rules as fallback")',
       '    LEARNED_BLOCKING_RULES = []',
       '',
       'is_continuing = False  # Track if we loaded existing data',
@@ -3311,16 +3427,11 @@ function doGet(e) {
       '        print(f"New pairs added this session: {len(training_rows) - loaded_training_count}")',
       '        print("="*60)',
       '        ',
-      '        # Generate learned blocking rules from training data (using FULL donor dataset)',
-      '        # Pass existing rules for cumulative evolution',
-      '        blocking_rules = generate_learned_blocking_rules(training_rows, COMBINED, w, existing_rules=ALL_BLOCKING_RULES)',
-      '        ',
       '        # Save updated model and training data',
       '        print("\\nSaving updated training data and model...")',
       '        payload = {',
       '            "training_rows": training_rows,',
-      '            "model_weights": w,',
-      '            "blocking_rules": blocking_rules',
+      '            "model_weights": w',
       '        }',
       '        response = http_post(job["resultUrl"], payload)',
       '        print("✓ Training data saved successfully!")',
@@ -3980,11 +4091,6 @@ function doGet(e) {
       'print(f"  - Merge output rows: {len(merge_rows)}")',
       'print(f"  - Model weights: {len(w)}")',
       '',
-      '# Generate learned blocking rules from training data (using FULL donor dataset)',
-      '# Pass existing rules for cumulative evolution',
-      'blocking_rules = generate_learned_blocking_rules(training_rows, COMBINED, w, existing_rules=ALL_BLOCKING_RULES)',
-      'print(f"  - Blocking rules: {len(blocking_rules)}")',
-      '',
       '# Send in batches of 5000 rows (safe under 10 MB payload limit)',
       'batch_size = 5000',
       'num_batches = math.ceil(len(merge_rows) / batch_size) if merge_rows else 1',
@@ -4008,11 +4114,10 @@ function doGet(e) {
       '        "merge_rows": batch_rows',
       '    }',
       '    ',
-      '    # Include training rows, weights, and blocking rules only in first batch',
+      '    # Include training rows and weights only in first batch',
       '    if batch_idx == 0:',
       '        payload["training_rows"] = new_training_rows',
       '        payload["model_weights"] = w',
-      '        payload["blocking_rules"] = blocking_rules',
       '    ',
       '    try:',
       '        response_raw = http_post(job["resultUrl"], payload)',
