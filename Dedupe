@@ -4187,7 +4187,7 @@ function doGet(e) {
 
     // Add the complete evolution script from evolve_blocking_rules.py
     // (This will be a long array - I'll continue adding the script content)
-    py.push(...UNIFIED_MATCHING_MODULE);  // Reuse soundex, jaro_winkler, features
+    py.push(...UNIFIED_MATCHING_MODULE.split('\n'));  // Reuse soundex, jaro_winkler, features
 
     py.push(
       '',
