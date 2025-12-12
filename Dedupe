@@ -1633,12 +1633,12 @@ function dl_evolveBlockingRules_() {
       '</div>' +
       '<div style="margin-top:12px;padding:10px;background:#fff3cd;border-left:3px solid #ffc107;font-size:12px">' +
         '<strong>How it works:</strong> Evolution will continuously improve your 50 blocking rules ' +
-        'organized into 5 cohorts (10 rules each). Press <strong>Ctrl+C</strong> anytime to stop and save results to ' +
-        '<code>blocking_rules_evolved.csv</code>.' +
+        'organized into 5 cohorts (10 rules each). Press <strong>Ctrl+C</strong> anytime to stop.' +
       '</div>' +
-      '<div style="margin-top:8px;padding:10px;background:#fce4ec;border-left:3px solid #c2185b;font-size:12px">' +
-        '<strong>After evolution:</strong> Open the <code>blocking_rules_evolved.csv</code> file, ' +
-        'copy all rows (including header), and paste into BlockingRules sheet (A1) to replace existing rules.' +
+      '<div style="margin-top:8px;padding:10px;background:#e8f5e9;border-left:3px solid #4caf50;font-size:12px">' +
+        '<strong>✓ Results auto-saved to:</strong> <code>~/Downloads/blocking_rules_evolved.csv</code><br>' +
+        'Open the file in your Downloads folder, copy all rows (including header), ' +
+        'and paste into BlockingRules sheet (A1) to replace existing rules.' +
       '</div>' +
       '<div style="margin-top:8px;color:#666;font-size:11px">' +
         'Evolution scores rules by finding matches within a 100,000 comparison budget. ' +
@@ -4369,7 +4369,7 @@ function doGet(e) {
       '            all_survivors.append(survivors)',
       '            print(f"  Cohort 1: Top 5 by performance")',
       '            for i, (score, rule) in enumerate(survivors, 1):',
-      '                print(f"    {i}. {score:.1f} matches - {rule[\\'name\\']}")',
+      '                print(f"    {i}. {score:.1f} matches - {rule[\\"name\\"]}")',
       '        else:',
       '            adjusted_scores = []',
       '            for score, rule in cohort_rules:',
@@ -4386,7 +4386,7 @@ function doGet(e) {
       '            all_survivors.append(survivors)',
       '            print(f"  Cohort {cohort_idx + 1}: Top 5 with diversity")',
       '            for i, (score, rule) in enumerate(survivors, 1):',
-      '                print(f"    {i}. {score:.1f} matches - {rule[\\'name\\']}")',
+      '                print(f"    {i}. {score:.1f} matches - {rule[\\"name\\"]}")',
       '    return all_survivors',
       '',
       '# Main',
@@ -4484,8 +4484,10 @@ function doGet(e) {
       '    print(f"\\n✓ Round {round_num} complete. Population: {len(rules)} rules")',
       '    time.sleep(0.1)',
       '',
-      '# Save',
-      'output_csv = "blocking_rules_evolved.csv"',
+      '# Save to Downloads folder',
+      'import os',
+      'downloads_dir = os.path.expanduser("~/Downloads")',
+      'output_csv = os.path.join(downloads_dir, "blocking_rules_evolved.csv")',
       'print(f"\\nSaving results to {output_csv}...")',
       'with open(output_csv, "w", newline="") as f:',
       '    writer = csv.writer(f)',
@@ -4499,7 +4501,8 @@ function doGet(e) {
       '            rule["cohort"],',
       '            rule["score"]',
       '        ])',
-      'print(f"✓ Saved {len(rules)} evolved rules to {output_csv}")',
+      'print(f"✓ Saved {len(rules)} evolved rules to:")',
+      'print(f"  {output_csv}")',
       'print("\\n" + "="*60)',
       'print("EVOLUTION COMPLETE")',
       'print("="*60)'
