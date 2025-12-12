@@ -1584,6 +1584,16 @@ function dl_evolveBlockingRules_() {
     return;
   }
 
+  // Export KREF and FEC sheets to Drive (needed for CSV endpoints)
+  const kref = dl_exportSheetAsCsv_(DL_CFG.krefSheet);
+  const fec  = dl_exportSheetAsCsv_(DL_CFG.fecSheet);
+  if (!kref.file || !fec.file) {
+    ui.alert(
+      'Missing input sheets or no rows. Confirm sheets exist: ' + DL_CFG.krefSheet + ' and ' + DL_CFG.fecSheet
+    );
+    return;
+  }
+
   // Generate token for data access
   const token = dl_makeToken_();
   const until = Date.now() + DL_CFG.tokenMinutes * 60 * 1000;
@@ -1591,6 +1601,8 @@ function dl_evolveBlockingRules_() {
   const props = PropertiesService.getDocumentProperties();
   props.setProperty('dl_token', token);
   props.setProperty('dl_token_until', String(until));
+  props.setProperty('dl_kref_fileId', kref.file.getId());
+  props.setProperty('dl_fec_fileId', fec.file.getId());
 
   // Build URLs
   const modelUrl = webAppUrl + '?model=1';
