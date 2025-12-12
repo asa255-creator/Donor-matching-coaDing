@@ -4191,6 +4191,11 @@ function doGet(e) {
 
     py.push(
       '',
+      '# Wrapper function for features',
+      'def features(a, b):',
+      '    """Calculate 17 features using unified module."""',
+      '    return calculate_features(a, b)',
+      '',
       '# Blocking key generation',
       'def generate_blocking_key_from_rule(donor, rule):',
       '    fields = rule.get("fields", [])',
