@@ -2906,24 +2906,20 @@ function doGet(e) {
       'existing_data = json.loads(existing_model)',
       '',
       '# Load blocking rules if available',
-      '# ALL_BLOCKING_RULES = all 50 rules from BlockingRules sheet',
-      '# We select from these based on phase needs',
+      '# blocking_rules = top 1 from each cohort (5 rules total)',
+      '# all_blocking_rules = all 50 rules from BlockingRules sheet (for evolution)',
+      'TOP_COHORT_RULES = existing_data.get("blocking_rules", [])',
       'ALL_BLOCKING_RULES = existing_data.get("all_blocking_rules", [])',
-      'if ALL_BLOCKING_RULES:',
-      '    print(f"✓ Loaded {len(ALL_BLOCKING_RULES)} blocking rules from sheet")',
+      'if TOP_COHORT_RULES:',
+      '    print(f"✓ Loaded {len(TOP_COHORT_RULES)} blocking rules (top 1 per cohort)")',
       '    ',
-      '    # Phase 1: Top 3 rules overall (highest score regardless of cohort)',
-      '    PHASE1_RULES = sorted(ALL_BLOCKING_RULES, key=lambda r: r.get("score", 0), reverse=True)[:3]',
-      '    print(f"  Phase 1 (quick): Top 3 rules overall")',
+      '    # Phase 1: Top 3 of the 5 rules (highest scores)',
+      '    PHASE1_RULES = sorted(TOP_COHORT_RULES, key=lambda r: r.get("score", 0), reverse=True)[:3]',
+      '    print(f"  Phase 1 (quick): Top 3 of 5 rules")',
       '    ',
-      '    # Phase 2/3: Top 1 from each cohort (for diversity)',
-      '    PHASE2_3_RULES = []',
-      '    for cohort_num in range(1, 6):',
-      '        cohort_rules = [r for r in ALL_BLOCKING_RULES if r.get("cohort") == cohort_num]',
-      '        if cohort_rules:',
-      '            top_rule = max(cohort_rules, key=lambda r: r.get("score", 0))',
-      '            PHASE2_3_RULES.append(top_rule)',
-      '    print(f"  Phase 2/3 (thorough): Top 1 from each of 5 cohorts = {len(PHASE2_3_RULES)} rules")',
+      '    # Phase 2/3: All 5 rules (top 1 from each cohort for diversity)',
+      '    PHASE2_3_RULES = TOP_COHORT_RULES',
+      '    print(f"  Phase 2/3 (thorough): All 5 rules (1 per cohort)")',
       'else:',
       '    print("⚠ No blocking rules found - will use hardcoded rules as fallback")',
       '    PHASE1_RULES = []',
@@ -4697,13 +4693,15 @@ function doGet(e) {
         }
       }
 
-      // Select top 3 from each cohort for matching
+      // Select top 1 from each cohort for matching
       for (let c = 1; c <= 5; c++) {
         const cohortRules = allRules.filter(r => r.cohort === c);
         cohortRules.sort((a, b) => b.score - a.score); // Sort by score desc
-        matchingRules.push(...cohortRules.slice(0, 3)); // Top 3
+        if (cohortRules.length > 0) {
+          matchingRules.push(cohortRules[0]); // Top 1 only
+        }
       }
-      Logger.log('Loaded ' + allRules.length + ' total rules, selected ' + matchingRules.length + ' for matching (top 3 per cohort)');
+      Logger.log('Loaded ' + allRules.length + ' total rules, selected ' + matchingRules.length + ' for matching (top 1 per cohort)');
     }
 
     const body = {
