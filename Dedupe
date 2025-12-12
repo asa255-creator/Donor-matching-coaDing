@@ -1633,7 +1633,12 @@ function dl_evolveBlockingRules_() {
       '</div>' +
       '<div style="margin-top:12px;padding:10px;background:#fff3cd;border-left:3px solid #ffc107;font-size:12px">' +
         '<strong>How it works:</strong> Evolution will continuously improve your 50 blocking rules ' +
-        'organized into 5 cohorts (10 rules each). Press <strong>Ctrl+C</strong> anytime to stop.' +
+        'organized into 5 cohorts (10 rules each).' +
+      '</div>' +
+      '<div style="margin-top:8px;padding:10px;background:#ffebee;border-left:3px solid #f44336;font-size:12px">' +
+        '<strong>⚠️ To stop evolution:</strong> Open a NEW Terminal window and run:<br>' +
+        '<code style="display:block;margin-top:4px;padding:4px;background:#fff">touch /tmp/blocking_rules_stop</code>' +
+        '<div style="margin-top:4px;font-size:11px">The evolution will finish the current round and save results.</div>' +
       '</div>' +
       '<div style="margin-top:8px;padding:10px;background:#e8f5e9;border-left:3px solid #4caf50;font-size:12px">' +
         '<strong>✓ Results auto-saved to:</strong> <code>~/Downloads/blocking_rules_evolved.csv</code><br>' +
@@ -4154,20 +4159,29 @@ function doGet(e) {
   if (p.evolve_runner == '1') {
     const py = [
       '#!/usr/bin/env python3',
-      'import sys, json, csv, io, urllib.request, argparse, time, math, random, signal',
+      'import sys, json, csv, io, urllib.request, argparse, time, math, random, os',
       'from collections import defaultdict',
       '',
-      '# Global flag for graceful shutdown',
-      'should_stop = False',
+      '# Early termination mechanism',
+      '# Create file /tmp/blocking_rules_stop to stop evolution and save results',
+      'early_stop_requested = False',
+      'early_stop_file = "/tmp/blocking_rules_stop"',
       '',
-      'def signal_handler(sig, frame):',
-      '    global should_stop',
-      '    print("\\n" + "="*60)',
-      '    print("STOPPING - Saving best rules...")',
-      '    print("="*60)',
-      '    should_stop = True',
+      '# Remove any existing stop file at startup',
+      'if os.path.exists(early_stop_file):',
+      '    os.remove(early_stop_file)',
       '',
-      'signal.signal(signal.SIGINT, signal_handler)',
+      'def check_early_stop():',
+      '    """Check if user created the stop file."""',
+      '    global early_stop_requested',
+      '    if not early_stop_requested and os.path.exists(early_stop_file):',
+      '        early_stop_requested = True',
+      '        print("\\n" + "="*60)',
+      '        print("EARLY STOP REQUESTED - Stop file detected")',
+      '        print("Finishing current round and saving results...")',
+      '        print("="*60 + "\\n")',
+      '        return True',
+      '    return early_stop_requested',
       ''
     ];
 
@@ -4449,9 +4463,9 @@ function doGet(e) {
       'round_num = 0',
       'comparison_budget = 100000',
       'print(f"\\nStarting evolution (budget: {comparison_budget:,} comparisons per rule)")',
-      'print("Press Ctrl+C to stop and save results\\n")',
+      'print(f"To stop evolution early: touch {early_stop_file}\\n")',
       '',
-      'while not should_stop:',
+      'while not check_early_stop():',
       '    round_num += 1',
       '    print(f"\\n{\\'=\\'*60}")',
       '    print(f"ROUND {round_num}")',
