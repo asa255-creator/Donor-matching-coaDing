@@ -6542,11 +6542,15 @@ function cd_receiveResults_(body) {
     // Auto-resize and cleanup AFTER confirming write succeeded
     if (batchNum === totalBatches) {
       try {
-        // Auto-resize columns (non-critical, can fail)
-        for (let i = 1; i <= header.length; i++) {
-          uploadSheet.autoResizeColumn(i);
+        // Auto-resize columns only for smaller datasets (avoid timeout on large sheets)
+        if (totalRows <= 10000) {
+          for (let i = 1; i <= header.length; i++) {
+            uploadSheet.autoResizeColumn(i);
+          }
+          Logger.log('Columns auto-resized');
+        } else {
+          Logger.log('Skipping auto-resize for large dataset (' + totalRows + ' rows)');
         }
-        Logger.log('Columns auto-resized');
       } catch (e) {
         Logger.log('Auto-resize failed (non-critical): ' + e.message);
       }
