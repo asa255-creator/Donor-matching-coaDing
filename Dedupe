@@ -1610,15 +1610,14 @@ function dl_evolveBlockingRules_() {
   const fecUrl = webAppUrl + '?csv=fec&token=' + encodeURIComponent(token);
   const rulesUrl = webAppUrl + '?csv=blocking_rules&token=' + encodeURIComponent(token);
 
-  // Build one-line command (redirect stdin from terminal for input() to work)
+  // Build command that downloads script first, then runs it (so stdin is available for input())
   const cmd =
-    "curl -sSL '" + webAppUrl + "?evolve_runner=1' | " +
-    "python3 - " +
+    "curl -sSL '" + webAppUrl + "?evolve_runner=1' -o /tmp/evolve_rules.py && " +
+    "python3 /tmp/evolve_rules.py " +
     "--model-url '" + modelUrl + "' " +
     "--kref-url '" + krefUrl + "' " +
     "--fec-url '" + fecUrl + "' " +
-    "--rules-url '" + rulesUrl + "' " +
-    "< /dev/tty";
+    "--rules-url '" + rulesUrl + "'";
 
   // Show command dialog
   const html = HtmlService.createHtmlOutput(
