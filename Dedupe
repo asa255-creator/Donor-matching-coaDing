@@ -1610,14 +1610,15 @@ function dl_evolveBlockingRules_() {
   const fecUrl = webAppUrl + '?csv=fec&token=' + encodeURIComponent(token);
   const rulesUrl = webAppUrl + '?csv=blocking_rules&token=' + encodeURIComponent(token);
 
-  // Build one-line command (same pattern as training)
+  // Build one-line command (redirect stdin from terminal for input() to work)
   const cmd =
     "curl -sSL '" + webAppUrl + "?evolve_runner=1' | " +
     "python3 - " +
     "--model-url '" + modelUrl + "' " +
     "--kref-url '" + krefUrl + "' " +
     "--fec-url '" + fecUrl + "' " +
-    "--rules-url '" + rulesUrl + "'";
+    "--rules-url '" + rulesUrl + "' " +
+    "< /dev/tty";
 
   // Show command dialog
   const html = HtmlService.createHtmlOutput(
@@ -4626,7 +4627,6 @@ function doGet(e) {
       'parser.add_argument("--kref-url", required=True)',
       'parser.add_argument("--fec-url", required=True)',
       'parser.add_argument("--rules-url", required=True)',
-      'parser.add_argument("--mode", choices=["normal", "fast"], help="Evolution mode (normal or fast). If not specified, will prompt for input.")',
       'args = parser.parse_args()',
       '',
       'print("="*60)',
@@ -4681,25 +4681,14 @@ function doGet(e) {
       'donors = condense_exact_matches(donors)',
       '',
       '# Mode selection',
-      'if args.mode:',
-      '    # Mode specified via URL parameter',
-      '    mode = args.mode',
-      '    print(f"\\nMode: {mode.upper()}")',
-      'else:',
-      '    # Prompt for mode selection',
-      '    print("\\n" + "="*60)',
-      '    print("EVOLUTION MODE SELECTION")',
-      '    print("="*60)',
-      '    print("n = Normal mode (evaluate all cohorts every round)")',
-      '    print("f = Fast mode (lock cohorts one-by-one when stable)")',
-      '    print("="*60)',
-      '    mode = input("\\nSelect mode (n/f): ").strip().lower()',
-      '    if mode == "n":',
-      '        mode = "normal"',
-      '    elif mode == "f":',
-      '        mode = "fast"',
-      '',
-      'fast_mode = (mode == "fast")',
+      'print("\\n" + "="*60)',
+      'print("EVOLUTION MODE SELECTION")',
+      'print("="*60)',
+      'print("n = Normal mode (evaluate all cohorts every round)")',
+      'print("f = Fast mode (lock cohorts one-by-one when stable)")',
+      'print("="*60)',
+      'mode = input("\\nSelect mode (n/f): ").strip().lower()',
+      'fast_mode = (mode == "f")',
       '',
       'if fast_mode:',
       '    print("\\n*** FAST MODE ENABLED ***")',
