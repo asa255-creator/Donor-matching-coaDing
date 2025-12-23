@@ -1707,7 +1707,7 @@ function doGet(e) {
   if (p.runner == '1') {
     const py = [
       '#!/usr/bin/env python3',
-      'import sys, json, csv, io, urllib.request, argparse, time, math, random, re, os',
+      'import sys, json, csv, io, urllib.request, ssl, argparse, time, math, random, re, os',
       'from collections import defaultdict',
       '',
       '# ----------------------------',
@@ -1744,9 +1744,12 @@ function doGet(e) {
       '    print(f"\\nFetching: {url_display}")',
       '    start_time = time.time()',
       '    ',
+      '    # Create SSL context to handle certificate verification',
+      '    ssl_context = ssl.create_default_context()',
+      '    ',
       '    for attempt in range(max_retries + 1):',
       '        try:',
-      '            with urllib.request.urlopen(url, timeout=300) as r:',
+      '            with urllib.request.urlopen(url, timeout=300, context=ssl_context) as r:',
       '                data = r.read()',
       '                elapsed = time.time() - start_time',
       '                size_mb = len(data) / (1024 * 1024)',
@@ -1776,11 +1779,12 @@ function doGet(e) {
       '    delays = [2, 4, 8, 16]  # exponential backoff in seconds',
       '    ',
       '    data = json.dumps(obj).encode("utf-8")',
+      '    ssl_context = ssl.create_default_context()',
       '    ',
       '    for attempt in range(max_retries + 1):',
       '        try:',
       '            req = urllib.request.Request(url, data=data, headers={"Content-Type":"application/json"})',
-      '            with urllib.request.urlopen(req) as r:',
+      '            with urllib.request.urlopen(req, context=ssl_context) as r:',
       '                return r.read().decode("utf-8")',
       '        except urllib.error.HTTPError as e:',
       '            if e.code == 429 and attempt < max_retries:',
@@ -4187,7 +4191,7 @@ function doGet(e) {
   if (p.evolve_runner == '1') {
     const py = [
       '#!/usr/bin/env python3',
-      'import sys, json, csv, io, urllib.request, argparse, time, math, random, os',
+      'import sys, json, csv, io, urllib.request, ssl, argparse, time, math, random, os',
       'from collections import defaultdict',
       '',
       '# Early termination mechanism',
@@ -4943,9 +4947,12 @@ function doGet(e) {
       'print("EVOLUTIONARY BLOCKING RULE OPTIMIZATION")',
       'print("="*60)',
       '',
+      '# Create SSL context for HTTPS requests',
+      'ssl_context = ssl.create_default_context()',
+      '',
       '# Load model',
       'print("\\nLoading model data...")',
-      'with urllib.request.urlopen(args.model_url) as response:',
+      'with urllib.request.urlopen(args.model_url, context=ssl_context) as response:',
       '    model_data = json.loads(response.read().decode("utf-8"))',
       'w = model_data.get("weights")',
       'if not w:',
@@ -4955,11 +4962,11 @@ function doGet(e) {
       '',
       '# Load donors',
       'print("\\nLoading donor data...")',
-      'with urllib.request.urlopen(args.kref_url) as response:',
+      'with urllib.request.urlopen(args.kref_url, context=ssl_context) as response:',
       '    kref_data = response.read().decode("utf-8")',
       '    kref_donors = list(csv.DictReader(io.StringIO(kref_data)))',
       'print(f"✓ Loaded {len(kref_donors)} KREF donors")',
-      'with urllib.request.urlopen(args.fec_url) as response:',
+      'with urllib.request.urlopen(args.fec_url, context=ssl_context) as response:',
       '    fec_data = response.read().decode("utf-8")',
       '    fec_donors = list(csv.DictReader(io.StringIO(fec_data)))',
       'print(f"✓ Loaded {len(fec_donors)} FEC donors")',
@@ -4968,7 +4975,7 @@ function doGet(e) {
       '',
       '# Load rules',
       'print("\\nLoading initial rules...")',
-      'with urllib.request.urlopen(args.rules_url) as response:',
+      'with urllib.request.urlopen(args.rules_url, context=ssl_context) as response:',
       '    rules_data = response.read().decode("utf-8")',
       '    rules_reader = csv.DictReader(io.StringIO(rules_data))',
       '    rules = []',
@@ -7157,6 +7164,7 @@ from collections import defaultdict
 import math
 import re
 import urllib.request
+import ssl
 import time
 
 # HTTP helpers with retry logic (same as training/CD matcher)
@@ -7168,9 +7176,12 @@ def http_get(url):
     print(f"\\nFetching: {url_display}")
     start_time = time.time()
 
+    # Create SSL context to handle certificate verification
+    ssl_context = ssl.create_default_context()
+
     for attempt in range(max_retries + 1):
         try:
-            with urllib.request.urlopen(url, timeout=300) as r:
+            with urllib.request.urlopen(url, timeout=300, context=ssl_context) as r:
                 data = r.read()
                 elapsed = time.time() - start_time
                 size_mb = len(data) / (1024 * 1024)
@@ -7513,7 +7524,7 @@ function cd_receiveResults_(body) {
 function cd_getMatcherScript_() {
   const py = [
     '#!/usr/bin/env python3',
-    'import sys, json, csv, io, urllib.request, argparse, math, re, time',
+    'import sys, json, csv, io, urllib.request, ssl, argparse, math, re, time',
     'from collections import defaultdict',
     'from datetime import datetime',
     '',
@@ -7527,9 +7538,12 @@ function cd_getMatcherScript_() {
     '    print(f"\\nFetching: {url_display}")',
     '    start_time = time.time()',
     '    ',
+    '    # Create SSL context to handle certificate verification',
+    '    ssl_context = ssl.create_default_context()',
+    '    ',
     '    for attempt in range(max_retries + 1):',
     '        try:',
-    '            with urllib.request.urlopen(url, timeout=300) as r:',
+    '            with urllib.request.urlopen(url, timeout=300, context=ssl_context) as r:',
     '                data = r.read()',
     '                elapsed = time.time() - start_time',
     '                size_mb = len(data) / (1024 * 1024)',
@@ -7559,11 +7573,12 @@ function cd_getMatcherScript_() {
     '    delays = [2, 4, 8, 16]  # exponential backoff in seconds',
     '    ',
     '    data = json.dumps(obj).encode("utf-8")',
+    '    ssl_context = ssl.create_default_context()',
     '    req = urllib.request.Request(url, data=data, headers={"Content-Type":"application/json"})',
     '    ',
     '    for attempt in range(max_retries + 1):',
     '        try:',
-    '            with urllib.request.urlopen(req) as r:',
+    '            with urllib.request.urlopen(req, context=ssl_context) as r:',
     '                return r.read().decode("utf-8")',
     '        except urllib.error.HTTPError as e:',
     '            if e.code == 429 and attempt < max_retries:',
