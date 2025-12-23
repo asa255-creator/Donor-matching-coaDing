@@ -1710,6 +1710,13 @@ function doGet(e) {
       'import sys, json, csv, io, urllib.request, ssl, argparse, time, math, random, re, os',
       'from collections import defaultdict',
       '',
+      '# Try to use certifi for SSL certificates (fixes certificate verification on some systems)',
+      'try:',
+      '    import certifi',
+      '    SSL_CAFILE = certifi.where()',
+      'except ImportError:',
+      '    SSL_CAFILE = None',
+      '',
       '# ----------------------------',
       '# Early termination mechanism',
       '# Create file /tmp/donor_matcher_stop to stop matching and output current results',
@@ -1745,7 +1752,10 @@ function doGet(e) {
       '    start_time = time.time()',
       '    ',
       '    # Create SSL context to handle certificate verification',
-      '    ssl_context = ssl.create_default_context()',
+      '    if SSL_CAFILE:',
+      '        ssl_context = ssl.create_default_context(cafile=SSL_CAFILE)',
+      '    else:',
+      '        ssl_context = ssl.create_default_context()',
       '    ',
       '    for attempt in range(max_retries + 1):',
       '        try:',
@@ -1779,7 +1789,10 @@ function doGet(e) {
       '    delays = [2, 4, 8, 16]  # exponential backoff in seconds',
       '    ',
       '    data = json.dumps(obj).encode("utf-8")',
-      '    ssl_context = ssl.create_default_context()',
+      '    if SSL_CAFILE:',
+      '        ssl_context = ssl.create_default_context(cafile=SSL_CAFILE)',
+      '    else:',
+      '        ssl_context = ssl.create_default_context()',
       '    ',
       '    for attempt in range(max_retries + 1):',
       '        try:',
@@ -4194,6 +4207,13 @@ function doGet(e) {
       'import sys, json, csv, io, urllib.request, ssl, argparse, time, math, random, os',
       'from collections import defaultdict',
       '',
+      '# Try to use certifi for SSL certificates',
+      'try:',
+      '    import certifi',
+      '    SSL_CAFILE = certifi.where()',
+      'except ImportError:',
+      '    SSL_CAFILE = None',
+      '',
       '# Early termination mechanism',
       '# Create file /tmp/blocking_rules_stop to stop evolution and save results',
       'early_stop_requested = False',
@@ -4948,7 +4968,10 @@ function doGet(e) {
       'print("="*60)',
       '',
       '# Create SSL context for HTTPS requests',
-      'ssl_context = ssl.create_default_context()',
+      'if SSL_CAFILE:',
+      '    ssl_context = ssl.create_default_context(cafile=SSL_CAFILE)',
+      'else:',
+      '    ssl_context = ssl.create_default_context()',
       '',
       '# Load model',
       'print("\\nLoading model data...")',
@@ -7167,6 +7190,13 @@ import urllib.request
 import ssl
 import time
 
+# Try to use certifi for SSL certificates
+try:
+    import certifi
+    SSL_CAFILE = certifi.where()
+except ImportError:
+    SSL_CAFILE = None
+
 # HTTP helpers with retry logic (same as training/CD matcher)
 def http_get(url):
     max_retries = 4
@@ -7177,7 +7207,10 @@ def http_get(url):
     start_time = time.time()
 
     # Create SSL context to handle certificate verification
-    ssl_context = ssl.create_default_context()
+    if SSL_CAFILE:
+        ssl_context = ssl.create_default_context(cafile=SSL_CAFILE)
+    else:
+        ssl_context = ssl.create_default_context()
 
     for attempt in range(max_retries + 1):
         try:
@@ -7528,6 +7561,13 @@ function cd_getMatcherScript_() {
     'from collections import defaultdict',
     'from datetime import datetime',
     '',
+    '# Try to use certifi for SSL certificates',
+    'try:',
+    '    import certifi',
+    '    SSL_CAFILE = certifi.where()',
+    'except ImportError:',
+    '    SSL_CAFILE = None',
+    '',
     '# HTTP helpers with retry logic',
     'def http_get(url):',
     '    max_retries = 4',
@@ -7539,7 +7579,10 @@ function cd_getMatcherScript_() {
     '    start_time = time.time()',
     '    ',
     '    # Create SSL context to handle certificate verification',
-    '    ssl_context = ssl.create_default_context()',
+    '    if SSL_CAFILE:',
+    '        ssl_context = ssl.create_default_context(cafile=SSL_CAFILE)',
+    '    else:',
+    '        ssl_context = ssl.create_default_context()',
     '    ',
     '    for attempt in range(max_retries + 1):',
     '        try:',
@@ -7573,7 +7616,10 @@ function cd_getMatcherScript_() {
     '    delays = [2, 4, 8, 16]  # exponential backoff in seconds',
     '    ',
     '    data = json.dumps(obj).encode("utf-8")',
-    '    ssl_context = ssl.create_default_context()',
+    '    if SSL_CAFILE:',
+    '        ssl_context = ssl.create_default_context(cafile=SSL_CAFILE)',
+    '    else:',
+    '        ssl_context = ssl.create_default_context()',
     '    req = urllib.request.Request(url, data=data, headers={"Content-Type":"application/json"})',
     '    ',
     '    for attempt in range(max_retries + 1):',
