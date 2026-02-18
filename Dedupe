@@ -8202,6 +8202,7 @@ function cd_getMatcherScript_() {
     'print(f"  Large blocks encountered: {large_block_count}")',
     '',
     '# PASS 2: Thorough matching',
+    'matched_count_pass2 = 0',
     'unmatched_pass2 = []',
     'if unmatched_donors:',
     '    print("\\n" + "="*60)',
