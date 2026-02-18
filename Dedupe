@@ -4149,7 +4149,7 @@ function doGet(e) {
       '        writer.writerow(merge_output_header)',
       '        writer.writerows(rows)',
       '    abs_path = os.path.abspath(path)',
-      '    print("\n! Saved fallback merge output CSV")',
+      '    print("\\n! Saved fallback merge output CSV")',
       '    print(f"  - File: {abs_path}")',
       '    print("  - You can open this file and paste into the Merge output sheet if needed")',
       '    return abs_path',
