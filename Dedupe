@@ -12,6 +12,7 @@
  *   dl_showProgressSidebar
  *   diagnostic_analyzeMatching (NEW - add to your menu)
  *   cd_uploadDialog (NEW - add to your menu)
+ *   cd_mergeOutputUploadDialog (NEW - add to your menu)
  *   cd_prepareMatchingJob_ (NEW - add to your menu)
  *   doGet
  *   doPost
@@ -6584,6 +6585,17 @@ function cd_uploadDialog() {
 }
 
 /**
+ * Opens a dialog for drag-and-drop Merge output CSV upload
+ */
+function cd_mergeOutputUploadDialog() {
+  const html = HtmlService.createHtmlOutput(cd_getMergeOutputUploadHtml_())
+    .setWidth(500)
+    .setHeight(300)
+    .setTitle('Upload Merge Output CSV');
+  SpreadsheetApp.getUi().showModalDialog(html, 'Merge Output Upload');
+}
+
+/**
  * Returns the HTML for the drag-and-drop interface
  */
 function cd_getUploadHtml_() {
@@ -6732,6 +6744,174 @@ function cd_getUploadHtml_() {
           .withSuccessHandler(onSuccess)
           .withFailureHandler(onError)
           .cd_processUpload(csvContent, file.name);
+      };
+      reader.onerror = () => {
+        showStatus('error', 'Failed to read file. Please try again.');
+      };
+      reader.readAsText(file);
+    }
+
+    function onSuccess(result) {
+      showStatus('success', result.message + ' (' + result.rowCount + ' rows imported)');
+      setTimeout(() => {
+        google.script.host.close();
+      }, 2000);
+    }
+
+    function onError(error) {
+      showStatus('error', 'Error: ' + error.message);
+    }
+
+    function showStatus(type, message) {
+      status.className = type;
+      status.textContent = message;
+    }
+  </script>
+</body>
+</html>
+  `;
+}
+
+/**
+ * Returns the HTML for uploading merge output CSV
+ */
+function cd_getMergeOutputUploadHtml_() {
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 20px;
+      margin: 0;
+    }
+    #dropzone {
+      border: 3px dashed #4285f4;
+      border-radius: 8px;
+      padding: 40px;
+      text-align: center;
+      background-color: #f8f9fa;
+      transition: all 0.3s;
+      cursor: pointer;
+    }
+    #dropzone.dragover {
+      background-color: #e8f0fe;
+      border-color: #1967d2;
+    }
+    #dropzone:hover {
+      background-color: #e8f0fe;
+    }
+    .icon {
+      font-size: 48px;
+      color: #4285f4;
+      margin-bottom: 10px;
+    }
+    .message {
+      font-size: 16px;
+      color: #5f6368;
+      margin-bottom: 8px;
+    }
+    .hint {
+      font-size: 12px;
+      color: #80868b;
+    }
+    #status {
+      margin-top: 20px;
+      padding: 10px;
+      border-radius: 4px;
+      display: none;
+    }
+    #status.success {
+      background-color: #d4edda;
+      color: #155724;
+      border: 1px solid #c3e6cb;
+      display: block;
+    }
+    #status.error {
+      background-color: #f8d7da;
+      color: #721c24;
+      border: 1px solid #f5c6cb;
+      display: block;
+    }
+    #status.processing {
+      background-color: #fff3cd;
+      color: #856404;
+      border: 1px solid #ffeaa7;
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <div id="dropzone">
+    <div class="icon">📥</div>
+    <div class="message">Drag and drop your Merge output CSV file here</div>
+    <div class="hint">or click to select a file</div>
+  </div>
+  <input type="file" id="fileInput" accept=".csv" style="display: none;">
+  <div id="status"></div>
+
+  <script>
+    const dropzone = document.getElementById('dropzone');
+    const fileInput = document.getElementById('fileInput');
+    const status = document.getElementById('status');
+
+    dropzone.addEventListener('click', () => {
+      fileInput.click();
+    });
+
+    fileInput.addEventListener('change', (e) => {
+      if (e.target.files.length > 0) {
+        handleFile(e.target.files[0]);
+      }
+    });
+
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+      dropzone.addEventListener(eventName, preventDefaults, false);
+      document.body.addEventListener(eventName, preventDefaults, false);
+    });
+
+    function preventDefaults(e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+
+    ['dragenter', 'dragover'].forEach(eventName => {
+      dropzone.addEventListener(eventName, () => {
+        dropzone.classList.add('dragover');
+      }, false);
+    });
+
+    ['dragleave', 'drop'].forEach(eventName => {
+      dropzone.addEventListener(eventName, () => {
+        dropzone.classList.remove('dragover');
+      }, false);
+    });
+
+    dropzone.addEventListener('drop', (e) => {
+      const files = e.dataTransfer.files;
+      if (files.length > 0) {
+        handleFile(files[0]);
+      }
+    }, false);
+
+    function handleFile(file) {
+      if (!file.name.endsWith('.csv')) {
+        showStatus('error', 'Please upload a CSV file only.');
+        return;
+      }
+
+      showStatus('processing', 'Reading file: ' + file.name + '...');
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const csvContent = e.target.result;
+        showStatus('processing', 'Uploading to Merge output sheet...');
+
+        google.script.run
+          .withSuccessHandler(onSuccess)
+          .withFailureHandler(onError)
+          .cd_processMergeOutputUpload(csvContent, file.name);
       };
       reader.onerror = () => {
         showStatus('error', 'Failed to read file. Please try again.');
@@ -6911,6 +7091,63 @@ function cd_processUpload(csvContent, fileName) {
   } catch (error) {
     Logger.log('Error uploading Campaign Deputy export: ' + error.message);
     throw new Error('Failed to process CSV: ' + error.message);
+  }
+}
+
+/**
+ * Processes uploaded merge output CSV and writes it to Merge output sheet.
+ * @param {string} csvContent - Merge output CSV contents
+ * @param {string} fileName - Original filename
+ * @returns {Object} Result with success status and message
+ */
+function cd_processMergeOutputUpload(csvContent, fileName) {
+  try {
+    const rows = Utilities.parseCsv(csvContent);
+    if (rows.length === 0) {
+      throw new Error('CSV file is empty');
+    }
+
+    const expectedHeader = [
+      'Recipient', 'DonorFirst', 'DonorLast', 'Address1', 'Address2',
+      'City', 'State', 'Zip', 'Amount', 'WeightedAmount', 'ReceiptDate',
+      'Occupation', 'Employer', 'DonationID', 'DonorID', 'Confidence'
+    ];
+
+    const uploadedHeader = rows[0].map(v => String(v || '').trim());
+    const missingHeaderCols = expectedHeader.filter(col => !uploadedHeader.includes(col));
+    if (missingHeaderCols.length > 0) {
+      throw new Error('Missing required columns: ' + missingHeaderCols.join(', '));
+    }
+
+    const ss = SpreadsheetApp.getActive();
+    let sheet = ss.getSheetByName('Merge output');
+    if (!sheet) {
+      sheet = ss.insertSheet('Merge output');
+    } else {
+      sheet.clear();
+    }
+
+    sheet.getRange(1, 1, rows.length, rows[0].length).setValues(rows);
+
+    const headerRange = sheet.getRange(1, 1, 1, rows[0].length);
+    headerRange.setFontWeight('bold');
+    headerRange.setBackground('#4285f4');
+    headerRange.setFontColor('#ffffff');
+    sheet.setFrozenRows(1);
+
+    for (let i = 1; i <= rows[0].length; i++) {
+      sheet.autoResizeColumn(i);
+    }
+
+    Logger.log('Merge output uploaded: ' + fileName + ' (' + rows.length + ' rows)');
+    return {
+      success: true,
+      message: 'Successfully imported ' + fileName + ' into Merge output',
+      rowCount: Math.max(0, rows.length - 1)
+    };
+  } catch (error) {
+    Logger.log('Error uploading merge output: ' + error.message);
+    throw new Error('Failed to process merge output CSV: ' + error.message);
   }
 }
 
