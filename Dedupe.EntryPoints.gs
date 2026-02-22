@@ -41,6 +41,10 @@ function dl_routePostRequest_(e) {
   return dl_handlePostRequest_(e, route);
 }
 
+function dl_sanitizePyNewlinePrints_(pyText) {
+  return String(pyText || '').replace(/^([ \t]*)print\("\\n/gm, "$1print(\"\")\n$1print(\"");
+}
+
 function dl_resolveRoute_(table, params) {
   const p = params || {};
   for (const route of table) {
@@ -2595,7 +2599,8 @@ function dl_handleGetRequest_(e, routeName) {
       '    save_merge_output_fallback(merge_rows)'
     ].join('\n');
 
-    return ContentService.createTextOutput(py).setMimeType(ContentService.MimeType.TEXT);
+    const pyText = dl_sanitizePyNewlinePrints_(py);
+    return ContentService.createTextOutput(pyText).setMimeType(ContentService.MimeType.TEXT);
   }
 
   // Evolution runner payload
@@ -3966,7 +3971,8 @@ function dl_handleGetRequest_(e, routeName) {
       'print("="*60)'
     );
 
-    return ContentService.createTextOutput(py.join('\n')).setMimeType(ContentService.MimeType.TEXT);
+    const pyText = dl_sanitizePyNewlinePrints_(py.join('\n'));
+    return ContentService.createTextOutput(pyText).setMimeType(ContentService.MimeType.TEXT);
   }
 
   // Job bundle for the runner
