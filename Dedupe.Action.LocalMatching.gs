@@ -56,8 +56,9 @@ function dl_prepareLocalJobAndShowCommand_() {
   const runnerVersion = String(Date.now());
 
   const cmd =
-    "curl -sSL '" + webAppUrl + "?runner=1&v=" + runnerVersion + "' | " +
-    "python3 - --bundle '" + webAppUrl + "?job=1&token=" + token + "' " +
+    "curl -sSL '" + webAppUrl + "?runner=1&v=" + runnerVersion + "' -o /tmp/donor_runner.py && " +
+    "head -n 3 /tmp/donor_runner.py && " +
+    "python3 /tmp/donor_runner.py --bundle '" + webAppUrl + "?job=1&token=" + token + "' " +
     "--result '" + webAppUrl + "?result=1&token=" + token + "'";
 
   dl_setProgress_('Waiting', 0, 0, 'Copy the command into Terminal');

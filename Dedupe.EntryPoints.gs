@@ -68,6 +68,7 @@ function dl_handleGetRequest_(e, routeName) {
   if (p.runner == '1') {
     const py = [
       '#!/usr/bin/env python3',
+      '# RUNNER_FINGERPRINT: DM_LOCAL_RUNNER_20260222',
       'import sys, json, csv, io, urllib.request, ssl, argparse, time, math, random, re, os',
       'from collections import defaultdict',
       '',
