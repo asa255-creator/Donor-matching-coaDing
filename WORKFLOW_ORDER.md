@@ -14,6 +14,7 @@
    - Fetches local donation data from KREF database
    - Goes into `KREF_Exports` sheet
    - File: `Donations Finder`
+   - **Special case — `judges`:** If an Organizations row is named `judges`, KREF is queried for all CampaignCommittee contributions (no specific org name filter). The **Recipient** column will show the committee name (e.g. `Committee To Keep Judge Moynahan`) rather than the candidate's personal name.
 
 ### Phase 2: Donor Deduplication (Dedupe via Terminal)
 3. **Merge and Match Donors** (Donor Tools → Run locally: prepare job and show Terminal command)
