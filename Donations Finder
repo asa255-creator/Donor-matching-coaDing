@@ -116,7 +116,7 @@ function exportAllToSheet() {
         ContributionTypes: opts.contributionTypes
       });
     }
-    appendReducedCsv_(url, out, multiplier);
+    appendReducedCsv_(url, out, multiplier, orgName.trim().toLowerCase() === 'judges');
     done++; showProgress_(done, total, `Organization: ${orgName}`); Utilities.sleep(150);
   }
 
@@ -125,7 +125,7 @@ function exportAllToSheet() {
 }
 
 /** CSV -> SELECTED COLUMNS ONLY, RECIPIENT FROM CSV **/
-function appendReducedCsv_(url, outSheet, multiplier) {
+function appendReducedCsv_(url, outSheet, multiplier, preferOrg = false) {
   const csvText = httpGetText_(url);
   if (!csvText) return;
 
@@ -161,12 +161,15 @@ function appendReducedCsv_(url, outSheet, multiplier) {
   for (const r of data) {
     if (!r || !r.length) continue;
 
+    const toOrgVal = safeGet_(r, idx.toOrg);
     const rf = capName_(safeGet_(r, idx.recipFirst));
     const rl = capName_(safeGet_(r, idx.recipLast));
-    let recipient = (rf || rl) ? [rf, rl].filter(Boolean).join(' ') : '';
-    if (!recipient) {
-      const toOrg = safeGet_(r, idx.toOrg);
-      if (toOrg) recipient = toOrg.trim();
+    let recipient;
+    if (preferOrg && toOrgVal) {
+      recipient = toOrgVal.trim();
+    } else {
+      recipient = (rf || rl) ? [rf, rl].filter(Boolean).join(' ') : '';
+      if (!recipient && toOrgVal) recipient = toOrgVal.trim();
     }
 
     const donorFirst = capName_(safeGet_(r, idx.donorFirst));
