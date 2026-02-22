@@ -42,7 +42,11 @@ function dl_routePostRequest_(e) {
 }
 
 function dl_sanitizePyNewlinePrints_(pyText) {
-  return String(pyText || '').replace(/^([ \t]*)print\("\\n/gm, "$1print(\"\")\n$1print(\"");
+  const text = String(pyText || '');
+  // Handle normal escaped-newline print literals: print("\n...")
+  const fixedEscaped = text.replace(/^([ \t]*)print\("\\n/gm, '$1print("")\n$1print("');
+  // Defensive fallback for payloads that arrive already split as print(" + newline
+  return fixedEscaped.replace(/print\("\r?\n/g, 'print("")\nprint("');
 }
 
 function dl_resolveRoute_(table, params) {

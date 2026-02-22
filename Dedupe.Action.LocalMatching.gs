@@ -53,8 +53,10 @@ function dl_prepareLocalJobAndShowCommand_() {
   props.setProperty('dl_fec_fileId',  fec.file.getId());
   props.setProperty('dl_staging_folderId', kref.folder.getId());
 
+  const runnerVersion = String(Date.now());
+
   const cmd =
-    "curl -sSL '" + webAppUrl + "?runner=1' | " +
+    "curl -sSL '" + webAppUrl + "?runner=1&v=" + runnerVersion + "' | " +
     "python3 - --bundle '" + webAppUrl + "?job=1&token=" + token + "' " +
     "--result '" + webAppUrl + "?result=1&token=" + token + "'";
 
