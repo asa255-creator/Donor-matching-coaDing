@@ -1701,7 +1701,59 @@ function dl_getProgressPayload_() {
 
 /** Web app endpoints */
 
+/** Web app route maps (entrypoints-first refactor step) */
+const DL_GET_ROUTE_TABLE_ = [
+  { key: 'runner', value: '1', name: 'runner_payload' },
+  { key: 'evolve_runner', value: '1', name: 'evolve_runner_payload' },
+  { key: 'job', value: '1', name: 'job_bundle' },
+  { key: 'diag_job', value: '1', name: 'diagnostic_job_bundle' },
+  { key: 'model', value: '1', name: 'model_json' },
+  { key: 'csv', value: 'K', name: 'csv_kref' },
+  { key: 'csv', value: 'F', name: 'csv_fec' },
+  { key: 'training_data', value: '1', name: 'training_data_json' },
+  { key: 'nicknames', value: '1', name: 'nicknames_json' },
+  { key: 'cd_csv', value: 'merge', name: 'cd_csv_merge' },
+  { key: 'cd_csv', value: 'cd', name: 'cd_csv_cd' },
+  { key: 'cd_matcher', value: '1', name: 'cd_matcher_script' },
+  { key: 'diagnostic', value: '1', name: 'diagnostic_script' }
+];
+
+const DL_POST_ROUTE_TABLE_ = [
+  { key: 'cd_result', value: '1', name: 'cd_result_post' },
+  { key: 'token', value: '*', name: 'donor_result_post' }
+];
+
 function doGet(e) {
+  return dl_routeGetRequest_(e);
+}
+
+function doPost(e) {
+  return dl_routePostRequest_(e);
+}
+
+function dl_routeGetRequest_(e) {
+  const route = dl_resolveRoute_(DL_GET_ROUTE_TABLE_, e && e.parameter);
+  // Step 1 of refactor: centralized route resolution with legacy execution path
+  return dl_doGetLegacy_(e, route);
+}
+
+function dl_routePostRequest_(e) {
+  const route = dl_resolveRoute_(DL_POST_ROUTE_TABLE_, e && e.parameter);
+  return dl_doPostLegacy_(e, route);
+}
+
+function dl_resolveRoute_(table, params) {
+  const p = params || {};
+  for (const route of table) {
+    if (!(route.key in p)) continue;
+    if (route.value === '*' || String(p[route.key]) === route.value) {
+      return route.name;
+    }
+  }
+  return 'invalid';
+}
+
+function dl_doGetLegacy_(e) {
   const p = e.parameter || {};
 
   // Python runner payload
@@ -5840,7 +5892,7 @@ function doGet(e) {
 }
 
 
-function doPost(e) {
+function dl_doPostLegacy_(e) {
   try {
     const p = e.parameter || {};
 
