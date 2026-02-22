@@ -93,15 +93,29 @@ function exportAllToSheet() {
   // Organizations
   for (const [orgName, multRaw] of orgRows) {
     const multiplier = toNumber_(multRaw, 1);
-    const url = buildExportUrl_({
-      ContributionSearchType: 'Organization',
-      OrganizationName: orgName,
-      MinAmount: opts.minAmount,
-      MaxAmount: opts.maxAmount,
-      MinimalDate: toKrefDate_(opts.minimalDate),
-      MaximalDate: opts.maximalDate ? toKrefDate_(opts.maximalDate) : '',
-      ContributionTypes: opts.contributionTypes
-    });
+    let url;
+    if (orgName.trim().toLowerCase() === 'judges') {
+      // Search all contributions to Campaign Committees (judicial candidates)
+      url = buildExportUrl_({
+        ContributionSearchType: 'Organization',
+        OrganizationType: 'CampaignCommittee',
+        MinAmount: opts.minAmount,
+        MaxAmount: opts.maxAmount,
+        MinimalDate: toKrefDate_(opts.minimalDate),
+        MaximalDate: opts.maximalDate ? toKrefDate_(opts.maximalDate) : '',
+        ContributionTypes: opts.contributionTypes
+      });
+    } else {
+      url = buildExportUrl_({
+        ContributionSearchType: 'Organization',
+        OrganizationName: orgName,
+        MinAmount: opts.minAmount,
+        MaxAmount: opts.maxAmount,
+        MinimalDate: toKrefDate_(opts.minimalDate),
+        MaximalDate: opts.maximalDate ? toKrefDate_(opts.maximalDate) : '',
+        ContributionTypes: opts.contributionTypes
+      });
+    }
     appendReducedCsv_(url, out, multiplier);
     done++; showProgress_(done, total, `Organization: ${orgName}`); Utilities.sleep(150);
   }
