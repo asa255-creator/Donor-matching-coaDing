@@ -1733,13 +1733,13 @@ function doPost(e) {
 
 function dl_routeGetRequest_(e) {
   const route = dl_resolveRoute_(DL_GET_ROUTE_TABLE_, e && e.parameter);
-  // Step 1 of refactor: centralized route resolution with legacy execution path
-  return dl_doGetLegacy_(e, route);
+  // Centralized route resolution with route-based request handling
+  return dl_handleGetRequest_(e, route);
 }
 
 function dl_routePostRequest_(e) {
   const route = dl_resolveRoute_(DL_POST_ROUTE_TABLE_, e && e.parameter);
-  return dl_doPostLegacy_(e, route);
+  return dl_handlePostRequest_(e, route);
 }
 
 function dl_resolveRoute_(table, params) {
@@ -1753,8 +1753,9 @@ function dl_resolveRoute_(table, params) {
   return 'invalid';
 }
 
-function dl_doGetLegacy_(e) {
+function dl_handleGetRequest_(e, routeName) {
   const p = e.parameter || {};
+  const activeRoute = routeName || 'invalid';
 
   // Python runner payload
   if (p.runner == '1') {
@@ -5888,13 +5889,14 @@ function dl_doGetLegacy_(e) {
     return diagnostic_getScript_();
   }
 
-  return ContentService.createTextOutput('Invalid query').setMimeType(ContentService.MimeType.TEXT);
+  return ContentService.createTextOutput('Invalid query: ' + activeRoute).setMimeType(ContentService.MimeType.TEXT);
 }
 
 
-function dl_doPostLegacy_(e) {
+function dl_handlePostRequest_(e, routeName) {
   try {
     const p = e.parameter || {};
+    const activeRoute = routeName || 'invalid';
 
     // Handle Campaign Deputy matching results separately
     if (p.cd_result == '1') {
