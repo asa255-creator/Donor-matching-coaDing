@@ -190,7 +190,17 @@ function dl_prepareIncrementalTrainingJob_() {
 
   const cmd =
     "curl -sSL '" + webAppUrl + "?runner=1&v=" + runnerVersion + "' -o /tmp/donor_runner.py && " +
-    "head -n 3 /tmp/donor_runner.py && " +
+    "echo '=== Runner header (first 5 lines) ===' && head -n 5 /tmp/donor_runner.py && " +
+    "echo '=== Runner fingerprint lines ===' && (grep -n 'RUNNER_FINGERPRINT' /tmp/donor_runner.py || echo 'No fingerprint found in fetched runner') && " +
+    "python3 -m py_compile /tmp/donor_runner.py || { " +
+      "echo '=== RUNNER PYTHON SYNTAX CHECK FAILED ==='; " +
+      "echo 'Showing lines 2918-2928 for diagnosis:'; " +
+      "awk 'NR>=2918&&NR<=2928{printf \"%5d  %s\n\", NR, $0}' /tmp/donor_runner.py; " +
+      "echo 'First suspicious print(\" occurrence:'; " +
+      "grep -n 'print(\"' /tmp/donor_runner.py | head -n 1; " +
+      "echo 'Tip: if fingerprint is missing above, you are hitting an old deployment URL/version.'; " +
+      "exit 1; " +
+    "} && " +
     "python3 /tmp/donor_runner.py --bundle '" + webAppUrl + "?job=1&token=" + token + "' " +
     "--result '" + webAppUrl + "?result=1&token=" + token + "'";
 
