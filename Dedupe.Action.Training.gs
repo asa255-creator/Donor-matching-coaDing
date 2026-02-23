@@ -189,6 +189,18 @@ function dl_prepareIncrementalTrainingJob_() {
   const runnerVersion = String(Date.now());
 
   const cmd =
+    "echo '=== Web app health endpoint ===' && " +
+    "curl -sSL '" + webAppUrl + "?health=1&v=" + runnerVersion + "' -o /tmp/donor_health.json && " +
+    "cat /tmp/donor_health.json && echo && " +
+    "grep -q '\"ok\":true' /tmp/donor_health.json || { " +
+      "echo 'ERROR: web app health endpoint did not return Apps Script JSON.'; " +
+      "echo 'If you see HTML, this /exec URL is not your active Web App deployment.'; " +
+      "exit 1; " +
+    "} && " +
+    "grep -q 'DM_LOCAL_RUNNER_20260222' /tmp/donor_health.json || { " +
+      "echo 'ERROR: health fingerprint mismatch (old deployment or wrong URL).'; " +
+      "exit 1; " +
+    "} && " +
     "curl -sSL '" + webAppUrl + "?runner=1&v=" + runnerVersion + "' -o /tmp/donor_runner.py && " +
     "echo '=== Runner header (first 5 lines) ===' && head -n 5 /tmp/donor_runner.py && " +
     "echo '=== Runner fingerprint lines ===' && (grep -n 'RUNNER_FINGERPRINT' /tmp/donor_runner.py || echo 'No fingerprint found in fetched runner') && " +

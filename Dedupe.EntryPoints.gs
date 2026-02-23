@@ -64,6 +64,17 @@ function dl_handleGetRequest_(e, routeName) {
   const p = e.parameter || {};
   const activeRoute = routeName || 'invalid';
 
+  // Lightweight health endpoint for deployment diagnostics
+  if (p.health == '1') {
+    return ContentService.createTextOutput(JSON.stringify({
+      ok: true,
+      route: activeRoute,
+      fingerprint: 'DM_LOCAL_RUNNER_20260222',
+      serviceUrl: dl_normalizeWebAppUrl_(ScriptApp.getService().getUrl() || ''),
+      ts: new Date().toISOString()
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
+
   // Python runner payload
   if (p.runner == '1') {
     const py = [
