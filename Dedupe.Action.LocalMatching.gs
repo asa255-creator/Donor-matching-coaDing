@@ -7,7 +7,7 @@ function dl_prepareLocalJobAndShowCommand_() {
   const webAppUrl = dl_getExecUrlFromOptions_();
   if (!webAppUrl) {
     SpreadsheetApp.getUi().alert(
-      'Deploy this bound Apps Script as a Web App (Deploy → Manage deployments), then re-open the sheet.\nOptional override: set Options!I2 to a specific /exec URL.'
+      'Put your Web App URL ending with /exec in Options!I2.\nExample:\nhttps://script.google.com/macros/s/AKfycb.../exec'
     );
     return;
   }

@@ -1685,11 +1685,7 @@ function dl_validateToken_(token) {
   return {ok:true};
 }
 function dl_getExecUrlFromOptions_() {
-  // Prefer the bound script's deployed web app URL so duplicated sheets work without manual URL edits.
-  const boundUrl = dl_normalizeWebAppUrl_(ScriptApp.getService().getUrl() || '');
-  if (boundUrl) return boundUrl;
-
-  // Fallback: explicit override in Options!I2
+  // Single source of truth: Options!I2
   const ss = SpreadsheetApp.getActive();
   const sh = ss.getSheetByName('Options');
   if (!sh) return null;
