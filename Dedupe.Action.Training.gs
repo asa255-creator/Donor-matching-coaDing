@@ -218,6 +218,13 @@ function dl_prepareIncrementalTrainingJob_() {
       "echo 'Tip: if fingerprint is missing above, you are hitting an old deployment URL/version.'; " +
       "exit 1; " +
     "} && " +
+    "echo '=== Job bundle preflight ===' && " +
+    "curl -sSL '" + webAppUrl + "?job=1&token=" + token + "' -o /tmp/donor_job.json && " +
+    "grep -q '\"jobId\"' /tmp/donor_job.json || { " +
+      "echo 'ERROR: job bundle endpoint did not return expected JSON (token invalid/expired).'; " +
+      "echo 'Job endpoint response:'; cat /tmp/donor_job.json; " +
+      "exit 1; " +
+    "} && " +
     "python3 /tmp/donor_runner.py --bundle '" + webAppUrl + "?job=1&token=" + token + "' " +
     "--result '" + webAppUrl + "?result=1&token=" + token + "'";
 
