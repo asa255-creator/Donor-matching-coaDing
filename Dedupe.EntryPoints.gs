@@ -1545,7 +1545,7 @@ function dl_handleGetRequest_(e, routeName) {
       '        print(f"Could not load Training sheet data: {e}")',
       '    if job_mode == "incremental" and not bootstrap_from_sheet:',
       '        print("WARNING: Incremental mode requested but no existing training data found.")',
-      '        print("This will behave the same as full mode.\n")',
+      '        print("This will behave the same as full mode.\\n")',
       '',
       '# ----------------------------',
       '# Retraining function',
