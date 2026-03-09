@@ -1107,7 +1107,7 @@ function dl_handleGetRequest_(e, routeName) {
       'print(f\"Using prediction threshold: {predict_threshold}\")',
       'input_meta = job.get(\"inputMeta\", {})',
       'if input_meta:',
-      '    print(f\"Input sheets: KREF={input_meta.get(\\\"krefSheetName\\\",\\\"?\\\")} ({input_meta.get(\\\"krefRows\\\",\\\"?\\\")} rows), FEC={input_meta.get(\\\"fecSheetName\\\",\\\"?\\\")} ({input_meta.get(\\\"fecRows\\\",\\\"?\\\")} rows)\")',
+      "    print(f\"Input sheets: KREF={input_meta.get('krefSheetName', '?')} ({input_meta.get('krefRows', '?')} rows), FEC={input_meta.get('fecSheetName', '?')} ({input_meta.get('fecRows', '?')} rows)\")",
       '',
       '# Load nickname database',
       'load_nickname_db(job["modelUrl"])',
