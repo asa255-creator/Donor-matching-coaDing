@@ -42,6 +42,12 @@ function dl_prepareLocalJobAndShowCommand_() {
 
   const job = {
     jobId: 'job_' + Utilities.getUuid().replace(/-/g, '').slice(0, 12),
+    inputMeta: {
+      krefSheetName: inputCfg.krefSheetName,
+      fecSheetName: inputCfg.fecSheetName,
+      krefRows: inputCfg.krefRows,
+      fecRows: inputCfg.fecRows
+    },
     cfg: {
       sampleTrainingPairs: DL_CFG.sampleTrainingPairs,
       uncertainBatchSize: DL_CFG.uncertainBatchSize,

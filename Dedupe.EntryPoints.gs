@@ -1104,7 +1104,10 @@ function dl_handleGetRequest_(e, routeName) {
       'job = json.loads(http_get(args.bundle).decode("utf-8"))',
       '# Extract threshold from job config (default to 0.7 if not specified)',
       'predict_threshold = job.get("cfg", {}).get("predictThreshold", 0.7)',
-      'print(f"Using prediction threshold: {predict_threshold}")',
+      'print(f\"Using prediction threshold: {predict_threshold}\")',
+      'input_meta = job.get(\"inputMeta\", {})',
+      'if input_meta:',
+      '    print(f\"Input sheets: KREF={input_meta.get(\\\"krefSheetName\\\",\\\"?\\\")} ({input_meta.get(\\\"krefRows\\\",\\\"?\\\")} rows), FEC={input_meta.get(\\\"fecSheetName\\\",\\\"?\\\")} ({input_meta.get(\\\"fecRows\\\",\\\"?\\\")} rows)\")',
       '',
       '# Load nickname database',
       'load_nickname_db(job["modelUrl"])',
@@ -4382,11 +4385,14 @@ function dl_handlePostRequest_(e, routeName) {
         const isFirstBatch = batchIndex === 0;
 
         if (isFirstBatch) {
-          // Clear all data rows (row 2 and below), preserve header if it exists
-          const lastRow = mergeSheet.getLastRow();
-          if (lastRow > 1) {
-            mergeSheet.deleteRows(2, lastRow - 1);
-            Logger.log('Cleared data rows (2-' + lastRow + ') from Merge output sheet');
+          // Clear all data rows (row 2 and below), preserve header row.
+          // Use clearContent instead of deleteRows to avoid Apps Script error:
+          // "it is not possible to delete all non-frozen rows".
+          const maxRows = mergeSheet.getMaxRows();
+          if (maxRows > 1) {
+            const maxCols = Math.max(outputHeader.length, mergeSheet.getMaxColumns());
+            mergeSheet.getRange(2, 1, maxRows - 1, maxCols).clearContent();
+            Logger.log('Cleared data content rows (2-' + maxRows + ') from Merge output sheet');
           }
 
           // Ensure header exists and is formatted

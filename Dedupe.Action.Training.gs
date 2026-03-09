@@ -175,6 +175,12 @@ function dl_prepareIncrementalTrainingJob_() {
   const job = {
     jobId: 'job_' + Utilities.getUuid().replace(/-/g, '').slice(0, 12),
     mode: 'incremental',  // NEW: Flag to indicate incremental training mode
+    inputMeta: {
+      krefSheetName: inputCfg.krefSheetName,
+      fecSheetName: inputCfg.fecSheetName,
+      krefRows: inputCfg.krefRows,
+      fecRows: inputCfg.fecRows
+    },
     cfg: {
       sampleTrainingPairs: DL_CFG.sampleTrainingPairs,
       uncertainBatchSize: DL_CFG.uncertainBatchSize,
