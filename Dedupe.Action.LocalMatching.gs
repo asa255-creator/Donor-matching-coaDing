@@ -12,11 +12,15 @@ function dl_prepareLocalJobAndShowCommand_() {
     return;
   }
 
-  const kref = dl_exportSheetAsCsv_(DL_CFG.krefSheet);
-  const fec  = dl_exportSheetAsCsv_(DL_CFG.fecSheet);
+  const inputCfg = dl_getInputSheetConfig_();
+  const kref = dl_exportSheetAsCsv_(inputCfg.krefSheetName);
+  const fec  = dl_exportSheetAsCsv_(inputCfg.fecSheetName);
   if (!kref.file || !fec.file) {
     SpreadsheetApp.getUi().alert(
-      'Missing input sheets or no rows. Confirm sheets exist: ' + DL_CFG.krefSheet + ' and ' + DL_CFG.fecSheet
+      'Missing input sheets or no rows.\n' +
+      'Configured KREF sheet: ' + inputCfg.krefSheetName + ' (' + inputCfg.krefRows + ' rows)\n' +
+      'Configured FEC sheet: ' + inputCfg.fecSheetName + ' (' + inputCfg.fecRows + ' rows)\n\n' +
+      'Optional override: set Options!K2 (KREF sheet) and Options!L2 (FEC sheet).'
     );
     return;
   }
@@ -108,6 +112,7 @@ function dl_prepareLocalJobAndShowCommand_() {
   const html = HtmlService.createHtmlOutput(
     '<div style="font-family:system-ui,Arial;padding:12px;max-width:720px">' +
       '<div style="margin:6px 0">Token expires in about ' + DL_CFG.tokenMinutes + ' minutes</div>' +
+      '<div style="margin:6px 0;font-size:12px;color:#444">Using KREF: <b>' + dl_htmlEscape_(inputCfg.krefSheetName) + '</b> (' + inputCfg.krefRows + ' rows), FEC: <b>' + dl_htmlEscape_(inputCfg.fecSheetName) + '</b> (' + inputCfg.fecRows + ' rows)</div>' +
       '<div style="margin:6px 0">Copy this command into your Mac Terminal:</div>' +
       '<textarea id="cmd" style="width:100%;height:140px" readonly>' +
         dl_htmlEscape_(cmd) +

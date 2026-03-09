@@ -79,6 +79,41 @@ function dl_getTokenCsvFileId_(token, csvName) {
   return csvName === 'kref' ? props.getProperty('dl_kref_fileId') : props.getProperty('dl_fec_fileId');
 }
 
+function dl_getInputSheetConfig_() {
+  const ss = SpreadsheetApp.getActive();
+  const optionsSheet = ss.getSheetByName('Options');
+
+  const defaultKref = DL_CFG.krefSheet;
+  const defaultFec = DL_CFG.fecSheet;
+
+  let krefSheetName = defaultKref;
+  let fecSheetName = defaultFec;
+
+  // Optional overrides:
+  // Options!K2 = KREF source sheet name
+  // Options!L2 = FEC source sheet name
+  if (optionsSheet) {
+    const krefOverride = String(optionsSheet.getRange('K2').getValue() || '').trim();
+    const fecOverride = String(optionsSheet.getRange('L2').getValue() || '').trim();
+    if (krefOverride) krefSheetName = krefOverride;
+    if (fecOverride) fecSheetName = fecOverride;
+  }
+
+  const krefSheet = ss.getSheetByName(krefSheetName);
+  const fecSheet = ss.getSheetByName(fecSheetName);
+
+  return {
+    krefSheetName: krefSheetName,
+    fecSheetName: fecSheetName,
+    krefSheet: krefSheet,
+    fecSheet: fecSheet,
+    krefRows: krefSheet ? Math.max(0, krefSheet.getLastRow() - 1) : 0,
+    fecRows: fecSheet ? Math.max(0, fecSheet.getLastRow() - 1) : 0
+  };
+}
+
+
+
 function dl_handleGetRequest_(e, routeName) {
   const p = e.parameter || {};
   const activeRoute = routeName || 'invalid';
