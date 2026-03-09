@@ -35,6 +35,13 @@ function dl_evolveBlockingRules_() {
     return;
   }
 
+  // Share temporary CSV files for direct download URLs used by the runner
+  kref.file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  fec.file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+
+  const krefUrl = 'https://drive.google.com/uc?export=download&id=' + kref.file.getId();
+  const fecUrl = 'https://drive.google.com/uc?export=download&id=' + fec.file.getId();
+
   // Generate token for data access
   const token = dl_makeToken_();
   const until = Date.now() + DL_CFG.tokenMinutes * 60 * 1000;
@@ -48,8 +55,7 @@ function dl_evolveBlockingRules_() {
 
   // Build URLs
   const modelUrl = webAppUrl + '?model=1';
-  const krefUrl = webAppUrl + '?csv=kref&token=' + encodeURIComponent(token);
-  const fecUrl = webAppUrl + '?csv=fec&token=' + encodeURIComponent(token);
+
   const rulesUrl = webAppUrl + '?csv=blocking_rules&token=' + encodeURIComponent(token);
 
   // Build command that downloads script first, then runs it (so stdin is available for input())

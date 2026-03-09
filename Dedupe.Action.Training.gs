@@ -153,6 +153,13 @@ function dl_prepareIncrementalTrainingJob_() {
     return;
   }
 
+  // Share temporary CSV files for direct download URLs used by the runner
+  kref.file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  fec.file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+
+  const krefUrl = 'https://drive.google.com/uc?export=download&id=' + kref.file.getId();
+  const fecUrl = 'https://drive.google.com/uc?export=download&id=' + fec.file.getId();
+
   const token = dl_makeToken_();
   const until = Date.now() + DL_CFG.tokenMinutes * 60 * 1000;
 
@@ -172,8 +179,8 @@ function dl_prepareIncrementalTrainingJob_() {
       maxTotalPairs: DL_CFG.maxTotalPairs,
       predictThreshold: threshold
     },
-    krefUrl: webAppUrl + '?csv=kref&token=' + encodeURIComponent(token),
-    fecUrl:  webAppUrl + '?csv=fec&token=' + encodeURIComponent(token),
+    krefUrl: krefUrl,
+    fecUrl:  fecUrl,
     modelUrl: webAppUrl + '?model=1',
     resultUrl: webAppUrl + '?result=1&token=' + encodeURIComponent(token)
   };

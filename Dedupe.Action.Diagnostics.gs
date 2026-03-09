@@ -46,8 +46,8 @@ function diagnostic_analyzeMatching() {
 
   // Create diagnostic job (same pattern as training)
   const job = {
-    krefUrl: webAppUrl + '?csv=kref&token=' + encodeURIComponent(token),
-    fecUrl: webAppUrl + '?csv=fec&token=' + encodeURIComponent(token),
+    krefUrl: krefUrl,
+    fecUrl: fecUrl,
     modelUrl: webAppUrl + '?model=1'
   };
 
