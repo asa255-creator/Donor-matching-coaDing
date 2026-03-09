@@ -66,8 +66,8 @@ function initializeRequiredSheets_() {
       frozenRows: 1
     },
     'Options': {
-      header: ['MinAmount', 'MaxAmount', 'MinDate', 'MaxDate', 'ContributionTypes', '', '', 'PercentLossPerYear', '', 'MatchThreshold'],
-      defaultRow: [1, 249, '2018-07-01', '', 'INDIVIDUAL', '', '', '0', '', '0.7'],
+      header: ['MinAmount', 'MaxAmount', 'MinDate', 'MaxDate', 'ContributionTypes', '', '', 'PercentLossPerYear', 'WebAppExecUrl', 'MatchThreshold', 'KrefSourceSheet', 'FecSourceSheet'],
+      defaultRow: [1, 249, '2018-07-01', '', 'INDIVIDUAL', '', '', '0', '', '0.7', '', ''],
       frozenRows: 1
     },
     'Candidates': {
@@ -148,6 +148,17 @@ function initializeRequiredSheets_() {
       if (config.defaultRules && sheetName === 'BlockingRules') {
         populateDefaultBlockingRules_(sheet);
       }
+    }
+
+    // Backfill new Options labels for existing sheets without rewriting user data
+    if (sheetName === 'Options') {
+      if (sheet.getMaxColumns() < 12) {
+        sheet.insertColumnsAfter(sheet.getMaxColumns(), 12 - sheet.getMaxColumns());
+      }
+      if (!String(sheet.getRange('K1').getValue() || '').trim()) sheet.getRange('K1').setValue('KrefSourceSheet');
+      if (!String(sheet.getRange('L1').getValue() || '').trim()) sheet.getRange('L1').setValue('FecSourceSheet');
+      if (!String(sheet.getRange('I1').getValue() || '').trim()) sheet.getRange('I1').setValue('WebAppExecUrl');
+      if (!String(sheet.getRange('J1').getValue() || '').trim()) sheet.getRange('J1').setValue('MatchThreshold');
     }
   }
 }

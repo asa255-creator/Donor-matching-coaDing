@@ -12,14 +12,25 @@ function dl_prepareLocalJobAndShowCommand_() {
     return;
   }
 
-  const kref = dl_exportSheetAsCsv_(DL_CFG.krefSheet);
-  const fec  = dl_exportSheetAsCsv_(DL_CFG.fecSheet);
+  const inputCfg = dl_getInputSheetConfig_();
+  const kref = dl_exportSheetAsCsv_(inputCfg.krefSheetName);
+  const fec  = dl_exportSheetAsCsv_(inputCfg.fecSheetName);
   if (!kref.file || !fec.file) {
     SpreadsheetApp.getUi().alert(
-      'Missing input sheets or no rows. Confirm sheets exist: ' + DL_CFG.krefSheet + ' and ' + DL_CFG.fecSheet
+      'Missing input sheets or no rows.\n' +
+      'Configured KREF sheet: ' + inputCfg.krefSheetName + ' (' + inputCfg.krefRows + ' rows)\n' +
+      'Configured FEC sheet: ' + inputCfg.fecSheetName + ' (' + inputCfg.fecRows + ' rows)\n\n' +
+      'Optional override: set Options!K2 (KREF sheet) and Options!L2 (FEC sheet).'
     );
     return;
   }
+
+  // Share temporary CSV files for direct download URLs used by the runner
+  kref.file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  fec.file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+
+  const krefUrl = 'https://drive.google.com/uc?export=download&id=' + kref.file.getId();
+  const fecUrl = 'https://drive.google.com/uc?export=download&id=' + fec.file.getId();
 
   const token = dl_makeToken_();
   const until = Date.now() + DL_CFG.tokenMinutes * 60 * 1000;
@@ -31,6 +42,12 @@ function dl_prepareLocalJobAndShowCommand_() {
 
   const job = {
     jobId: 'job_' + Utilities.getUuid().replace(/-/g, '').slice(0, 12),
+    inputMeta: {
+      krefSheetName: inputCfg.krefSheetName,
+      fecSheetName: inputCfg.fecSheetName,
+      krefRows: inputCfg.krefRows,
+      fecRows: inputCfg.fecRows
+    },
     cfg: {
       sampleTrainingPairs: DL_CFG.sampleTrainingPairs,
       uncertainBatchSize: DL_CFG.uncertainBatchSize,
@@ -39,8 +56,8 @@ function dl_prepareLocalJobAndShowCommand_() {
       maxTotalPairs: DL_CFG.maxTotalPairs,
       predictThreshold: threshold
     },
-    krefUrl: webAppUrl + '?csv=kref&token=' + encodeURIComponent(token),
-    fecUrl:  webAppUrl + '?csv=fec&token=' + encodeURIComponent(token),
+    krefUrl: krefUrl,
+    fecUrl:  fecUrl,
     modelUrl: webAppUrl + '?model=1',
     resultUrl: webAppUrl + '?result=1&token=' + encodeURIComponent(token)
   };
@@ -51,9 +68,11 @@ function dl_prepareLocalJobAndShowCommand_() {
   props.setProperty('dl_job_json', JSON.stringify(job));
   props.setProperty('dl_kref_fileId', kref.file.getId());
   props.setProperty('dl_fec_fileId',  fec.file.getId());
+  dl_setTokenCsvFileIds_(token, kref.file.getId(), fec.file.getId());
   props.setProperty('dl_staging_folderId', kref.folder.getId());
 
   const runnerVersion = String(Date.now());
+  const expectedSpreadsheetId = SpreadsheetApp.getActive().getId();
 
   const cmd =
     "echo '=== Web app health endpoint ===' && " +
@@ -66,6 +85,13 @@ function dl_prepareLocalJobAndShowCommand_() {
     "} && " +
     "grep -q 'DM_LOCAL_RUNNER_20260222' /tmp/donor_health.json || { " +
       "echo 'ERROR: health fingerprint mismatch (old deployment or wrong URL).'; " +
+      "exit 1; " +
+    "} && " +
+    "grep -q '\"spreadsheetId\":\"" + expectedSpreadsheetId + "\"' /tmp/donor_health.json || { " +
+      "echo 'ERROR: Web App points to a different spreadsheet ID.'; " +
+      "echo 'Expected spreadsheet ID: " + expectedSpreadsheetId + "'; " +
+      "echo 'Health endpoint response:'; cat /tmp/donor_health.json; " +
+      "echo 'Fix: In THIS sheet, set Options!I2 to the /exec URL deployed from this copied sheet script project.'; " +
       "exit 1; " +
     "} && " +
     "curl -sSL '" + webAppUrl + "?runner=1&v=" + runnerVersion + "' -o /tmp/donor_runner.py && " +
@@ -100,6 +126,8 @@ function dl_prepareLocalJobAndShowCommand_() {
   const html = HtmlService.createHtmlOutput(
     '<div style="font-family:system-ui,Arial;padding:12px;max-width:720px">' +
       '<div style="margin:6px 0">Token expires in about ' + DL_CFG.tokenMinutes + ' minutes</div>' +
+      '<div style="margin:6px 0;font-size:11px;color:#666">Expected spreadsheet ID: <code>' + dl_htmlEscape_(expectedSpreadsheetId) + '</code></div>' +
+      '<div style="margin:6px 0;font-size:12px;color:#444">Using KREF: <b>' + dl_htmlEscape_(inputCfg.krefSheetName) + '</b> (' + inputCfg.krefRows + ' rows), FEC: <b>' + dl_htmlEscape_(inputCfg.fecSheetName) + '</b> (' + inputCfg.fecRows + ' rows)</div>' +
       '<div style="margin:6px 0">Copy this command into your Mac Terminal:</div>' +
       '<textarea id="cmd" style="width:100%;height:140px" readonly>' +
         dl_htmlEscape_(cmd) +

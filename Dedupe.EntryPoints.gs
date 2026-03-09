@@ -60,17 +60,74 @@ function dl_resolveRoute_(table, params) {
   return 'invalid';
 }
 
+function dl_setTokenCsvFileIds_(token, krefFileId, fecFileId) {
+  if (!token) return;
+  const props = PropertiesService.getDocumentProperties();
+  props.setProperty('dl_kref_fileId_' + token, String(krefFileId || ''));
+  props.setProperty('dl_fec_fileId_' + token, String(fecFileId || ''));
+}
+
+function dl_getTokenCsvFileId_(token, csvName) {
+  const props = PropertiesService.getDocumentProperties();
+  if (token) {
+    const scopedKey = csvName === 'kref' ? 'dl_kref_fileId_' + token : 'dl_fec_fileId_' + token;
+    const scopedFileId = props.getProperty(scopedKey);
+    if (scopedFileId) return scopedFileId;
+  }
+
+  // Backward compatibility with previously generated commands.
+  return csvName === 'kref' ? props.getProperty('dl_kref_fileId') : props.getProperty('dl_fec_fileId');
+}
+
+function dl_getInputSheetConfig_() {
+  const ss = SpreadsheetApp.getActive();
+  const optionsSheet = ss.getSheetByName('Options');
+
+  const defaultKref = DL_CFG.krefSheet;
+  const defaultFec = DL_CFG.fecSheet;
+
+  let krefSheetName = defaultKref;
+  let fecSheetName = defaultFec;
+
+  // Optional overrides:
+  // Options!K2 = KREF source sheet name
+  // Options!L2 = FEC source sheet name
+  if (optionsSheet) {
+    const krefOverride = String(optionsSheet.getRange('K2').getValue() || '').trim();
+    const fecOverride = String(optionsSheet.getRange('L2').getValue() || '').trim();
+    if (krefOverride) krefSheetName = krefOverride;
+    if (fecOverride) fecSheetName = fecOverride;
+  }
+
+  const krefSheet = ss.getSheetByName(krefSheetName);
+  const fecSheet = ss.getSheetByName(fecSheetName);
+
+  return {
+    krefSheetName: krefSheetName,
+    fecSheetName: fecSheetName,
+    krefSheet: krefSheet,
+    fecSheet: fecSheet,
+    krefRows: krefSheet ? Math.max(0, krefSheet.getLastRow() - 1) : 0,
+    fecRows: fecSheet ? Math.max(0, fecSheet.getLastRow() - 1) : 0
+  };
+}
+
+
+
 function dl_handleGetRequest_(e, routeName) {
   const p = e.parameter || {};
   const activeRoute = routeName || 'invalid';
 
   // Lightweight health endpoint for deployment diagnostics
   if (p.health == '1') {
+    const activeSpreadsheet = SpreadsheetApp.getActive();
     return ContentService.createTextOutput(JSON.stringify({
       ok: true,
       route: activeRoute,
       fingerprint: 'DM_LOCAL_RUNNER_20260222',
       serviceUrl: dl_normalizeWebAppUrl_(ScriptApp.getService().getUrl() || ''),
+      spreadsheetId: activeSpreadsheet ? activeSpreadsheet.getId() : '',
+      spreadsheetName: activeSpreadsheet ? activeSpreadsheet.getName() : '',
       ts: new Date().toISOString()
     })).setMimeType(ContentService.MimeType.JSON);
   }
@@ -1047,13 +1104,24 @@ function dl_handleGetRequest_(e, routeName) {
       'job = json.loads(http_get(args.bundle).decode("utf-8"))',
       '# Extract threshold from job config (default to 0.7 if not specified)',
       'predict_threshold = job.get("cfg", {}).get("predictThreshold", 0.7)',
-      'print(f"Using prediction threshold: {predict_threshold}")',
+      'print(f\"Using prediction threshold: {predict_threshold}\")',
+      'input_meta = job.get(\"inputMeta\", {})',
+      'if input_meta:',
+      "    print(f\"Input sheets: KREF={input_meta.get('krefSheetName', '?')} ({input_meta.get('krefRows', '?')} rows), FEC={input_meta.get('fecSheetName', '?')} ({input_meta.get('fecRows', '?')} rows)\")",
       '',
       '# Load nickname database',
       'load_nickname_db(job["modelUrl"])',
       '',
       'hdrK, rowsK = parse_csv(http_get(job["krefUrl"]).decode("utf-8"))',
       'hdrF, rowsF = parse_csv(http_get(job["fecUrl"]).decode("utf-8"))',
+      '',
+      '# Drop fully blank rows from CSV payloads (header is preserved separately)',
+      'raw_k_rows = len(rowsK)',
+      'raw_f_rows = len(rowsF)',
+      'rowsK = [r for r in rowsK if any(str(c or "").strip() for c in r)]',
+      'rowsF = [r for r in rowsF if any(str(c or "").strip() for c in r)]',
+      'if raw_k_rows != len(rowsK) or raw_f_rows != len(rowsF):',
+      '    print(f"Filtered blank rows: KREF {raw_k_rows}->{len(rowsK)}, FEC {raw_f_rows}->{len(rowsF)}")',
       '',
       '# Complete ZIP prefix to State lookup (all 50 states + DC)',
       'ZIP_TO_STATE = {',
@@ -1270,6 +1338,7 @@ function dl_handleGetRequest_(e, routeName) {
       '',
       'K_rows = [row_as_obj(hdrK, r) for r in rowsK]',
       'F_rows = [row_as_obj(hdrF, r) for r in rowsF]',
+      'print(f"Parsed rows after blank-row filter: KREF={len(K_rows)}, FEC={len(F_rows)}")',
       'COMBINED = []',
       'global_idx = 0',
       'for i, r in enumerate(K_rows, start=2):',
@@ -4042,8 +4111,7 @@ function dl_handleGetRequest_(e, routeName) {
   if (p.csv == 'kref' || p.csv == 'fec') {
     const chk = dl_validateToken_(p.token);
     if (!chk.ok) return ContentService.createTextOutput(chk.msg).setMimeType(ContentService.MimeType.TEXT);
-    const props = PropertiesService.getDocumentProperties();
-    const fileId = p.csv === 'kref' ? props.getProperty('dl_kref_fileId') : props.getProperty('dl_fec_fileId');
+    const fileId = dl_getTokenCsvFileId_(p.token, p.csv);
     if (!fileId) return ContentService.createTextOutput('No CSV file id').setMimeType(ContentService.MimeType.TEXT);
     const file = DriveApp.getFileById(fileId);
     const out = ContentService.createTextOutput(file.getBlob().getDataAsString());
@@ -4326,11 +4394,14 @@ function dl_handlePostRequest_(e, routeName) {
         const isFirstBatch = batchIndex === 0;
 
         if (isFirstBatch) {
-          // Clear all data rows (row 2 and below), preserve header if it exists
-          const lastRow = mergeSheet.getLastRow();
-          if (lastRow > 1) {
-            mergeSheet.deleteRows(2, lastRow - 1);
-            Logger.log('Cleared data rows (2-' + lastRow + ') from Merge output sheet');
+          // Clear all data rows (row 2 and below), preserve header row.
+          // Use clearContent instead of deleteRows to avoid Apps Script error:
+          // "it is not possible to delete all non-frozen rows".
+          const maxRows = mergeSheet.getMaxRows();
+          if (maxRows > 1) {
+            const maxCols = Math.max(outputHeader.length, mergeSheet.getMaxColumns());
+            mergeSheet.getRange(2, 1, maxRows - 1, maxCols).clearContent();
+            Logger.log('Cleared data content rows (2-' + maxRows + ') from Merge output sheet');
           }
 
           // Ensure header exists and is formatted

@@ -26,14 +26,25 @@ function dl_evolveBlockingRules_() {
   }
 
   // Export KREF and FEC sheets to Drive (needed for CSV endpoints)
-  const kref = dl_exportSheetAsCsv_(DL_CFG.krefSheet);
-  const fec  = dl_exportSheetAsCsv_(DL_CFG.fecSheet);
+  const inputCfg = dl_getInputSheetConfig_();
+  const kref = dl_exportSheetAsCsv_(inputCfg.krefSheetName);
+  const fec  = dl_exportSheetAsCsv_(inputCfg.fecSheetName);
   if (!kref.file || !fec.file) {
     ui.alert(
-      'Missing input sheets or no rows. Confirm sheets exist: ' + DL_CFG.krefSheet + ' and ' + DL_CFG.fecSheet
+      'Missing input sheets or no rows.\n' +
+      'Configured KREF sheet: ' + inputCfg.krefSheetName + ' (' + inputCfg.krefRows + ' rows)\n' +
+      'Configured FEC sheet: ' + inputCfg.fecSheetName + ' (' + inputCfg.fecRows + ' rows)\n\n' +
+      'Optional override: set Options!K2 (KREF sheet) and Options!L2 (FEC sheet).'
     );
     return;
   }
+
+  // Share temporary CSV files for direct download URLs used by the runner
+  kref.file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  fec.file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+
+  const krefUrl = 'https://drive.google.com/uc?export=download&id=' + kref.file.getId();
+  const fecUrl = 'https://drive.google.com/uc?export=download&id=' + fec.file.getId();
 
   // Generate token for data access
   const token = dl_makeToken_();
@@ -44,11 +55,11 @@ function dl_evolveBlockingRules_() {
   props.setProperty('dl_token_until', String(until));
   props.setProperty('dl_kref_fileId', kref.file.getId());
   props.setProperty('dl_fec_fileId', fec.file.getId());
+  dl_setTokenCsvFileIds_(token, kref.file.getId(), fec.file.getId());
 
   // Build URLs
   const modelUrl = webAppUrl + '?model=1';
-  const krefUrl = webAppUrl + '?csv=kref&token=' + encodeURIComponent(token);
-  const fecUrl = webAppUrl + '?csv=fec&token=' + encodeURIComponent(token);
+
   const rulesUrl = webAppUrl + '?csv=blocking_rules&token=' + encodeURIComponent(token);
 
   // Build command that downloads script first, then runs it (so stdin is available for input())
@@ -65,6 +76,7 @@ function dl_evolveBlockingRules_() {
     '<div style="font-family:system-ui,Arial;padding:12px;max-width:720px">' +
       '<h3 style="margin:0 0 12px 0">🧬 Evolve Blocking Rules</h3>' +
       '<div style="margin:6px 0">Token expires in about ' + DL_CFG.tokenMinutes + ' minutes</div>' +
+      '<div style="margin:6px 0;font-size:12px;color:#444">Using KREF: <b>' + dl_htmlEscape_(inputCfg.krefSheetName) + '</b> (' + inputCfg.krefRows + ' rows), FEC: <b>' + dl_htmlEscape_(inputCfg.fecSheetName) + '</b> (' + inputCfg.fecRows + ' rows)</div>' +
       '<div style="margin:6px 0">Copy this command into your Mac Terminal:</div>' +
       '<textarea id="cmd" style="width:100%;height:160px;font-family:monospace;font-size:11px" readonly>' +
         dl_htmlEscape_(cmd) +

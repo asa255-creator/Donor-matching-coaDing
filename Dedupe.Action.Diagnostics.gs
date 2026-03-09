@@ -3,12 +3,18 @@
 function diagnostic_analyzeMatching() {
   const ss = SpreadsheetApp.getActive();
 
-  // Validate required sheets exist
-  const krefSheet = ss.getSheetByName('KREF_Exports');
-  const fecSheet = ss.getSheetByName('FEC_Exports');
+  // Validate required sheets exist (with optional overrides in Options!K2/L2)
+  const inputCfg = dl_getInputSheetConfig_();
+  const krefSheet = inputCfg.krefSheet;
+  const fecSheet = inputCfg.fecSheet;
 
   if (!krefSheet || !fecSheet) {
-    SpreadsheetApp.getUi().alert('KREF_Exports or FEC_Exports sheet not found. Please ensure your data is loaded.');
+    SpreadsheetApp.getUi().alert(
+      'Input sheets not found.\n' +
+      'Configured KREF sheet: ' + inputCfg.krefSheetName + '\n' +
+      'Configured FEC sheet: ' + inputCfg.fecSheetName + '\n\n' +
+      'Optional override: set Options!K2 (KREF sheet) and Options!L2 (FEC sheet).'
+    );
     return;
   }
 
@@ -46,8 +52,8 @@ function diagnostic_analyzeMatching() {
 
   // Create diagnostic job (same pattern as training)
   const job = {
-    krefUrl: webAppUrl + '?csv=kref&token=' + encodeURIComponent(token),
-    fecUrl: webAppUrl + '?csv=fec&token=' + encodeURIComponent(token),
+    krefUrl: krefUrl,
+    fecUrl: fecUrl,
     modelUrl: webAppUrl + '?model=1'
   };
 
@@ -57,6 +63,7 @@ function diagnostic_analyzeMatching() {
   props.setProperty('dl_token_until', String(until));
   props.setProperty('dl_kref_fileId', krefFile.getId());
   props.setProperty('dl_fec_fileId', fecFile.getId());
+  dl_setTokenCsvFileIds_(token, krefFile.getId(), fecFile.getId());
   props.setProperty('diag_job_json', JSON.stringify(job));
 
   // Build command using bundle (same pattern as training)
