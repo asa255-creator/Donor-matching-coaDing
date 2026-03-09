@@ -57,6 +57,7 @@ function diagnostic_analyzeMatching() {
   props.setProperty('dl_token_until', String(until));
   props.setProperty('dl_kref_fileId', krefFile.getId());
   props.setProperty('dl_fec_fileId', fecFile.getId());
+  dl_setTokenCsvFileIds_(token, krefFile.getId(), fecFile.getId());
   props.setProperty('diag_job_json', JSON.stringify(job));
 
   // Build command using bundle (same pattern as training)

@@ -51,6 +51,7 @@ function dl_prepareLocalJobAndShowCommand_() {
   props.setProperty('dl_job_json', JSON.stringify(job));
   props.setProperty('dl_kref_fileId', kref.file.getId());
   props.setProperty('dl_fec_fileId',  fec.file.getId());
+  dl_setTokenCsvFileIds_(token, kref.file.getId(), fec.file.getId());
   props.setProperty('dl_staging_folderId', kref.folder.getId());
 
   const runnerVersion = String(Date.now());

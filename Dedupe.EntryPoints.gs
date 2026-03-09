@@ -60,6 +60,25 @@ function dl_resolveRoute_(table, params) {
   return 'invalid';
 }
 
+function dl_setTokenCsvFileIds_(token, krefFileId, fecFileId) {
+  if (!token) return;
+  const props = PropertiesService.getDocumentProperties();
+  props.setProperty('dl_kref_fileId_' + token, String(krefFileId || ''));
+  props.setProperty('dl_fec_fileId_' + token, String(fecFileId || ''));
+}
+
+function dl_getTokenCsvFileId_(token, csvName) {
+  const props = PropertiesService.getDocumentProperties();
+  if (token) {
+    const scopedKey = csvName === 'kref' ? 'dl_kref_fileId_' + token : 'dl_fec_fileId_' + token;
+    const scopedFileId = props.getProperty(scopedKey);
+    if (scopedFileId) return scopedFileId;
+  }
+
+  // Backward compatibility with previously generated commands.
+  return csvName === 'kref' ? props.getProperty('dl_kref_fileId') : props.getProperty('dl_fec_fileId');
+}
+
 function dl_handleGetRequest_(e, routeName) {
   const p = e.parameter || {};
   const activeRoute = routeName || 'invalid';
@@ -4042,8 +4061,7 @@ function dl_handleGetRequest_(e, routeName) {
   if (p.csv == 'kref' || p.csv == 'fec') {
     const chk = dl_validateToken_(p.token);
     if (!chk.ok) return ContentService.createTextOutput(chk.msg).setMimeType(ContentService.MimeType.TEXT);
-    const props = PropertiesService.getDocumentProperties();
-    const fileId = p.csv === 'kref' ? props.getProperty('dl_kref_fileId') : props.getProperty('dl_fec_fileId');
+    const fileId = dl_getTokenCsvFileId_(p.token, p.csv);
     if (!fileId) return ContentService.createTextOutput('No CSV file id').setMimeType(ContentService.MimeType.TEXT);
     const file = DriveApp.getFileById(fileId);
     const out = ContentService.createTextOutput(file.getBlob().getDataAsString());

@@ -44,6 +44,7 @@ function dl_evolveBlockingRules_() {
   props.setProperty('dl_token_until', String(until));
   props.setProperty('dl_kref_fileId', kref.file.getId());
   props.setProperty('dl_fec_fileId', fec.file.getId());
+  dl_setTokenCsvFileIds_(token, kref.file.getId(), fec.file.getId());
 
   // Build URLs
   const modelUrl = webAppUrl + '?model=1';
