@@ -66,6 +66,7 @@ function dl_prepareLocalJobAndShowCommand_() {
   props.setProperty('dl_staging_folderId', kref.folder.getId());
 
   const runnerVersion = String(Date.now());
+  const expectedSpreadsheetId = SpreadsheetApp.getActive().getId();
 
   const cmd =
     "echo '=== Web app health endpoint ===' && " +
@@ -78,6 +79,13 @@ function dl_prepareLocalJobAndShowCommand_() {
     "} && " +
     "grep -q 'DM_LOCAL_RUNNER_20260222' /tmp/donor_health.json || { " +
       "echo 'ERROR: health fingerprint mismatch (old deployment or wrong URL).'; " +
+      "exit 1; " +
+    "} && " +
+    "grep -q '\"spreadsheetId\":\"" + expectedSpreadsheetId + "\"' /tmp/donor_health.json || { " +
+      "echo 'ERROR: Web App points to a different spreadsheet ID.'; " +
+      "echo 'Expected spreadsheet ID: " + expectedSpreadsheetId + "'; " +
+      "echo 'Health endpoint response:'; cat /tmp/donor_health.json; " +
+      "echo 'Fix: In THIS sheet, set Options!I2 to the /exec URL deployed from this copied sheet script project.'; " +
       "exit 1; " +
     "} && " +
     "curl -sSL '" + webAppUrl + "?runner=1&v=" + runnerVersion + "' -o /tmp/donor_runner.py && " +
@@ -112,6 +120,7 @@ function dl_prepareLocalJobAndShowCommand_() {
   const html = HtmlService.createHtmlOutput(
     '<div style="font-family:system-ui,Arial;padding:12px;max-width:720px">' +
       '<div style="margin:6px 0">Token expires in about ' + DL_CFG.tokenMinutes + ' minutes</div>' +
+      '<div style="margin:6px 0;font-size:11px;color:#666">Expected spreadsheet ID: <code>' + dl_htmlEscape_(expectedSpreadsheetId) + '</code></div>' +
       '<div style="margin:6px 0;font-size:12px;color:#444">Using KREF: <b>' + dl_htmlEscape_(inputCfg.krefSheetName) + '</b> (' + inputCfg.krefRows + ' rows), FEC: <b>' + dl_htmlEscape_(inputCfg.fecSheetName) + '</b> (' + inputCfg.fecRows + ' rows)</div>' +
       '<div style="margin:6px 0">Copy this command into your Mac Terminal:</div>' +
       '<textarea id="cmd" style="width:100%;height:140px" readonly>' +

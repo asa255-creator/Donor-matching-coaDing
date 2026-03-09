@@ -120,11 +120,14 @@ function dl_handleGetRequest_(e, routeName) {
 
   // Lightweight health endpoint for deployment diagnostics
   if (p.health == '1') {
+    const activeSpreadsheet = SpreadsheetApp.getActive();
     return ContentService.createTextOutput(JSON.stringify({
       ok: true,
       route: activeRoute,
       fingerprint: 'DM_LOCAL_RUNNER_20260222',
       serviceUrl: dl_normalizeWebAppUrl_(ScriptApp.getService().getUrl() || ''),
+      spreadsheetId: activeSpreadsheet ? activeSpreadsheet.getId() : '',
+      spreadsheetName: activeSpreadsheet ? activeSpreadsheet.getName() : '',
       ts: new Date().toISOString()
     })).setMimeType(ContentService.MimeType.JSON);
   }
