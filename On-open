@@ -7,7 +7,6 @@ function onOpen() {
   // KREF menu stays the same
   ui.createMenu('KREF Tools')
     .addItem('Fetch donor info from KREF', 'exportAllToSheet')
-    .addItem('Fetch PAC/business donations from KREF', 'exportPacToSheet')
     .addItem('Add downloaded FEC reports', 'fec_uploadDialog')
     .addToUi();
 
@@ -53,10 +52,6 @@ function initializeRequiredSheets_() {
     'KREF_Exports': {
       header: ['Recipient','DonorFirst','DonorLast','Address1','Address2','City','State','Zip','Amount','WeightedAmount','ReceiptDate','Occupation','Employer','DonationID'],
       format: '@' // Text format for all columns
-    },
-    'KREF_PAC_Exports': {
-      header: ['Recipient','DonorFirst','DonorLast','Address1','Address2','City','State','Zip','Amount','WeightedAmount','ReceiptDate','Occupation','Employer','DonationID'],
-      format: '@'
     },
     'FEC_Exports': {
       header: ['Recipient','DonorFirst','DonorLast','Address1','Address2','City','State','Zip','Amount','WeightedAmount','ReceiptDate','Occupation','Employer','DonationID'],

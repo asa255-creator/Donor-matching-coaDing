@@ -3,7 +3,6 @@ const CANDIDATE_SHEET = 'Candidates';     // A: FirstName, B: LastName, C: Multi
 const ORG_SHEET       = 'Organizations';  // A: OrganizationName, B: Multiplier
 const OPTIONS_SHEET   = 'Options';        // A2:E2 values
 const OUTPUT_SHEET    = 'KREF_Exports';
-const PAC_OUTPUT_SHEET = 'KREF_PAC_Exports';
 const USER_AGENT      = 'Mozilla/5.0 (Apps Script)';
 const EXPORT_BASE     = 'https://secure.kentucky.gov/kref/publicsearch/ExportContributors';
 
@@ -44,6 +43,13 @@ function exportAllToSheet() {
   const out = resetOutputSheet_(ss, OUTPUT_SHEET);
 
   const opts = readOptions_();
+  const isPac  = opts.contributionTypes.toLowerCase() === 'pac';
+  const isBoth = opts.contributionTypes.toLowerCase() === 'both';
+
+  // PAC and both omit ContributionTypes from the URL so KREF returns all types.
+  // PAC then auto-strips individual rows client-side.
+  const urlTypes = (isPac || isBoth) ? null : opts.contributionTypes;
+
   const candRows = readRows_(ss, CANDIDATE_SHEET, 2, 1, 3).filter(r => r[0] && r[1]); // [First, Last, Multiplier]
   const orgRows  = readRows_(ss, ORG_SHEET, 2, 1, 2).filter(r => r[0]);               // [OrgName, Multiplier]
 
@@ -85,9 +91,9 @@ function exportAllToSheet() {
       MaxAmount: opts.maxAmount,
       MinimalDate: toKrefDate_(opts.minimalDate),
       MaximalDate: opts.maximalDate ? toKrefDate_(opts.maximalDate) : '',
-      ContributionTypes: opts.contributionTypes
+      ContributionTypes: urlTypes
     });
-    appendReducedCsv_(url, out, multiplier);
+    appendReducedCsv_(url, out, multiplier, false, isPac);
     done++; showProgress_(done, total, `Candidate: ${first} ${last}`); Utilities.sleep(150);
   }
 
@@ -104,7 +110,7 @@ function exportAllToSheet() {
         MaxAmount: opts.maxAmount,
         MinimalDate: toKrefDate_(opts.minimalDate),
         MaximalDate: opts.maximalDate ? toKrefDate_(opts.maximalDate) : '',
-        ContributionTypes: opts.contributionTypes
+        ContributionTypes: urlTypes
       });
     } else {
       url = buildExportUrl_({
@@ -114,94 +120,15 @@ function exportAllToSheet() {
         MaxAmount: opts.maxAmount,
         MinimalDate: toKrefDate_(opts.minimalDate),
         MaximalDate: opts.maximalDate ? toKrefDate_(opts.maximalDate) : '',
-        ContributionTypes: opts.contributionTypes
+        ContributionTypes: urlTypes
       });
     }
-    appendReducedCsv_(url, out, multiplier, orgName.trim().toLowerCase() === 'judges');
+    appendReducedCsv_(url, out, multiplier, orgName.trim().toLowerCase() === 'judges', isPac);
     done++; showProgress_(done, total, `Organization: ${orgName}`); Utilities.sleep(150);
   }
 
   SpreadsheetApp.getActive().toast('100% • Done', 'KREF export', 5);
   SpreadsheetApp.getUi().alert('Done. Appended to KREF_Exports.');
-}
-
-/** PAC/BUSINESS DONATIONS ONLY - omits ContributionTypes filter, auto-removes individual rows **/
-function exportPacToSheet() {
-  const ss = SpreadsheetApp.getActive();
-  const ui = SpreadsheetApp.getUi();
-
-  const out = resetOutputSheet_(ss, PAC_OUTPUT_SHEET);
-
-  const opts = readOptions_();
-  const candRows = readRows_(ss, CANDIDATE_SHEET, 2, 1, 3).filter(r => r[0] && r[1]);
-  const orgRows  = readRows_(ss, ORG_SHEET, 2, 1, 2).filter(r => r[0]);
-
-  const total = candRows.length + orgRows.length;
-  if (!total) {
-    ui.alert('No rows found in Candidates or Organizations.');
-    return;
-  }
-
-  const response = ui.alert(
-    'KREF PAC Export Starting',
-    `About to fetch PAC/business donations for ${total} ${total === 1 ? 'entry' : 'entries'}.\n\n` +
-    `⚠️ IMPORTANT: Keep this Google Sheets tab ACTIVE and FOCUSED during the entire export.\n\n` +
-    `Individual contributor rows will be automatically excluded from results.\n\n` +
-    `Progress will show in the bottom-right corner.\n\nReady to start?`,
-    ui.ButtonSet.OK_CANCEL
-  );
-
-  if (response !== ui.Button.OK) {
-    ui.toast('Export cancelled', 'KREF PAC export', 3);
-    return;
-  }
-
-  let done = 0;
-  showProgress_(done, total, 'Starting');
-
-  for (const [first, last, multRaw] of candRows) {
-    const multiplier = toNumber_(multRaw, 1);
-    const url = buildExportUrl_({
-      ContributionSearchType: 'Candidate',
-      CandidateFirstName: first,
-      CandidateLastName: last,
-      MinAmount: opts.minAmount,
-      MaxAmount: opts.maxAmount,
-      MinimalDate: toKrefDate_(opts.minimalDate),
-      MaximalDate: opts.maximalDate ? toKrefDate_(opts.maximalDate) : ''
-    });
-    appendReducedCsv_(url, out, multiplier, false, true);
-    done++; showProgress_(done, total, `Candidate: ${first} ${last}`); Utilities.sleep(150);
-  }
-
-  for (const [orgName, multRaw] of orgRows) {
-    const multiplier = toNumber_(multRaw, 1);
-    let url;
-    if (orgName.trim().toLowerCase() === 'judges') {
-      url = buildExportUrl_({
-        ContributionSearchType: 'Organization',
-        OrganizationType: 'CampaignCommittee',
-        MinAmount: opts.minAmount,
-        MaxAmount: opts.maxAmount,
-        MinimalDate: toKrefDate_(opts.minimalDate),
-        MaximalDate: opts.maximalDate ? toKrefDate_(opts.maximalDate) : ''
-      });
-    } else {
-      url = buildExportUrl_({
-        ContributionSearchType: 'Organization',
-        OrganizationName: orgName,
-        MinAmount: opts.minAmount,
-        MaxAmount: opts.maxAmount,
-        MinimalDate: toKrefDate_(opts.minimalDate),
-        MaximalDate: opts.maximalDate ? toKrefDate_(opts.maximalDate) : ''
-      });
-    }
-    appendReducedCsv_(url, out, multiplier, orgName.trim().toLowerCase() === 'judges', true);
-    done++; showProgress_(done, total, `Organization: ${orgName}`); Utilities.sleep(150);
-  }
-
-  SpreadsheetApp.getActive().toast('100% • Done', 'KREF PAC export', 5);
-  SpreadsheetApp.getUi().alert('Done. PAC/business donations written to KREF_PAC_Exports.');
 }
 
 /** CSV -> SELECTED COLUMNS ONLY, RECIPIENT FROM CSV **/
