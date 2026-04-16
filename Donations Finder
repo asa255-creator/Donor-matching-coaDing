@@ -601,9 +601,13 @@ function appendUploadedFecCsvBatch(files) {
 
 /** Sheet setup **/
 function resetOutputSheet_(ss, name) {
-  const existing = ss.getSheetByName(name);
-  if (existing) ss.deleteSheet(existing);
-  const sh = ss.insertSheet(name);
+  let sh = ss.getSheetByName(name);
+  if (!sh) {
+    sh = ss.insertSheet(name);
+  } else {
+    sh.clearContents();
+    sh.clearFormats();
+  }
 
   const neededCols = OUTPUT_HEADER.length;
   if (sh.getMaxColumns() < neededCols) {
