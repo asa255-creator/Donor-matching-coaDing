@@ -146,6 +146,7 @@ function appendReducedCsv_(url, outSheet, multiplier, preferOrg = false, exclude
     toOrg:      findCol_(header, ['to organization']),
     donorFirst: findCol_(header, ['contributor first name','contributor firstname','first name']),
     donorLast:  findCol_(header, ['contributor last name','contributor lastname','last name']),
+    fromOrg:    findCol_(header, ['from organization','fromorganization','contributor organization','organization name']),
     addr1:      findCol_(header, ['address 1','address1','address line 1']),
     addr2:      findCol_(header, ['address 2','address2','address line 2']),
     city:       findCol_(header, ['city']),
@@ -188,7 +189,7 @@ function appendReducedCsv_(url, outSheet, multiplier, preferOrg = false, exclude
     }
 
     const donorFirst = capName_(safeGet_(r, idx.donorFirst));
-    const donorLast  = capName_(safeGet_(r, idx.donorLast));
+    const donorLast  = capName_(safeGet_(r, idx.donorLast)) || capName_(safeGet_(r, idx.fromOrg));
     const amountStr  = safeGet_(r, idx.amount);
     const amountNum  = parseAmount_(amountStr);
 
@@ -601,9 +602,13 @@ function appendUploadedFecCsvBatch(files) {
 
 /** Sheet setup **/
 function resetOutputSheet_(ss, name) {
-  const existing = ss.getSheetByName(name);
-  if (existing) ss.deleteSheet(existing);
-  const sh = ss.insertSheet(name);
+  let sh = ss.getSheetByName(name);
+  if (!sh) {
+    sh = ss.insertSheet(name);
+  } else {
+    sh.clearContents();
+    sh.clearFormats();
+  }
 
   const neededCols = OUTPUT_HEADER.length;
   if (sh.getMaxColumns() < neededCols) {
