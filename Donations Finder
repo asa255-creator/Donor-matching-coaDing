@@ -158,12 +158,6 @@ function appendReducedCsv_(url, outSheet, multiplier, preferOrg = false, exclude
     employer:   findCol_(header, ['employer'])
   };
 
-  // Contribution type is in column S (index 18); also check common header names
-  const contribTypeIdx = (() => {
-    const found = findCol_(header, ['contribution type', 'contributiontype', 'contributor type']);
-    return found !== -1 ? found : 18;
-  })();
-
   const data = rows.slice(1);
   if (!data.length) return;
 
@@ -175,7 +169,10 @@ function appendReducedCsv_(url, outSheet, multiplier, preferOrg = false, exclude
   for (const r of data) {
     if (!r || !r.length) continue;
 
-    if (excludeIndividual && String(r[contribTypeIdx] || '').trim().toLowerCase() === 'individual') continue;
+    const fromOrgVal = safeGet_(r, idx.fromOrg);
+
+    // PAC mode: skip rows with no org name (those are individuals)
+    if (excludeIndividual && !fromOrgVal) continue;
 
     const toOrgVal = safeGet_(r, idx.toOrg);
     const rf = capName_(safeGet_(r, idx.recipFirst));
@@ -189,7 +186,7 @@ function appendReducedCsv_(url, outSheet, multiplier, preferOrg = false, exclude
     }
 
     const donorFirst = capName_(safeGet_(r, idx.donorFirst));
-    const donorLast  = capName_(safeGet_(r, idx.donorLast)) || capName_(safeGet_(r, idx.fromOrg));
+    const donorLast  = capName_(fromOrgVal) || capName_(safeGet_(r, idx.donorLast));
     const amountStr  = safeGet_(r, idx.amount);
     const amountNum  = parseAmount_(amountStr);
 
