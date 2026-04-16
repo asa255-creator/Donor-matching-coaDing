@@ -43,6 +43,13 @@ function exportAllToSheet() {
   const out = resetOutputSheet_(ss, OUTPUT_SHEET);
 
   const opts = readOptions_();
+  const isPac  = opts.contributionTypes.toLowerCase() === 'pac';
+  const isBoth = opts.contributionTypes.toLowerCase() === 'both';
+
+  // PAC and both omit ContributionTypes from the URL so KREF returns all types.
+  // PAC then auto-strips individual rows client-side.
+  const urlTypes = (isPac || isBoth) ? null : opts.contributionTypes;
+
   const candRows = readRows_(ss, CANDIDATE_SHEET, 2, 1, 3).filter(r => r[0] && r[1]); // [First, Last, Multiplier]
   const orgRows  = readRows_(ss, ORG_SHEET, 2, 1, 2).filter(r => r[0]);               // [OrgName, Multiplier]
 
@@ -84,9 +91,9 @@ function exportAllToSheet() {
       MaxAmount: opts.maxAmount,
       MinimalDate: toKrefDate_(opts.minimalDate),
       MaximalDate: opts.maximalDate ? toKrefDate_(opts.maximalDate) : '',
-      ContributionTypes: opts.contributionTypes
+      ContributionTypes: urlTypes
     });
-    appendReducedCsv_(url, out, multiplier);
+    appendReducedCsv_(url, out, multiplier, false, isPac);
     done++; showProgress_(done, total, `Candidate: ${first} ${last}`); Utilities.sleep(150);
   }
 
@@ -103,7 +110,7 @@ function exportAllToSheet() {
         MaxAmount: opts.maxAmount,
         MinimalDate: toKrefDate_(opts.minimalDate),
         MaximalDate: opts.maximalDate ? toKrefDate_(opts.maximalDate) : '',
-        ContributionTypes: opts.contributionTypes
+        ContributionTypes: urlTypes
       });
     } else {
       url = buildExportUrl_({
@@ -113,10 +120,10 @@ function exportAllToSheet() {
         MaxAmount: opts.maxAmount,
         MinimalDate: toKrefDate_(opts.minimalDate),
         MaximalDate: opts.maximalDate ? toKrefDate_(opts.maximalDate) : '',
-        ContributionTypes: opts.contributionTypes
+        ContributionTypes: urlTypes
       });
     }
-    appendReducedCsv_(url, out, multiplier, orgName.trim().toLowerCase() === 'judges');
+    appendReducedCsv_(url, out, multiplier, orgName.trim().toLowerCase() === 'judges', isPac);
     done++; showProgress_(done, total, `Organization: ${orgName}`); Utilities.sleep(150);
   }
 
@@ -125,7 +132,7 @@ function exportAllToSheet() {
 }
 
 /** CSV -> SELECTED COLUMNS ONLY, RECIPIENT FROM CSV **/
-function appendReducedCsv_(url, outSheet, multiplier, preferOrg = false) {
+function appendReducedCsv_(url, outSheet, multiplier, preferOrg = false, excludeIndividual = false) {
   const csvText = httpGetText_(url);
   if (!csvText) return;
 
@@ -150,6 +157,12 @@ function appendReducedCsv_(url, outSheet, multiplier, preferOrg = false) {
     employer:   findCol_(header, ['employer'])
   };
 
+  // Contribution type is in column S (index 18); also check common header names
+  const contribTypeIdx = (() => {
+    const found = findCol_(header, ['contribution type', 'contributiontype', 'contributor type']);
+    return found !== -1 ? found : 18;
+  })();
+
   const data = rows.slice(1);
   if (!data.length) return;
 
@@ -160,6 +173,8 @@ function appendReducedCsv_(url, outSheet, multiplier, preferOrg = false) {
   const mapped = [];
   for (const r of data) {
     if (!r || !r.length) continue;
+
+    if (excludeIndividual && String(r[contribTypeIdx] || '').trim().toLowerCase() === 'individual') continue;
 
     const toOrgVal = safeGet_(r, idx.toOrg);
     const rf = capName_(safeGet_(r, idx.recipFirst));
