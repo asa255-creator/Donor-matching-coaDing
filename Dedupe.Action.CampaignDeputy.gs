@@ -59,13 +59,22 @@ function cd_prepareMatchingJob_() {
     "--cd '" + cdUrl + "' " +
     "--result '" + webAppUrl + "?cd_result=1&token=" + token + "' " +
     "--model '" + webAppUrl + "?model=1'";
-  
+
+  const cmdDebug =
+    "curl -sSL '" + webAppUrl + "?cd_matcher=1' | " +
+    "python3 - --merge '" + mergeUrl + "' " +
+    "--cd '" + cdUrl + "' " +
+    "--result '" + webAppUrl + "?cd_result=1&token=" + token + "' " +
+    "--model '" + webAppUrl + "?model=1' --debug";
+
   // Show command in dialog
   const html = HtmlService.createHtmlOutput(
     '<div style="font-family:monospace; padding:20px; word-wrap:break-word;">' +
     '<h3>Campaign Deputy Matching</h3>' +
     '<p>Copy and paste this command into Terminal:</p>' +
     '<textarea readonly style="width:100%; height:100px; font-family:monospace;">' + cmd + '</textarea>' +
+    '<p style="margin-top:16px;"><strong>Debug command</strong> (saves cd_debug_merge.csv &amp; cd_debug_cd.csv to your home folder and prints diagnostics — run this first if matching looks wrong):</p>' +
+    '<textarea readonly style="width:100%; height:100px; font-family:monospace;">' + cmdDebug + '</textarea>' +
     '<p style="margin-top:20px;"><strong>What this does:</strong></p>' +
     '<ul>' +
     '<li>Downloads data <strong>directly from Google Drive</strong> (no size limits!)</li>' +
