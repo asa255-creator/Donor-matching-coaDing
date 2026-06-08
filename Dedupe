@@ -1717,7 +1717,16 @@ function dl_exportSheetAsCsv_(sheetName) {
   if (!sh) return { file: null, folder: null };
   const lastRow = sh.getLastRow();
   const lastCol = sh.getLastColumn();
-  if (lastRow < 1 || lastCol < 1) return { file: null, folder: null };
+
+  // If the sheet is completely empty, create a header-only CSV using the
+  // standard column set so the runner gets a valid (zero-row) dataset.
+  if (lastRow < 1 || lastCol < 1) {
+    const emptyHeader = 'Recipient,DonorFirst,DonorLast,Address1,Address2,City,State,Zip,Amount,WeightedAmount,ReceiptDate,Occupation,Employer,DonationID';
+    const folder = dl_getOrCreateStagingFolder_();
+    const blob = Utilities.newBlob(emptyHeader, 'text/csv', sheetName + '.csv');
+    const file = folder.createFile(blob);
+    return { file, folder };
+  }
 
   // Use getValues() instead of getDisplayValues() to get raw values
   const rawValues = sh.getRange(1, 1, lastRow, lastCol).getValues();

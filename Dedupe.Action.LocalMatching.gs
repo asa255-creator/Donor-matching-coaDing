@@ -15,12 +15,20 @@ function dl_prepareLocalJobAndShowCommand_() {
   const inputCfg = dl_getInputSheetConfig_();
   const kref = dl_exportSheetAsCsv_(inputCfg.krefSheetName);
   const fec  = dl_exportSheetAsCsv_(inputCfg.fecSheetName);
-  if (!kref.file || !fec.file) {
+  if (!kref.file) {
     SpreadsheetApp.getUi().alert(
-      'Missing input sheets or no rows.\n' +
-      'Configured KREF sheet: ' + inputCfg.krefSheetName + ' (' + inputCfg.krefRows + ' rows)\n' +
+      'Missing KREF input sheet or no rows.\n' +
+      'Configured KREF sheet: ' + inputCfg.krefSheetName + ' (' + inputCfg.krefRows + ' rows)\n\n' +
+      'Optional override: set Options!K2 (KREF sheet).'
+    );
+    return;
+  }
+  if (!fec.file) {
+    // Should not happen after the empty-sheet fix, but guard just in case.
+    SpreadsheetApp.getUi().alert(
+      'Could not export FEC sheet.\n' +
       'Configured FEC sheet: ' + inputCfg.fecSheetName + ' (' + inputCfg.fecRows + ' rows)\n\n' +
-      'Optional override: set Options!K2 (KREF sheet) and Options!L2 (FEC sheet).'
+      'Optional override: set Options!L2 (FEC sheet).'
     );
     return;
   }
