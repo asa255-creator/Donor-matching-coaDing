@@ -18,6 +18,7 @@ function onOpen() {
     .addSeparator()
     .addItem('📊 Analyze Matching Quality', 'diagnostic_analyzeMatching')
     .addSeparator()
+    .addItem('Rebuild Merge Output from sheets', 'donor_rebuildMergeFromSheets_')
     .addItem('Upload Campaign Deputy Export', 'cd_uploadDialog')
     .addItem('Upload Merge Output CSV', 'cd_mergeOutputUploadDialog')
     .addItem('Match Donors to Campaign Deputy', 'cd_prepareMatchingJob_')

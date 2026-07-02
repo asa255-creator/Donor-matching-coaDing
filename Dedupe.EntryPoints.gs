@@ -4374,8 +4374,11 @@ function dl_handlePostRequest_(e, routeName) {
         donor_applyResult_assignedIds_(body.id_map);
       }
 
-      // Handle new merge_rows format (Python builds complete rows)
-      if (Array.isArray(body.merge_rows) && body.merge_rows.length) {
+      // Handle new merge_rows format (Python builds complete rows).
+      // NOTE: accept empty batches too (Array.isArray, not .length) so a run that
+      // produces zero rows still clears the old Merge output on batch 0. Otherwise
+      // stale data (e.g. FEC donations from a previous run) would persist.
+      if (Array.isArray(body.merge_rows)) {
         const batchSize = body.merge_rows.length;
         const batchIndex = typeof body.batch_index === 'number' ? body.batch_index : -1;
         Logger.log('Received batch ' + batchIndex + ' with ' + batchSize + ' merge rows');
@@ -4420,10 +4423,13 @@ function dl_handlePostRequest_(e, routeName) {
           Logger.log('Prepared Merge output sheet for new run');
         }
 
-        // Append rows to Merge output
-        const startRow = mergeSheet.getLastRow() + 1;
-        mergeSheet.getRange(startRow, 1, body.merge_rows.length, outputHeader.length)
-          .setValues(body.merge_rows);
+        // Append rows to Merge output (skip when this batch is empty — setValues
+        // rejects a zero-row range; the clear above already handled cleanup).
+        if (body.merge_rows.length) {
+          const startRow = mergeSheet.getLastRow() + 1;
+          mergeSheet.getRange(startRow, 1, body.merge_rows.length, outputHeader.length)
+            .setValues(body.merge_rows);
+        }
 
         const totalRows = mergeSheet.getLastRow() - 1; // Exclude header
         Logger.log('Wrote ' + batchSize + ' rows. Total in sheet: ' + totalRows);

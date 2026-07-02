@@ -1675,6 +1675,61 @@ function donor_buildDonorIdList(assignments) {
   }
 }
 
+/**
+ * Rebuild the "Merge output" sheet directly from the CURRENT KREF_Exports and
+ * FEC_Exports sheets, using the DonorID already stored on each sheet.
+ *
+ * This does NOT re-run matching. It simply refreshes Merge output so it reflects
+ * the current contents of the source sheets. Use it after clearing/editing
+ * FEC_Exports (or KREF_Exports) so the removed rows drop out of Merge output —
+ * and therefore out of the Campaign Deputy upload — without a full re-match.
+ */
+function donor_rebuildMergeFromSheets_() {
+  const ss = SpreadsheetApp.getActive();
+  const assignments = {};
+
+  function collect(sheetName, tag) {
+    const sh = ss.getSheetByName(sheetName);
+    if (!sh) return 0;
+    const lastRow = sh.getLastRow();
+    const lastCol = sh.getLastColumn();
+    if (lastRow < 2 || lastCol < 1) return 0; // header-only or empty: nothing to carry
+    const header = sh.getRange(1, 1, 1, lastCol).getValues()[0];
+    const idIdx = header.indexOf(DONOR_CFG.idColumnName);
+    const confIdx = header.indexOf('Confidence');
+    const values = sh.getRange(2, 1, lastRow - 1, lastCol).getValues();
+    let count = 0;
+    for (let i = 0; i < values.length; i++) {
+      const sheetRow = i + 2; // 1-indexed sheet row; matches key convention 'K:'+row / 'F:'+row
+      const donorId = idIdx >= 0 ? values[i][idIdx] : '';
+      assignments[tag + ':' + sheetRow] = {
+        donorId: (donorId === null || donorId === undefined) ? '' : donorId,
+        confidence: confIdx >= 0 ? values[i][confIdx] : ''
+      };
+      count++;
+    }
+    return count;
+  }
+
+  const kCount = collect(DONOR_CFG.krefSheet, 'K');
+  const fCount = collect(DONOR_CFG.fecSheet, 'F');
+
+  const result = donor_buildDonorIdList(assignments);
+  const ui = SpreadsheetApp.getUi();
+  if (result && result.success) {
+    ui.alert(
+      'Merge output rebuilt from current sheets.\n\n' +
+      DONOR_CFG.krefSheet + ': ' + kCount + ' rows\n' +
+      DONOR_CFG.fecSheet + ': ' + fCount + ' rows\n\n' +
+      (result.message || '') +
+      '\n\nNow run "Match Donors to Campaign Deputy" to regenerate the upload list.'
+    );
+  } else {
+    ui.alert('Rebuild failed: ' + (result && result.error ? result.error : 'unknown error'));
+  }
+  return result;
+}
+
 /** Token and helpers */
 function dl_validateToken_(token) {
   const props = PropertiesService.getDocumentProperties();
